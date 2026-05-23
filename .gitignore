@@ -1,0 +1,10 @@
+.DS_Store
+*.log
+*.lock
+*.tmp
+build/
+dist/
+*.app/
+.config/
+rclone.conf
+TCC.db*

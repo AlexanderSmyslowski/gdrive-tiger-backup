@@ -1,0 +1,431 @@
+#import <Cocoa/Cocoa.h>
+
+@interface TigerBackupView : NSView
+@property(nonatomic) CGFloat phase;
+@property(nonatomic) BOOL completed;
+@property(nonatomic, copy) void (^minimizeHandler)(void);
+@property(nonatomic, strong) NSTimer *timer;
+@property(nonatomic) BOOL draggingWindow;
+@property(nonatomic) NSPoint dragStartMouse;
+@property(nonatomic) NSPoint dragStartOrigin;
+@end
+
+@implementation TigerBackupView
+
+- (BOOL)isFlipped {
+    return YES;
+}
+
+- (BOOL)acceptsFirstMouse:(NSEvent *)event {
+    return YES;
+}
+
+- (instancetype)initWithFrame:(NSRect)frameRect {
+    self = [super initWithFrame:frameRect];
+    if (self) {
+        self.wantsLayer = YES;
+        self.timer = [NSTimer scheduledTimerWithTimeInterval:(1.0 / 30.0)
+                                                     repeats:YES
+                                                       block:^(NSTimer *timer) {
+            self.phase = fmod(self.phase + 1.3, 360.0);
+            self.needsDisplay = YES;
+        }];
+    }
+    return self;
+}
+
+- (void)dealloc {
+    [self.timer invalidate];
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    [super drawRect:dirtyRect];
+    NSRect bounds = self.bounds;
+
+    NSBezierPath *panel = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(bounds, 1, 1) xRadius:18 yRadius:18];
+    [NSGraphicsContext saveGraphicsState];
+    [panel addClip];
+
+    NSGradient *bodyGradient = [[NSGradient alloc] initWithColors:@[
+        [NSColor colorWithCalibratedWhite:0.97 alpha:1.0],
+        [NSColor colorWithCalibratedWhite:0.82 alpha:1.0]
+    ]];
+    [bodyGradient drawInRect:bounds angle:-90];
+
+    [[NSColor colorWithCalibratedWhite:1.0 alpha:0.24] setFill];
+    for (CGFloat y = 44; y < NSHeight(bounds); y += 4) {
+        NSRectFill(NSMakeRect(0, y, NSWidth(bounds), 1));
+    }
+
+    NSRect titleBar = NSMakeRect(0, 0, NSWidth(bounds), 48);
+    NSGradient *titleGradient = [[NSGradient alloc] initWithColors:@[
+        [NSColor colorWithCalibratedWhite:0.95 alpha:1.0],
+        [NSColor colorWithCalibratedWhite:0.70 alpha:1.0]
+    ]];
+    [titleGradient drawInRect:titleBar angle:-90];
+    [[NSColor colorWithCalibratedWhite:0.48 alpha:0.38] setFill];
+    NSRectFill(NSMakeRect(0, NSMaxY(titleBar) - 1, NSWidth(bounds), 1));
+
+    [self drawTrafficLights];
+    if (self.completed) {
+        [self drawCheckmarkAt:NSMakePoint(58, 94)];
+    } else {
+        [self drawSpinnerAt:NSMakePoint(58, 94)];
+    }
+    [self drawLabels];
+    [self drawProgressBarInRect:NSMakeRect(112, 106, 250, 19)];
+
+    [NSGraphicsContext restoreGraphicsState];
+
+    [[NSColor colorWithCalibratedWhite:0.36 alpha:0.42] setStroke];
+    panel.lineWidth = 1.5;
+    [panel stroke];
+}
+
+- (void)drawTrafficLights {
+    NSArray<NSColor *> *colors = @[
+        [NSColor colorWithCalibratedRed:0.95 green:0.27 blue:0.22 alpha:1.0],
+        [NSColor colorWithCalibratedRed:0.99 green:0.75 blue:0.18 alpha:1.0],
+        [NSColor colorWithCalibratedRed:0.35 green:0.78 blue:0.25 alpha:1.0]
+    ];
+
+    for (NSUInteger index = 0; index < colors.count; index++) {
+        NSRect rect = NSMakeRect(18 + index * 18, 17, 11, 11);
+        NSBezierPath *dot = [NSBezierPath bezierPathWithOvalInRect:rect];
+        NSGradient *gradient = [[NSGradient alloc] initWithColors:@[
+            [[NSColor whiteColor] colorWithAlphaComponent:0.75],
+            colors[index]
+        ]];
+        [gradient drawInBezierPath:dot angle:-90];
+        [[NSColor colorWithCalibratedWhite:0.25 alpha:0.35] setStroke];
+        [dot stroke];
+    }
+}
+
+- (void)mouseDown:(NSEvent *)event {
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    NSRect yellowButton = NSMakeRect(36, 17, 11, 11);
+    if (NSPointInRect(point, NSInsetRect(yellowButton, -7, -7)) && self.minimizeHandler) {
+        self.minimizeHandler();
+        return;
+    }
+
+    self.draggingWindow = YES;
+    self.dragStartMouse = NSEvent.mouseLocation;
+    self.dragStartOrigin = self.window.frame.origin;
+    [self.window makeKeyWindow];
+}
+
+- (void)mouseDragged:(NSEvent *)event {
+    if (!self.draggingWindow || !self.window) {
+        [super mouseDragged:event];
+        return;
+    }
+
+    NSPoint currentMouse = NSEvent.mouseLocation;
+    NSPoint newOrigin = NSMakePoint(self.dragStartOrigin.x + currentMouse.x - self.dragStartMouse.x,
+                                    self.dragStartOrigin.y + currentMouse.y - self.dragStartMouse.y);
+    [self.window setFrameOrigin:newOrigin];
+}
+
+- (void)mouseUp:(NSEvent *)event {
+    self.draggingWindow = NO;
+}
+
+- (void)drawSpinnerAt:(NSPoint)center {
+    CGFloat ringRadius = 28;
+    NSRect diskRect = NSMakeRect(center.x - 23, center.y - 18, 46, 36);
+    NSBezierPath *disk = [NSBezierPath bezierPathWithRoundedRect:diskRect xRadius:7 yRadius:7];
+
+    NSGradient *diskGradient = [[NSGradient alloc] initWithColors:@[
+        [NSColor colorWithCalibratedRed:0.91 green:0.94 blue:0.96 alpha:1.0],
+        [NSColor colorWithCalibratedRed:0.56 green:0.61 blue:0.66 alpha:1.0]
+    ]];
+    [diskGradient drawInBezierPath:disk angle:-90];
+    [[NSColor colorWithCalibratedWhite:0.36 alpha:0.65] setStroke];
+    disk.lineWidth = 1;
+    [disk stroke];
+
+    NSBezierPath *slot = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(center.x - 12, center.y - 3, 24, 6) xRadius:3 yRadius:3];
+    [[NSColor colorWithCalibratedRed:0.18 green:0.38 blue:0.64 alpha:0.85] setFill];
+    [slot fill];
+
+    for (NSUInteger i = 0; i < 10; i++) {
+        CGFloat angle = (((CGFloat)i / 10.0) * M_PI * 2.0) + self.phase * M_PI / 180.0;
+        CGFloat alpha = 0.22 + (CGFloat)i * 0.075;
+        NSPoint dotCenter = NSMakePoint(center.x + cos(angle) * ringRadius, center.y + sin(angle) * ringRadius);
+        NSBezierPath *dot = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(dotCenter.x - 3.3, dotCenter.y - 3.3, 6.6, 6.6)];
+        [[NSColor colorWithCalibratedRed:0.02 green:0.42 blue:1.0 alpha:alpha] setFill];
+        [dot fill];
+    }
+}
+
+- (void)drawCheckmarkAt:(NSPoint)center {
+    NSBezierPath *badge = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(center.x - 28, center.y - 28, 56, 56)];
+    NSGradient *badgeGradient = [[NSGradient alloc] initWithColors:@[
+        [NSColor colorWithCalibratedRed:0.64 green:0.95 blue:0.54 alpha:1.0],
+        [NSColor colorWithCalibratedRed:0.12 green:0.63 blue:0.20 alpha:1.0]
+    ]];
+    [badgeGradient drawInBezierPath:badge angle:-90];
+    [[NSColor colorWithCalibratedWhite:0.22 alpha:0.55] setStroke];
+    badge.lineWidth = 1.5;
+    [badge stroke];
+
+    NSBezierPath *check = [NSBezierPath bezierPath];
+    [check moveToPoint:NSMakePoint(center.x - 15, center.y + 1)];
+    [check lineToPoint:NSMakePoint(center.x - 4, center.y + 13)];
+    [check lineToPoint:NSMakePoint(center.x + 18, center.y - 14)];
+    [[NSColor whiteColor] setStroke];
+    check.lineWidth = 6;
+    check.lineCapStyle = NSLineCapStyleRound;
+    check.lineJoinStyle = NSLineJoinStyleRound;
+    [check stroke];
+}
+
+- (void)drawLabels {
+    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
+    style.lineBreakMode = NSLineBreakByTruncatingTail;
+
+    NSFont *titleFont = [NSFont fontWithName:@"Lucida Grande Bold" size:15] ?: [NSFont boldSystemFontOfSize:15];
+    NSFont *bodyFont = [NSFont fontWithName:@"Lucida Grande" size:12] ?: [NSFont systemFontOfSize:12];
+    NSFont *hintFont = [NSFont fontWithName:@"Lucida Grande" size:10] ?: [NSFont systemFontOfSize:10];
+
+    NSDictionary *titleAttributes = @{
+        NSFontAttributeName: titleFont,
+        NSForegroundColorAttributeName: [NSColor colorWithCalibratedWhite:0.10 alpha:1.0],
+        NSParagraphStyleAttributeName: style
+    };
+    NSDictionary *subtitleAttributes = @{
+        NSFontAttributeName: bodyFont,
+        NSForegroundColorAttributeName: [NSColor colorWithCalibratedWhite:0.22 alpha:1.0],
+        NSParagraphStyleAttributeName: style
+    };
+    NSDictionary *hintAttributes = @{
+        NSFontAttributeName: hintFont,
+        NSForegroundColorAttributeName: [NSColor colorWithCalibratedWhite:0.35 alpha:1.0],
+        NSParagraphStyleAttributeName: style
+    };
+
+    [@"Google Drive Backup" drawInRect:NSMakeRect(76, 16, 300, 20) withAttributes:titleAttributes];
+    NSString *subtitle = self.completed ? @"Sicherung abgeschlossen." : @"Sicherung wird erstellt ...";
+    NSString *hint = self.completed ? @"Backup ist fertig." : @"Bitte Festplatte nicht auswerfen.";
+    [subtitle drawInRect:NSMakeRect(112, 76, 250, 18) withAttributes:subtitleAttributes];
+    [hint drawInRect:NSMakeRect(112, 133, 250, 16) withAttributes:hintAttributes];
+}
+
+- (void)drawProgressBarInRect:(NSRect)rect {
+    NSBezierPath *outer = [NSBezierPath bezierPathWithRoundedRect:rect xRadius:9 yRadius:9];
+    [[NSColor colorWithCalibratedWhite:0.35 alpha:0.55] setStroke];
+    outer.lineWidth = 1;
+    [outer stroke];
+
+    NSRect inner = NSInsetRect(rect, 2, 2);
+    NSBezierPath *innerPath = [NSBezierPath bezierPathWithRoundedRect:inner xRadius:7 yRadius:7];
+    NSArray<NSColor *> *colors = self.completed ? @[
+        [NSColor colorWithCalibratedRed:0.43 green:0.90 blue:0.35 alpha:1.0],
+        [NSColor colorWithCalibratedRed:0.08 green:0.55 blue:0.18 alpha:1.0]
+    ] : @[
+        [NSColor colorWithCalibratedRed:0.18 green:0.70 blue:1.0 alpha:1.0],
+        [NSColor colorWithCalibratedRed:0.03 green:0.33 blue:0.90 alpha:1.0]
+    ];
+    NSGradient *blueGradient = [[NSGradient alloc] initWithColors:colors];
+    [blueGradient drawInBezierPath:innerPath angle:-90];
+
+    [NSGraphicsContext saveGraphicsState];
+    [innerPath addClip];
+    CGFloat spacing = 18;
+    CGFloat offset = fmod(self.phase, spacing);
+    [[[NSColor whiteColor] colorWithAlphaComponent:0.22] setFill];
+    for (CGFloat x = -NSHeight(inner) * 2 - spacing + offset; x <= NSWidth(inner) + spacing; x += spacing) {
+        NSBezierPath *stripe = [NSBezierPath bezierPath];
+        [stripe moveToPoint:NSMakePoint(NSMinX(inner) + x, NSMaxY(inner))];
+        [stripe lineToPoint:NSMakePoint(NSMinX(inner) + x + 10, NSMaxY(inner))];
+        [stripe lineToPoint:NSMakePoint(NSMinX(inner) + x + 25, NSMinY(inner))];
+        [stripe lineToPoint:NSMakePoint(NSMinX(inner) + x + 15, NSMinY(inner))];
+        [stripe closePath];
+        [stripe fill];
+    }
+    [NSGraphicsContext restoreGraphicsState];
+
+    NSBezierPath *gloss = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(NSMinX(inner) + 2, NSMinY(inner) + 2, NSWidth(inner) - 4, NSHeight(inner) * 0.42) xRadius:5 yRadius:5];
+    [[[NSColor whiteColor] colorWithAlphaComponent:0.34] setFill];
+    [gloss fill];
+}
+
+@end
+
+@interface AppDelegate : NSObject <NSApplicationDelegate>
+@property(nonatomic, strong) NSWindow *window;
+@property(nonatomic, copy) NSString *sentinelPath;
+@property(nonatomic, strong) NSTimer *sentinelTimer;
+@property(nonatomic) BOOL hiddenByUser;
+@property(nonatomic) BOOL completing;
+@end
+
+@implementation AppDelegate
+
+- (void)applicationDidFinishLaunching:(NSNotification *)notification {
+    NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
+    if (arguments.count > 1) {
+        self.sentinelPath = arguments[1];
+    }
+
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+
+    NSSize size = NSMakeSize(392, 162);
+    NSRect screenFrame = NSScreen.mainScreen ? NSScreen.mainScreen.visibleFrame : NSMakeRect(0, 0, 1200, 800);
+    NSPoint origin = NSMakePoint(NSMidX(screenFrame) - size.width / 2, NSMidY(screenFrame) - size.height / 2);
+
+    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(origin.x, origin.y, size.width, size.height)
+                                             styleMask:NSWindowStyleMaskBorderless
+                                               backing:NSBackingStoreBuffered
+                                                 defer:NO];
+    self.window.opaque = NO;
+    self.window.backgroundColor = NSColor.clearColor;
+    self.window.hasShadow = YES;
+    self.window.level = NSFloatingWindowLevel;
+    self.window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
+    TigerBackupView *contentView = [[TigerBackupView alloc] initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
+    __weak typeof(self) weakSelf = self;
+    contentView.minimizeHandler = ^{
+        [weakSelf minimizeWindow];
+    };
+    self.window.contentView = contentView;
+    self.window.alphaValue = 0;
+    [self.window makeKeyAndOrderFront:nil];
+    [self.window orderFrontRegardless];
+
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
+        context.duration = 0.22;
+        self.window.animator.alphaValue = 1;
+    } completionHandler:nil];
+
+    [NSApp activateIgnoringOtherApps:YES];
+
+    self.sentinelTimer = [NSTimer scheduledTimerWithTimeInterval:1.5
+                                                         repeats:YES
+                                                           block:^(NSTimer *timer) {
+        [self checkSentinel];
+    }];
+}
+
+- (void)applicationWillTerminate:(NSNotification *)notification {
+    [self.sentinelTimer invalidate];
+}
+
+- (void)minimizeWindow {
+    if (self.completing || !self.window.isVisible) {
+        return;
+    }
+
+    self.hiddenByUser = YES;
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
+        context.duration = 0.18;
+        self.window.animator.alphaValue = 0;
+    } completionHandler:^{
+        [self.window orderOut:nil];
+    }];
+}
+
+- (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)flag {
+    if (self.completing) {
+        [self.window orderFrontRegardless];
+        return NO;
+    }
+
+    if (self.hiddenByUser || !flag) {
+        [self restoreWindowFromDock];
+        return NO;
+    }
+
+    return YES;
+}
+
+- (void)restoreWindowFromDock {
+    self.hiddenByUser = NO;
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+
+    self.window.alphaValue = 0;
+    [self.window makeKeyAndOrderFront:nil];
+    [self.window orderFrontRegardless];
+    [NSApp activateIgnoringOtherApps:YES];
+
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
+        context.duration = 0.18;
+        self.window.animator.alphaValue = 1;
+    } completionHandler:^{
+        if (!self.completing) {
+            [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        }
+    }];
+}
+
+- (void)checkSentinel {
+    if (!self.sentinelPath.length) {
+        return;
+    }
+
+    if (![NSFileManager.defaultManager fileExistsAtPath:self.sentinelPath]) {
+        [self showCompletionAndQuit];
+    }
+}
+
+- (void)showCompletionAndQuit {
+    if (self.completing) {
+        return;
+    }
+
+    self.completing = YES;
+    [self.sentinelTimer invalidate];
+    self.sentinelTimer = nil;
+
+    TigerBackupView *contentView = (TigerBackupView *)self.window.contentView;
+    contentView.completed = YES;
+    contentView.needsDisplay = YES;
+
+    BOOL wasHidden = self.hiddenByUser || !self.window.isVisible;
+    self.hiddenByUser = NO;
+
+    if (wasHidden) {
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+        self.window.alphaValue = 0;
+        [self.window makeKeyAndOrderFront:nil];
+        [self.window orderFrontRegardless];
+    } else {
+        self.window.alphaValue = 1;
+        [self.window orderFrontRegardless];
+    }
+
+    [NSApp activateIgnoringOtherApps:YES];
+
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
+        context.duration = 0.22;
+        self.window.animator.alphaValue = 1;
+    } completionHandler:^{
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    }];
+
+    [NSTimer scheduledTimerWithTimeInterval:8.0
+                                    repeats:NO
+                                      block:^(NSTimer *timer) {
+        [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
+            context.duration = 0.18;
+            self.window.animator.alphaValue = 0;
+        } completionHandler:^{
+            [NSApp terminate:nil];
+        }];
+    }];
+}
+
+@end
+
+int main(int argc, const char *argv[]) {
+    @autoreleasepool {
+        NSApplication *app = NSApplication.sharedApplication;
+        AppDelegate *delegate = [[AppDelegate alloc] init];
+        app.delegate = delegate;
+        [app run];
+    }
+    return 0;
+}
