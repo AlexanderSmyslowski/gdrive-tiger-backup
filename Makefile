@@ -3,9 +3,13 @@ APP_DIR := $(HOME)/Applications/GDrive\ Backup\ Tiger.app
 .PHONY: build install dry-run
 
 build:
-	mkdir -p "$(APP_DIR)/Contents/MacOS"
+	mkdir -p "$(APP_DIR)/Contents/MacOS" "$(APP_DIR)/Contents/Resources" build
 	install -m 644 macos/GDriveBackupTiger/Info.plist "$(APP_DIR)/Contents/Info.plist"
 	clang -fobjc-arc -framework Cocoa macos/GDriveBackupTiger/main.m -o "$(APP_DIR)/Contents/MacOS/GDriveBackupTiger"
+	clang -fobjc-arc -framework Cocoa macos/GDriveBackupTiger/IconGenerator.m -o build/IconGenerator
+	rm -rf build/AppIcon.iconset
+	build/IconGenerator build/AppIcon.iconset
+	iconutil -c icns build/AppIcon.iconset -o "$(APP_DIR)/Contents/Resources/AppIcon.icns"
 	codesign --force --deep --sign - "$(APP_DIR)"
 
 install:

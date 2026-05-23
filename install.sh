@@ -19,14 +19,14 @@ if [[ "${INSTALL_DEPS:-0}" == "1" ]]; then
   brew install rclone flock jq
 fi
 
-for cmd in clang codesign install launchctl; do
+for cmd in clang codesign iconutil install launchctl; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "Missing required command: $cmd" >&2
     exit 127
   fi
 done
 
-mkdir -p "$CONFIG_DIR" "$HOME/Applications" "$APP_CONTENTS/MacOS" "$HOME/Library/LaunchAgents"
+mkdir -p "$CONFIG_DIR" "$HOME/Applications" "$APP_CONTENTS/MacOS" "$APP_CONTENTS/Resources" "$HOME/Library/LaunchAgents"
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
   {
@@ -41,6 +41,14 @@ fi
 install -m 644 "$ROOT/macos/GDriveBackupTiger/Info.plist" "$APP_CONTENTS/Info.plist"
 clang -fobjc-arc -framework Cocoa "$ROOT/macos/GDriveBackupTiger/main.m" \
   -o "$APP_CONTENTS/MacOS/GDriveBackupTiger"
+
+ICON_WORK="$(mktemp -d "${TMPDIR:-/tmp}/gdrive-tiger-icon.XXXXXX")"
+clang -fobjc-arc -framework Cocoa "$ROOT/macos/GDriveBackupTiger/IconGenerator.m" \
+  -o "$ICON_WORK/IconGenerator"
+"$ICON_WORK/IconGenerator" "$ICON_WORK/AppIcon.iconset"
+iconutil -c icns "$ICON_WORK/AppIcon.iconset" -o "$APP_CONTENTS/Resources/AppIcon.icns"
+rm -rf "$ICON_WORK"
+
 codesign --force --deep --sign - "$APP_DIR" >/dev/null
 
 sudo install -m 755 "$ROOT/bin/backup-google-drive.sh" /usr/local/bin/backup-google-drive.sh

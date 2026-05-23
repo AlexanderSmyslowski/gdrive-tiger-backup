@@ -11,6 +11,8 @@
   <string>GDrive Backup Tiger</string>
   <key>CFBundleDisplayName</key>
   <string>GDrive Backup Tiger</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleVersion</key>
