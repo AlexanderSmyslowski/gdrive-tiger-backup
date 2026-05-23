@@ -20,6 +20,7 @@ LOCK="${GDRIVE_BACKUP_LOCK:-$HOME/Library/Logs/gdrive-backup.lock}"
 MOUNT_SETTLE_SECONDS="${MOUNT_SETTLE_SECONDS:-5}"
 ANIMATION_APP="${GDRIVE_BACKUP_ANIMATION_APP:-$HOME/Applications/GDrive Backup Tiger.app}"
 ANIMATION_SENTINEL=""
+CONFIRM_BACKUP="${GDRIVE_BACKUP_CONFIRM:-1}"
 
 mkdir -p "$HOME/Library/Logs"
 exec >>"$LOG" 2>&1
@@ -72,6 +73,62 @@ cleanup() {
   stop_animation
 }
 
+confirm_backup_target() {
+  if [[ "$DRY_RUN" == "1" || "$CONFIRM_BACKUP" == "0" || "${BACKUP_ASSUME_YES:-0}" == "1" ]]; then
+    return 0
+  fi
+
+  local response=""
+  local decision=""
+
+  log "Warte auf Benutzerbestaetigung fuer Zielvolume: $VOLUME"
+
+  if [[ -d "$ANIMATION_APP" ]]; then
+    response="$(mktemp "${TMPDIR:-/tmp}/gdrive-backup-confirm.XXXXXX")" || {
+      log "FEHLER: Bestaetigungsdatei konnte nicht angelegt werden."
+      return 1
+    }
+    : >"$response"
+
+    if /usr/bin/open -W -n "$ANIMATION_APP" --args --confirm "$VOLUME" "$response" >/dev/null 2>&1; then
+      decision="$(tr -d '\r\n' <"$response" 2>/dev/null || true)"
+    fi
+    rm -f "$response"
+
+    if [[ "$decision" == "yes" ]]; then
+      log "Backup durch Benutzer bestaetigt."
+      return 0
+    fi
+
+    log "Backup nicht bestaetigt; ueberspringe."
+    return 1
+  fi
+
+  if command -v osascript >/dev/null 2>&1; then
+    decision="$(/usr/bin/osascript - "$VOLUME" "$DEST_ROOT" <<'OSA'
+on run argv
+  set targetVolume to item 1 of argv
+  set targetFolder to item 2 of argv
+  try
+    set answer to display dialog "Soll Google Drive jetzt auf dieses Volume gesichert werden?" & return & return & "Volume: " & targetVolume & return & "Ziel: " & targetFolder with title "Google Drive Backup" buttons {"Nicht jetzt", "Backup starten"} default button "Nicht jetzt" cancel button "Nicht jetzt" giving up after 120
+    if gave up of answer then return "no"
+    if button returned of answer is "Backup starten" then return "yes"
+  end try
+  return "no"
+end run
+OSA
+)" || decision="no"
+
+    if [[ "$decision" == "yes" ]]; then
+      log "Backup durch Benutzer bestaetigt."
+      return 0
+    fi
+  fi
+
+  log "Backup nicht bestaetigt; ueberspringe."
+  return 1
+}
+
 DRY_RUN=1
 for arg in "$@"; do
   case "$arg" in
@@ -108,6 +165,10 @@ fi
 if ! rclone config show "$REMOTE" >/dev/null 2>&1; then
   log "FEHLER: rclone-Remote '${REMOTE}:' ist nicht konfiguriert."
   exit 78
+fi
+
+if ! confirm_backup_target; then
+  exit 0
 fi
 
 if [[ "$DRY_RUN" == "0" ]]; then

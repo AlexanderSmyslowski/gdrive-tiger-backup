@@ -31,6 +31,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
   {
     printf 'GDRIVE_BACKUP_VOLUME=%q\n' "$BACKUP_VOLUME"
     printf 'RCLONE_REMOTE=%q\n' "$RCLONE_REMOTE"
+    printf 'GDRIVE_BACKUP_CONFIRM=1\n'
   } >"$CONFIG_FILE"
 fi
 

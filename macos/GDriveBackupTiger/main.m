@@ -3,7 +3,10 @@
 @interface TigerBackupView : NSView
 @property(nonatomic) CGFloat phase;
 @property(nonatomic) BOOL completed;
+@property(nonatomic) BOOL confirmMode;
+@property(nonatomic, copy) NSString *targetVolume;
 @property(nonatomic, copy) void (^minimizeHandler)(void);
+@property(nonatomic, copy) void (^confirmHandler)(BOOL approved);
 @property(nonatomic, strong) NSTimer *timer;
 @property(nonatomic) BOOL draggingWindow;
 @property(nonatomic) NSPoint dragStartMouse;
@@ -104,7 +107,24 @@
 
 - (void)mouseDown:(NSEvent *)event {
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    NSRect redButton = NSMakeRect(18, 17, 11, 11);
     NSRect yellowButton = NSMakeRect(36, 17, 11, 11);
+
+    if (self.confirmMode) {
+        if (NSPointInRect(point, NSInsetRect(redButton, -7, -7)) && self.confirmHandler) {
+            self.confirmHandler(NO);
+            return;
+        }
+        if (NSPointInRect(point, [self primaryButtonRect]) && self.confirmHandler) {
+            self.confirmHandler(YES);
+            return;
+        }
+        if (NSPointInRect(point, [self secondaryButtonRect]) && self.confirmHandler) {
+            self.confirmHandler(NO);
+            return;
+        }
+    }
+
     if (NSPointInRect(point, NSInsetRect(yellowButton, -7, -7)) && self.minimizeHandler) {
         self.minimizeHandler();
         return;
@@ -207,13 +227,24 @@
     };
 
     [@"Google Drive Backup" drawInRect:NSMakeRect(76, 16, 300, 20) withAttributes:titleAttributes];
-    NSString *subtitle = self.completed ? @"Sicherung abgeschlossen." : @"Sicherung wird erstellt ...";
-    NSString *hint = self.completed ? @"Backup ist fertig." : @"Bitte Festplatte nicht auswerfen.";
+    NSString *subtitle = self.confirmMode ? @"Dieses Volume verwenden?" : (self.completed ? @"Sicherung abgeschlossen." : @"Sicherung wird erstellt ...");
+    NSString *hint = self.confirmMode ? (self.targetVolume ?: @"") : (self.completed ? @"Backup ist fertig." : @"Bitte Festplatte nicht auswerfen.");
     [subtitle drawInRect:NSMakeRect(112, 76, 250, 18) withAttributes:subtitleAttributes];
-    [hint drawInRect:NSMakeRect(112, 133, 250, 16) withAttributes:hintAttributes];
+
+    if (self.confirmMode) {
+        [hint drawInRect:NSMakeRect(112, 98, 250, 16) withAttributes:hintAttributes];
+    } else {
+        [hint drawInRect:NSMakeRect(112, 133, 250, 16) withAttributes:hintAttributes];
+    }
 }
 
 - (void)drawProgressBarInRect:(NSRect)rect {
+    if (self.confirmMode) {
+        [self drawButtonWithTitle:@"Nicht jetzt" inRect:[self secondaryButtonRect] primary:NO];
+        [self drawButtonWithTitle:@"Backup starten" inRect:[self primaryButtonRect] primary:YES];
+        return;
+    }
+
     NSBezierPath *outer = [NSBezierPath bezierPathWithRoundedRect:rect xRadius:9 yRadius:9];
     [[NSColor colorWithCalibratedWhite:0.35 alpha:0.55] setStroke];
     outer.lineWidth = 1;
@@ -252,25 +283,73 @@
     [gloss fill];
 }
 
+- (NSRect)primaryButtonRect {
+    return NSMakeRect(232, 116, 130, 27);
+}
+
+- (NSRect)secondaryButtonRect {
+    return NSMakeRect(112, 116, 110, 27);
+}
+
+- (void)drawButtonWithTitle:(NSString *)title inRect:(NSRect)rect primary:(BOOL)primary {
+    NSBezierPath *button = [NSBezierPath bezierPathWithRoundedRect:rect xRadius:8 yRadius:8];
+    NSArray<NSColor *> *colors = primary ? @[
+        [NSColor colorWithCalibratedRed:0.78 green:0.92 blue:1.0 alpha:1.0],
+        [NSColor colorWithCalibratedRed:0.22 green:0.52 blue:0.96 alpha:1.0]
+    ] : @[
+        [NSColor colorWithCalibratedWhite:0.98 alpha:1.0],
+        [NSColor colorWithCalibratedWhite:0.74 alpha:1.0]
+    ];
+    NSGradient *gradient = [[NSGradient alloc] initWithColors:colors];
+    [gradient drawInBezierPath:button angle:-90];
+    [[NSColor colorWithCalibratedWhite:0.28 alpha:0.55] setStroke];
+    button.lineWidth = 1;
+    [button stroke];
+
+    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
+    style.alignment = NSTextAlignmentCenter;
+    style.lineBreakMode = NSLineBreakByTruncatingTail;
+
+    NSDictionary *attributes = @{
+        NSFontAttributeName: [NSFont fontWithName:@"Lucida Grande Bold" size:11] ?: [NSFont boldSystemFontOfSize:11],
+        NSForegroundColorAttributeName: primary ? [NSColor whiteColor] : [NSColor colorWithCalibratedWhite:0.14 alpha:1.0],
+        NSParagraphStyleAttributeName: style
+    };
+    [title drawInRect:NSInsetRect(rect, 8, 6) withAttributes:attributes];
+}
+
 @end
 
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, copy) NSString *sentinelPath;
+@property(nonatomic) BOOL confirmMode;
+@property(nonatomic, copy) NSString *confirmVolume;
+@property(nonatomic, copy) NSString *confirmResponsePath;
 @property(nonatomic, strong) NSTimer *sentinelTimer;
+@property(nonatomic, strong) NSTimer *confirmTimeoutTimer;
 @property(nonatomic) BOOL hiddenByUser;
 @property(nonatomic) BOOL completing;
+@property(nonatomic) BOOL confirmationAnswered;
 @end
 
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
-    if (arguments.count > 1) {
+    if (arguments.count > 1 && [arguments[1] isEqualToString:@"--confirm"]) {
+        self.confirmMode = YES;
+        if (arguments.count > 2) {
+            self.confirmVolume = arguments[2];
+        }
+        if (arguments.count > 3) {
+            self.confirmResponsePath = arguments[3];
+        }
+    } else if (arguments.count > 1) {
         self.sentinelPath = arguments[1];
     }
 
-    [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    [NSApp setActivationPolicy:self.confirmMode ? NSApplicationActivationPolicyRegular : NSApplicationActivationPolicyAccessory];
 
     NSSize size = NSMakeSize(392, 162);
     NSRect screenFrame = NSScreen.mainScreen ? NSScreen.mainScreen.visibleFrame : NSMakeRect(0, 0, 1200, 800);
@@ -287,8 +366,13 @@
     self.window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
     TigerBackupView *contentView = [[TigerBackupView alloc] initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
     __weak typeof(self) weakSelf = self;
+    contentView.confirmMode = self.confirmMode;
+    contentView.targetVolume = self.confirmVolume;
     contentView.minimizeHandler = ^{
         [weakSelf minimizeWindow];
+    };
+    contentView.confirmHandler = ^(BOOL approved) {
+        [weakSelf finishConfirmation:approved];
     };
     self.window.contentView = contentView;
     self.window.alphaValue = 0;
@@ -302,15 +386,27 @@
 
     [NSApp activateIgnoringOtherApps:YES];
 
-    self.sentinelTimer = [NSTimer scheduledTimerWithTimeInterval:1.5
-                                                         repeats:YES
-                                                           block:^(NSTimer *timer) {
-        [self checkSentinel];
-    }];
+    if (self.confirmMode) {
+        self.confirmTimeoutTimer = [NSTimer scheduledTimerWithTimeInterval:120.0
+                                                                   repeats:NO
+                                                                     block:^(NSTimer *timer) {
+            [self finishConfirmation:NO];
+        }];
+    } else {
+        self.sentinelTimer = [NSTimer scheduledTimerWithTimeInterval:1.5
+                                                             repeats:YES
+                                                               block:^(NSTimer *timer) {
+            [self checkSentinel];
+        }];
+    }
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
     [self.sentinelTimer invalidate];
+    [self.confirmTimeoutTimer invalidate];
+    if (self.confirmMode && !self.confirmationAnswered) {
+        [self writeConfirmation:NO];
+    }
 }
 
 - (void)minimizeWindow {
@@ -359,6 +455,36 @@
             [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
         }
     }];
+}
+
+- (void)finishConfirmation:(BOOL)approved {
+    if (self.confirmationAnswered) {
+        return;
+    }
+
+    self.confirmationAnswered = YES;
+    [self.confirmTimeoutTimer invalidate];
+    self.confirmTimeoutTimer = nil;
+    [self writeConfirmation:approved];
+
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
+        context.duration = 0.14;
+        self.window.animator.alphaValue = 0;
+    } completionHandler:^{
+        [NSApp terminate:nil];
+    }];
+}
+
+- (void)writeConfirmation:(BOOL)approved {
+    if (!self.confirmResponsePath.length) {
+        return;
+    }
+
+    NSString *decision = approved ? @"yes\n" : @"no\n";
+    [decision writeToFile:self.confirmResponsePath
+               atomically:YES
+                 encoding:NSUTF8StringEncoding
+                    error:nil];
 }
 
 - (void)checkSentinel {

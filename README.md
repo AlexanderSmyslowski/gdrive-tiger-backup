@@ -16,6 +16,7 @@ The backup is read-only from Google Drive's perspective. It uses `rclone copy`, 
 - A user LaunchAgent starts on every volume mount via `StartOnMount`.
 - The shell script checks whether the configured backup volume exists.
 - A `flock` lock prevents two backup jobs from running at the same time.
+- Before a real backup starts, the Tiger helper asks whether this volume should be used.
 - The native AppKit helper appears while the backup runs.
 - The yellow Tiger-style button minimizes the helper into the Dock.
 - Clicking the Dock icon restores the helper.
@@ -72,6 +73,14 @@ The installer writes:
 - `~/Applications/GDrive Backup Tiger.app`
 - `~/Library/LaunchAgents/com.commcats.gdrivebackup.plist`
 - `~/.config/gdrive-tiger-backup/config`
+
+The default config keeps confirmation enabled:
+
+```bash
+GDRIVE_BACKUP_CONFIRM=1
+```
+
+Set `GDRIVE_BACKUP_CONFIRM=0` only if you deliberately want fully automatic backups whenever the configured volume is mounted.
 
 ## Test First
 
