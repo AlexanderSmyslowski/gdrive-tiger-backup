@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 BACKUP_VOLUME="${BACKUP_VOLUME:-/Volumes/GoogleDrive-Backup}"
+BACKUP_VOLUME_NAME="${BACKUP_VOLUME_NAME:-$(basename "$BACKUP_VOLUME")}"
 RCLONE_REMOTE="${RCLONE_REMOTE:-gdrive}"
 CONFIG_DIR="$HOME/.config/gdrive-tiger-backup"
 CONFIG_FILE="$CONFIG_DIR/config"
@@ -30,8 +31,10 @@ mkdir -p "$CONFIG_DIR" "$HOME/Applications" "$APP_CONTENTS/MacOS" "$HOME/Library
 if [[ ! -f "$CONFIG_FILE" ]]; then
   {
     printf 'GDRIVE_BACKUP_VOLUME=%q\n' "$BACKUP_VOLUME"
+    printf 'GDRIVE_BACKUP_VOLUME_NAME=%q\n' "$BACKUP_VOLUME_NAME"
     printf 'RCLONE_REMOTE=%q\n' "$RCLONE_REMOTE"
     printf 'GDRIVE_BACKUP_CONFIRM=1\n'
+    printf 'GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1\n'
   } >"$CONFIG_FILE"
 fi
 

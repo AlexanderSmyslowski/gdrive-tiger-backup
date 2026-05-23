@@ -1,10 +1,61 @@
 #import <Cocoa/Cocoa.h>
 
+static NSImage *CreateApplicationIcon(void) {
+    NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(128, 128)];
+    [image lockFocus];
+
+    NSRect bounds = NSMakeRect(0, 0, 128, 128);
+    NSBezierPath *base = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(bounds, 8, 8) xRadius:24 yRadius:24];
+    NSGradient *baseGradient = [[NSGradient alloc] initWithColors:@[
+        [NSColor colorWithCalibratedRed:0.62 green:0.88 blue:1.0 alpha:1.0],
+        [NSColor colorWithCalibratedRed:0.06 green:0.33 blue:0.83 alpha:1.0]
+    ]];
+    [baseGradient drawInBezierPath:base angle:-90];
+
+    [[NSColor colorWithCalibratedWhite:1.0 alpha:0.28] setFill];
+    for (CGFloat y = 20; y < 112; y += 7) {
+        NSRectFill(NSMakeRect(14, y, 100, 1));
+    }
+
+    NSBezierPath *drive = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(25, 34, 78, 52) xRadius:12 yRadius:12];
+    NSGradient *driveGradient = [[NSGradient alloc] initWithColors:@[
+        [NSColor colorWithCalibratedWhite:0.98 alpha:1.0],
+        [NSColor colorWithCalibratedWhite:0.58 alpha:1.0]
+    ]];
+    [driveGradient drawInBezierPath:drive angle:-90];
+    [[NSColor colorWithCalibratedWhite:0.20 alpha:0.45] setStroke];
+    drive.lineWidth = 2;
+    [drive stroke];
+
+    NSBezierPath *slot = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(39, 62, 50, 9) xRadius:4 yRadius:4];
+    [[NSColor colorWithCalibratedRed:0.10 green:0.30 blue:0.58 alpha:0.86] setFill];
+    [slot fill];
+
+    NSBezierPath *light = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(82, 44, 10, 10)];
+    [[NSColor colorWithCalibratedRed:0.45 green:1.0 blue:0.30 alpha:1.0] setFill];
+    [light fill];
+
+    NSBezierPath *check = [NSBezierPath bezierPath];
+    [check moveToPoint:NSMakePoint(42, 44)];
+    [check lineToPoint:NSMakePoint(57, 28)];
+    [check lineToPoint:NSMakePoint(90, 76)];
+    [[NSColor colorWithCalibratedRed:1.0 green:0.93 blue:0.20 alpha:1.0] setStroke];
+    check.lineWidth = 9;
+    check.lineCapStyle = NSLineCapStyleRound;
+    check.lineJoinStyle = NSLineJoinStyleRound;
+    [check stroke];
+
+    [image unlockFocus];
+    return image;
+}
+
 @interface TigerBackupView : NSView
 @property(nonatomic) CGFloat phase;
 @property(nonatomic) BOOL completed;
 @property(nonatomic) BOOL confirmMode;
-@property(nonatomic, copy) NSString *targetVolume;
+@property(nonatomic, copy) NSString *confirmTitle;
+@property(nonatomic, copy) NSString *confirmDetail;
+@property(nonatomic, copy) NSString *primaryActionTitle;
 @property(nonatomic, copy) void (^minimizeHandler)(void);
 @property(nonatomic, copy) void (^confirmHandler)(BOOL approved);
 @property(nonatomic, strong) NSTimer *timer;
@@ -227,8 +278,8 @@
     };
 
     [@"Google Drive Backup" drawInRect:NSMakeRect(76, 16, 300, 20) withAttributes:titleAttributes];
-    NSString *subtitle = self.confirmMode ? @"Dieses Volume verwenden?" : (self.completed ? @"Sicherung abgeschlossen." : @"Sicherung wird erstellt ...");
-    NSString *hint = self.confirmMode ? (self.targetVolume ?: @"") : (self.completed ? @"Backup ist fertig." : @"Bitte Festplatte nicht auswerfen.");
+    NSString *subtitle = self.confirmMode ? (self.confirmTitle ?: @"Dieses Volume verwenden?") : (self.completed ? @"Sicherung abgeschlossen." : @"Sicherung wird erstellt ...");
+    NSString *hint = self.confirmMode ? (self.confirmDetail ?: @"") : (self.completed ? @"Backup ist fertig." : @"Bitte Festplatte nicht auswerfen.");
     [subtitle drawInRect:NSMakeRect(112, 76, 250, 18) withAttributes:subtitleAttributes];
 
     if (self.confirmMode) {
@@ -241,7 +292,7 @@
 - (void)drawProgressBarInRect:(NSRect)rect {
     if (self.confirmMode) {
         [self drawButtonWithTitle:@"Nicht jetzt" inRect:[self secondaryButtonRect] primary:NO];
-        [self drawButtonWithTitle:@"Backup starten" inRect:[self primaryButtonRect] primary:YES];
+        [self drawButtonWithTitle:(self.primaryActionTitle ?: @"Backup starten") inRect:[self primaryButtonRect] primary:YES];
         return;
     }
 
@@ -324,7 +375,9 @@
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, copy) NSString *sentinelPath;
 @property(nonatomic) BOOL confirmMode;
-@property(nonatomic, copy) NSString *confirmVolume;
+@property(nonatomic, copy) NSString *confirmTitle;
+@property(nonatomic, copy) NSString *confirmDetail;
+@property(nonatomic, copy) NSString *primaryActionTitle;
 @property(nonatomic, copy) NSString *confirmResponsePath;
 @property(nonatomic, strong) NSTimer *sentinelTimer;
 @property(nonatomic, strong) NSTimer *confirmTimeoutTimer;
@@ -339,16 +392,22 @@
     NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
     if (arguments.count > 1 && [arguments[1] isEqualToString:@"--confirm"]) {
         self.confirmMode = YES;
-        if (arguments.count > 2) {
-            self.confirmVolume = arguments[2];
-        }
-        if (arguments.count > 3) {
+        if (arguments.count > 5) {
+            self.confirmTitle = arguments[2];
+            self.confirmDetail = arguments[3];
+            self.primaryActionTitle = arguments[4];
+            self.confirmResponsePath = arguments[5];
+        } else if (arguments.count > 3) {
+            self.confirmTitle = @"Dieses Volume verwenden?";
+            self.confirmDetail = arguments[2];
+            self.primaryActionTitle = @"Backup starten";
             self.confirmResponsePath = arguments[3];
         }
     } else if (arguments.count > 1) {
         self.sentinelPath = arguments[1];
     }
 
+    [NSApp setApplicationIconImage:CreateApplicationIcon()];
     [NSApp setActivationPolicy:self.confirmMode ? NSApplicationActivationPolicyRegular : NSApplicationActivationPolicyAccessory];
 
     NSSize size = NSMakeSize(392, 162);
@@ -367,7 +426,9 @@
     TigerBackupView *contentView = [[TigerBackupView alloc] initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
     __weak typeof(self) weakSelf = self;
     contentView.confirmMode = self.confirmMode;
-    contentView.targetVolume = self.confirmVolume;
+    contentView.confirmTitle = self.confirmTitle;
+    contentView.confirmDetail = self.confirmDetail;
+    contentView.primaryActionTitle = self.primaryActionTitle;
     contentView.minimizeHandler = ^{
         [weakSelf minimizeWindow];
     };

@@ -15,6 +15,7 @@ The backup is read-only from Google Drive's perspective. It uses `rclone copy`, 
 
 - A user LaunchAgent starts on every volume mount via `StartOnMount`.
 - The shell script checks whether the configured backup volume exists.
+- On first use, if the backup volume does not exist yet, the helper can ask to create a dedicated APFS volume on the newly attached external APFS disk.
 - A `flock` lock prevents two backup jobs from running at the same time.
 - Before a real backup starts, the Tiger helper asks whether this volume should be used.
 - The native AppKit helper appears while the backup runs.
@@ -61,6 +62,8 @@ Pick or create a writable backup volume, for example:
 BACKUP_VOLUME="/Volumes/GoogleDrive-Backup" ./install.sh
 ```
 
+You can also install first and let the helper create a dedicated APFS volume the first time an external APFS disk is attached. The app will ask before it does anything. This is non-destructive: it uses `diskutil apfs addVolume` to add a sibling APFS volume in the same APFS container. It does not erase or repartition the disk.
+
 To install Homebrew dependencies as part of the installer:
 
 ```bash
@@ -78,9 +81,11 @@ The default config keeps confirmation enabled:
 
 ```bash
 GDRIVE_BACKUP_CONFIRM=1
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
 ```
 
 Set `GDRIVE_BACKUP_CONFIRM=0` only if you deliberately want fully automatic backups whenever the configured volume is mounted.
+Set `GDRIVE_BACKUP_AUTO_CREATE_VOLUME=0` if you want to create the backup volume yourself.
 
 ## Test First
 
@@ -121,6 +126,8 @@ launchctl print "gui/$(id -u)/com.commcats.gdrivebackup"
 ## Notes
 
 Time Machine backup volumes can be protected by macOS ACLs. If the root of your Time Machine disk is not writable, create a separate APFS volume such as `/Volumes/GoogleDrive-Backup` in the same APFS container and use that as `BACKUP_VOLUME`.
+
+The built-in first-use setup does exactly that for APFS disks after confirmation. For non-APFS disks, create or format a suitable APFS volume yourself first.
 
 ## License
 

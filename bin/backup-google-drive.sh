@@ -10,7 +10,8 @@ if [[ -f "$CONFIG_FILE" ]]; then
   source "$CONFIG_FILE"
 fi
 
-VOLUME="${GDRIVE_BACKUP_VOLUME:-/Volumes/GoogleDrive-Backup}"
+BACKUP_VOLUME_NAME="${GDRIVE_BACKUP_VOLUME_NAME:-GoogleDrive-Backup}"
+VOLUME="${GDRIVE_BACKUP_VOLUME:-/Volumes/$BACKUP_VOLUME_NAME}"
 DEST_ROOT="${GDRIVE_BACKUP_DEST_ROOT:-$VOLUME}"
 REMOTE="${RCLONE_REMOTE:-gdrive}"
 REMOTE="${REMOTE%:}"
@@ -21,6 +22,8 @@ MOUNT_SETTLE_SECONDS="${MOUNT_SETTLE_SECONDS:-5}"
 ANIMATION_APP="${GDRIVE_BACKUP_ANIMATION_APP:-$HOME/Applications/GDrive Backup Tiger.app}"
 ANIMATION_SENTINEL=""
 CONFIRM_BACKUP="${GDRIVE_BACKUP_CONFIRM:-1}"
+AUTO_CREATE_VOLUME="${GDRIVE_BACKUP_AUTO_CREATE_VOLUME:-1}"
+TARGET_APPROVED=0
 
 mkdir -p "$HOME/Library/Logs"
 exec >>"$LOG" 2>&1
@@ -73,15 +76,45 @@ cleanup() {
   stop_animation
 }
 
-confirm_backup_target() {
-  if [[ "$DRY_RUN" == "1" || "$CONFIRM_BACKUP" == "0" || "${BACKUP_ASSUME_YES:-0}" == "1" ]]; then
+run_with_timeout() {
+  local seconds="$1"
+  shift
+
+  "$@" &
+  local command_pid=$!
+
+  (
+    sleep "$seconds"
+    kill "$command_pid" 2>/dev/null || true
+  ) &
+  local killer_pid=$!
+
+  wait "$command_pid"
+  local status=$?
+  kill "$killer_pid" 2>/dev/null || true
+  wait "$killer_pid" 2>/dev/null || true
+  return "$status"
+}
+
+plist_value() {
+  local plist="$1"
+  local key="$2"
+  /usr/bin/plutil -extract "$key" raw -o - "$plist" 2>/dev/null || true
+}
+
+confirm_prompt() {
+  local title="$1"
+  local detail="$2"
+  local primary_button="$3"
+
+  if [[ "$CONFIRM_BACKUP" == "0" || "${BACKUP_ASSUME_YES:-0}" == "1" ]]; then
     return 0
   fi
 
   local response=""
   local decision=""
 
-  log "Warte auf Benutzerbestaetigung fuer Zielvolume: $VOLUME"
+  log "Warte auf Benutzerbestaetigung: $title $detail"
 
   if [[ -d "$ANIMATION_APP" ]]; then
     response="$(mktemp "${TMPDIR:-/tmp}/gdrive-backup-confirm.XXXXXX")" || {
@@ -90,29 +123,28 @@ confirm_backup_target() {
     }
     : >"$response"
 
-    if /usr/bin/open -W -n "$ANIMATION_APP" --args --confirm "$VOLUME" "$response" >/dev/null 2>&1; then
+    if /usr/bin/open -W -n "$ANIMATION_APP" --args --confirm "$title" "$detail" "$primary_button" "$response" >/dev/null 2>&1; then
       decision="$(tr -d '\r\n' <"$response" 2>/dev/null || true)"
     fi
     rm -f "$response"
 
     if [[ "$decision" == "yes" ]]; then
-      log "Backup durch Benutzer bestaetigt."
       return 0
     fi
 
-    log "Backup nicht bestaetigt; ueberspringe."
     return 1
   fi
 
   if command -v osascript >/dev/null 2>&1; then
-    decision="$(/usr/bin/osascript - "$VOLUME" "$DEST_ROOT" <<'OSA'
+    decision="$(/usr/bin/osascript - "$title" "$detail" "$primary_button" <<'OSA'
 on run argv
-  set targetVolume to item 1 of argv
-  set targetFolder to item 2 of argv
+  set dialogTitle to item 1 of argv
+  set dialogDetail to item 2 of argv
+  set primaryButton to item 3 of argv
   try
-    set answer to display dialog "Soll Google Drive jetzt auf dieses Volume gesichert werden?" & return & return & "Volume: " & targetVolume & return & "Ziel: " & targetFolder with title "Google Drive Backup" buttons {"Nicht jetzt", "Backup starten"} default button "Nicht jetzt" cancel button "Nicht jetzt" giving up after 120
+    set answer to display dialog dialogTitle & return & return & dialogDetail with title "Google Drive Backup" buttons {"Nicht jetzt", primaryButton} default button "Nicht jetzt" cancel button "Nicht jetzt" giving up after 120
     if gave up of answer then return "no"
-    if button returned of answer is "Backup starten" then return "yes"
+    if button returned of answer is primaryButton then return "yes"
   end try
   return "no"
 end run
@@ -120,12 +152,158 @@ OSA
 )" || decision="no"
 
     if [[ "$decision" == "yes" ]]; then
-      log "Backup durch Benutzer bestaetigt."
       return 0
     fi
   fi
 
+  return 1
+}
+
+confirm_backup_target() {
+  if [[ "$DRY_RUN" == "1" || "$TARGET_APPROVED" == "1" ]]; then
+    return 0
+  fi
+
+  if confirm_prompt "Dieses Volume verwenden?" "$VOLUME" "Backup starten"; then
+    TARGET_APPROVED=1
+    log "Backup durch Benutzer bestaetigt."
+    return 0
+  fi
+
   log "Backup nicht bestaetigt; ueberspringe."
+  return 1
+}
+
+find_setup_candidate() {
+  local best_mtime=0
+  local best_mount=""
+  local best_container=""
+  local best_name=""
+  local mount plist fs external container name system_image writable_media mtime
+
+  for mount in /Volumes/*; do
+    [[ -d "$mount" ]] || continue
+    [[ "$mount" != "$VOLUME" ]] || continue
+    [[ "$(basename "$mount")" != "$BACKUP_VOLUME_NAME" ]] || continue
+
+    plist="$(mktemp "${TMPDIR:-/tmp}/gdrive-volume-info.XXXXXX")" || continue
+    if ! run_with_timeout 6 /usr/sbin/diskutil info -plist "$mount" >"$plist"; then
+      rm -f "$plist"
+      continue
+    fi
+
+    fs="$(plist_value "$plist" FilesystemType)"
+    external="$(plist_value "$plist" RemovableMediaOrExternalDevice)"
+    container="$(plist_value "$plist" APFSContainerReference)"
+    name="$(plist_value "$plist" VolumeName)"
+    system_image="$(plist_value "$plist" SystemImage)"
+    writable_media="$(plist_value "$plist" WritableMedia)"
+    rm -f "$plist"
+
+    [[ "$fs" == "apfs" ]] || continue
+    [[ "$external" == "true" ]] || continue
+    [[ -n "$container" ]] || continue
+    [[ "$system_image" != "true" ]] || continue
+    [[ "$writable_media" == "true" ]] || continue
+
+    mtime="$(stat -f '%m' "$mount" 2>/dev/null || printf '0')"
+    if (( mtime > best_mtime )); then
+      best_mtime="$mtime"
+      best_mount="$mount"
+      best_container="$container"
+      best_name="${name:-$(basename "$mount")}"
+    fi
+  done
+
+  [[ -n "$best_mount" ]] || return 1
+  printf '%s\t%s\t%s\n' "$best_mount" "$best_container" "$best_name"
+}
+
+persist_volume_config() {
+  mkdir -p "$(dirname "$CONFIG_FILE")"
+  touch "$CONFIG_FILE"
+
+  if ! grep -q '^GDRIVE_BACKUP_VOLUME=' "$CONFIG_FILE"; then
+    printf 'GDRIVE_BACKUP_VOLUME=%q\n' "$VOLUME" >>"$CONFIG_FILE"
+  fi
+  if ! grep -q '^GDRIVE_BACKUP_VOLUME_NAME=' "$CONFIG_FILE"; then
+    printf 'GDRIVE_BACKUP_VOLUME_NAME=%q\n' "$BACKUP_VOLUME_NAME" >>"$CONFIG_FILE"
+  fi
+  if ! grep -q '^GDRIVE_BACKUP_AUTO_CREATE_VOLUME=' "$CONFIG_FILE"; then
+    printf 'GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1\n' >>"$CONFIG_FILE"
+  fi
+}
+
+create_apfs_backup_volume() {
+  local container="$1"
+
+  if /usr/sbin/diskutil apfs addVolume "$container" APFS "$BACKUP_VOLUME_NAME"; then
+    return 0
+  fi
+
+  log "APFS-Volume konnte ohne Adminrechte nicht angelegt werden; frage nach Administratorrechten."
+  /usr/bin/osascript - "$container" "$BACKUP_VOLUME_NAME" <<'OSA'
+on run argv
+  set containerRef to item 1 of argv
+  set volumeName to item 2 of argv
+  set cmd to "/usr/sbin/diskutil apfs addVolume " & quoted form of containerRef & " APFS " & quoted form of volumeName
+  do shell script cmd with administrator privileges
+end run
+OSA
+}
+
+ensure_backup_volume() {
+  if [[ -d "$VOLUME" ]]; then
+    return 0
+  fi
+
+  log "Backup-Volume noch nicht vorhanden: $VOLUME"
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "DRY-RUN: Volume-Setup wird nicht ausgefuehrt."
+    return 1
+  fi
+
+  if [[ "$AUTO_CREATE_VOLUME" != "1" ]]; then
+    log "Automatisches APFS-Volume-Setup ist deaktiviert."
+    return 1
+  fi
+
+  local candidate source_mount container source_name
+  candidate="$(find_setup_candidate || true)"
+  if [[ -z "$candidate" ]]; then
+    log "Kein geeignetes externes APFS-Volume fuer die Einrichtung gefunden."
+    return 1
+  fi
+
+  IFS=$'\t' read -r source_mount container source_name <<<"$candidate"
+  if ! confirm_prompt "Backup-Volume anlegen?" "${source_name} -> ${BACKUP_VOLUME_NAME}" "Volume anlegen"; then
+    log "Volume-Einrichtung nicht bestaetigt; ueberspringe."
+    return 1
+  fi
+
+  log "Lege APFS-Volume '$BACKUP_VOLUME_NAME' im Container $container an (Ausgangsvolume: $source_mount)."
+  if ! create_apfs_backup_volume "$container"; then
+    log "FEHLER: APFS-Volume konnte nicht angelegt werden."
+    return 1
+  fi
+
+  VOLUME="/Volumes/$BACKUP_VOLUME_NAME"
+  if [[ -z "${GDRIVE_BACKUP_DEST_ROOT:-}" ]]; then
+    DEST_ROOT="$VOLUME"
+  fi
+
+  for _ in {1..30}; do
+    if [[ -d "$VOLUME" ]]; then
+      TARGET_APPROVED=1
+      persist_volume_config
+      log "Backup-Volume bereit: $VOLUME"
+      return 0
+    fi
+    sleep 1
+  done
+
+  log "FEHLER: Neues APFS-Volume ist nicht unter $VOLUME erschienen."
   return 1
 }
 
@@ -144,12 +322,7 @@ done
 log "Start: remote=${REMOTE}: dry_run=$DRY_RUN volume=$VOLUME"
 sleep "$MOUNT_SETTLE_SECONDS"
 
-if [[ ! -d "$VOLUME" ]]; then
-  log "Volume nicht vorhanden: $VOLUME"
-  exit 0
-fi
-
-for cmd in rclone flock jq; do
+for cmd in rclone flock jq diskutil plutil; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     log "FEHLER: '$cmd' nicht gefunden."
     exit 127
@@ -159,6 +332,10 @@ done
 exec 9>"$LOCK"
 if ! flock -n 9; then
   log "Backup laeuft bereits; ueberspringe."
+  exit 0
+fi
+
+if ! ensure_backup_volume; then
   exit 0
 fi
 
