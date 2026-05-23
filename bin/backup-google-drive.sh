@@ -48,17 +48,26 @@ detect_language() {
   case "$value" in
     de*) printf 'de' ;;
     en*) printf 'en' ;;
+    fr*) printf 'fr' ;;
+    es*) printf 'es' ;;
+    ja*) printf 'ja' ;;
+    yue*|zh-hk*|zh_hk*|zh-hant-hk*|zh_hant_hk*|zh-mo*|zh_mo*) printf 'yue' ;;
+    ko*) printf 'ko' ;;
     auto|"")
       local locale="${LANG:-}"
       if command -v defaults >/dev/null 2>&1; then
         locale="$(defaults read -g AppleLocale 2>/dev/null || printf '%s' "$locale")"
       fi
       locale="${locale,,}"
-      if [[ "$locale" == de* ]]; then
-        printf 'de'
-      else
-        printf 'en'
-      fi
+      case "$locale" in
+        de*) printf 'de' ;;
+        fr*) printf 'fr' ;;
+        es*) printf 'es' ;;
+        ja*) printf 'ja' ;;
+        ko*) printf 'ko' ;;
+        yue*|zh-hk*|zh_hk*|zh-hant-hk*|zh_hant_hk*|zh-mo*|zh_mo*) printf 'yue' ;;
+        *) printf 'en' ;;
+      esac
       ;;
     *) printf 'en' ;;
   esac
@@ -85,6 +94,46 @@ t() {
     en:log_confirmed) printf 'Backup confirmed by user.' ;;
     en:log_skipped) printf 'Backup was not confirmed; skipping.' ;;
     en:log_setup_skipped) printf 'Volume setup was not confirmed; skipping.' ;;
+    fr:not_now) printf 'Pas maintenant' ;;
+    fr:start_backup) printf 'Sauvegarder' ;;
+    fr:use_volume) printf 'Utiliser ce volume ?' ;;
+    fr:create_volume) printf 'Créer le volume de sauvegarde ?' ;;
+    fr:create_volume_action) printf 'Créer volume' ;;
+    fr:log_confirmed) printf 'Sauvegarde confirmée par l utilisateur.' ;;
+    fr:log_skipped) printf 'Sauvegarde non confirmée; ignorée.' ;;
+    fr:log_setup_skipped) printf 'Création du volume non confirmée; ignorée.' ;;
+    es:not_now) printf 'Ahora no' ;;
+    es:start_backup) printf 'Iniciar copia' ;;
+    es:use_volume) printf '¿Usar este volumen?' ;;
+    es:create_volume) printf '¿Crear volumen de copia?' ;;
+    es:create_volume_action) printf 'Crear volumen' ;;
+    es:log_confirmed) printf 'Copia confirmada por el usuario.' ;;
+    es:log_skipped) printf 'Copia no confirmada; se omite.' ;;
+    es:log_setup_skipped) printf 'Configuración del volumen no confirmada; se omite.' ;;
+    ja:not_now) printf '今はしない' ;;
+    ja:start_backup) printf 'バックアップ開始' ;;
+    ja:use_volume) printf 'このボリュームを使いますか？' ;;
+    ja:create_volume) printf 'バックアップ用ボリュームを作成？' ;;
+    ja:create_volume_action) printf 'ボリューム作成' ;;
+    ja:log_confirmed) printf 'ユーザーがバックアップを確認しました。' ;;
+    ja:log_skipped) printf 'バックアップは確認されませんでした。スキップします。' ;;
+    ja:log_setup_skipped) printf 'ボリューム作成は確認されませんでした。スキップします。' ;;
+    yue:not_now) printf '暫時唔好' ;;
+    yue:start_backup) printf '開始備份' ;;
+    yue:use_volume) printf '使用呢個卷宗？' ;;
+    yue:create_volume) printf '建立備份卷宗？' ;;
+    yue:create_volume_action) printf '建立卷宗' ;;
+    yue:log_confirmed) printf '使用者已確認備份。' ;;
+    yue:log_skipped) printf '備份未確認，略過。' ;;
+    yue:log_setup_skipped) printf '卷宗設定未確認，略過。' ;;
+    ko:not_now) printf '지금 안 함' ;;
+    ko:start_backup) printf '백업 시작' ;;
+    ko:use_volume) printf '이 볼륨을 사용할까요?' ;;
+    ko:create_volume) printf '백업 볼륨을 만들까요?' ;;
+    ko:create_volume_action) printf '볼륨 생성' ;;
+    ko:log_confirmed) printf '사용자가 백업을 확인했습니다.' ;;
+    ko:log_skipped) printf '백업이 확인되지 않아 건너뜁니다.' ;;
+    ko:log_setup_skipped) printf '볼륨 설정이 확인되지 않아 건너뜁니다.' ;;
     *) printf '%s' "$key" ;;
   esac
 }

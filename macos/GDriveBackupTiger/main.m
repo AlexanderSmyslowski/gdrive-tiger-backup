@@ -67,21 +67,29 @@ static NSString *ConfiguredLanguage(void) {
     for (NSString *line in [config componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
         if ([line hasPrefix:@"GDRIVE_BACKUP_LANG="]) {
             NSString *value = TrimConfigValue([line substringFromIndex:[@"GDRIVE_BACKUP_LANG=" length]]).lowercaseString;
-            if ([value hasPrefix:@"de"]) {
-                return @"de";
+            NSArray<NSString *> *supported = @[@"de", @"en", @"fr", @"es", @"ja", @"yue", @"ko"];
+            for (NSString *code in supported) {
+                if ([value isEqualToString:code] || [value hasPrefix:[code stringByAppendingString:@"-"]] || [value hasPrefix:[code stringByAppendingString:@"_"]]) {
+                    return code;
+                }
             }
-            if ([value hasPrefix:@"en"]) {
-                return @"en";
+            if ([value hasPrefix:@"zh-hk"] || [value hasPrefix:@"zh_hk"] || [value hasPrefix:@"zh-hant-hk"] || [value hasPrefix:@"zh_hant_hk"] || [value hasPrefix:@"zh-mo"] || [value hasPrefix:@"zh_mo"]) {
+                return @"yue";
             }
         }
     }
 
     NSString *preferred = NSLocale.preferredLanguages.firstObject.lowercaseString;
-    return [preferred hasPrefix:@"de"] ? @"de" : @"en";
+    if ([preferred hasPrefix:@"de"]) return @"de";
+    if ([preferred hasPrefix:@"fr"]) return @"fr";
+    if ([preferred hasPrefix:@"es"]) return @"es";
+    if ([preferred hasPrefix:@"ja"]) return @"ja";
+    if ([preferred hasPrefix:@"ko"]) return @"ko";
+    if ([preferred hasPrefix:@"yue"] || [preferred hasPrefix:@"zh-hk"] || [preferred hasPrefix:@"zh_hk"] || [preferred hasPrefix:@"zh-hant-hk"] || [preferred hasPrefix:@"zh_hant_hk"] || [preferred hasPrefix:@"zh-mo"] || [preferred hasPrefix:@"zh_mo"]) return @"yue";
+    return @"en";
 }
 
 static NSString *T(NSString *language, NSString *key) {
-    BOOL german = [language isEqualToString:@"de"];
     NSDictionary<NSString *, NSString *> *de = @{
         @"confirmTarget": @"Dieses Volume verwenden?",
         @"startBackup": @"Backup starten",
@@ -100,7 +108,62 @@ static NSString *T(NSString *language, NSString *key) {
         @"runningHint": @"Please do not eject the disk.",
         @"completedHint": @"Backup is done."
     };
-    return (german ? de[key] : en[key]) ?: key;
+    NSDictionary<NSString *, NSString *> *fr = @{
+        @"confirmTarget": @"Utiliser ce volume ?",
+        @"startBackup": @"Sauvegarder",
+        @"notNow": @"Pas maintenant",
+        @"running": @"Sauvegarde en cours ...",
+        @"completed": @"Sauvegarde terminée.",
+        @"runningHint": @"Veuillez ne pas éjecter le disque.",
+        @"completedHint": @"Sauvegarde terminée."
+    };
+    NSDictionary<NSString *, NSString *> *es = @{
+        @"confirmTarget": @"¿Usar este volumen?",
+        @"startBackup": @"Iniciar copia",
+        @"notNow": @"Ahora no",
+        @"running": @"Copia en curso ...",
+        @"completed": @"Copia completada.",
+        @"runningHint": @"No expulses el disco.",
+        @"completedHint": @"La copia esta lista."
+    };
+    NSDictionary<NSString *, NSString *> *ja = @{
+        @"confirmTarget": @"このボリュームを使いますか？",
+        @"startBackup": @"バックアップ開始",
+        @"notNow": @"今はしない",
+        @"running": @"バックアップ中...",
+        @"completed": @"バックアップ完了。",
+        @"runningHint": @"ディスクを取り出さないでください。",
+        @"completedHint": @"完了しました。"
+    };
+    NSDictionary<NSString *, NSString *> *yue = @{
+        @"confirmTarget": @"使用呢個卷宗？",
+        @"startBackup": @"開始備份",
+        @"notNow": @"暫時唔好",
+        @"running": @"正在備份...",
+        @"completed": @"備份完成。",
+        @"runningHint": @"請勿退出磁碟。",
+        @"completedHint": @"備份已完成。"
+    };
+    NSDictionary<NSString *, NSString *> *ko = @{
+        @"confirmTarget": @"이 볼륨을 사용할까요?",
+        @"startBackup": @"백업 시작",
+        @"notNow": @"지금 안 함",
+        @"running": @"백업 중...",
+        @"completed": @"백업 완료.",
+        @"runningHint": @"디스크를 꺼내지 마세요.",
+        @"completedHint": @"백업이 완료되었습니다."
+    };
+
+    NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *tables = @{
+        @"de": de,
+        @"en": en,
+        @"fr": fr,
+        @"es": es,
+        @"ja": ja,
+        @"yue": yue,
+        @"ko": ko
+    };
+    return (tables[language][key] ?: en[key]) ?: key;
 }
 
 @interface TigerBackupView : NSView

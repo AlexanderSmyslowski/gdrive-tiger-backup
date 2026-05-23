@@ -36,19 +36,54 @@ detect_language() {
   case "$value" in
     de*) printf 'de' ;;
     en*) printf 'en' ;;
+    fr*) printf 'fr' ;;
+    es*) printf 'es' ;;
+    ja*) printf 'ja' ;;
+    yue*|zh-hk*|zh_hk*|zh-hant-hk*|zh_hant_hk*|zh-mo*|zh_mo*) printf 'yue' ;;
+    ko*) printf 'ko' ;;
     auto|"")
       local locale="${LANG:-}"
       if command -v defaults >/dev/null 2>&1; then
         locale="$(defaults read -g AppleLocale 2>/dev/null || printf '%s' "$locale")"
       fi
       locale="${locale,,}"
-      if [[ "$locale" == de* ]]; then
-        printf 'de'
-      else
-        printf 'en'
-      fi
+      case "$locale" in
+        de*) printf 'de' ;;
+        fr*) printf 'fr' ;;
+        es*) printf 'es' ;;
+        ja*) printf 'ja' ;;
+        ko*) printf 'ko' ;;
+        yue*|zh-hk*|zh_hk*|zh-hant-hk*|zh_hant_hk*|zh-mo*|zh_mo*) printf 'yue' ;;
+        *) printf 'en' ;;
+      esac
       ;;
     *) printf 'en' ;;
+  esac
+}
+
+language_label() {
+  case "$1" in
+    de) printf 'Deutsch' ;;
+    en) printf 'English' ;;
+    fr) printf 'Français' ;;
+    es) printf 'Español' ;;
+    ja) printf '日本語' ;;
+    yue) printf '粵語' ;;
+    ko) printf '한국어' ;;
+    *) printf 'English' ;;
+  esac
+}
+
+language_code_from_label() {
+  case "$1" in
+    Deutsch) printf 'de' ;;
+    English) printf 'en' ;;
+    Francais|Français) printf 'fr' ;;
+    Espanol|Español) printf 'es' ;;
+    日本語) printf 'ja' ;;
+    粵語) printf 'yue' ;;
+    한국어) printf 'ko' ;;
+    *) detect_language "$1" ;;
   esac
 }
 
@@ -56,37 +91,35 @@ choose_language() {
   local default_lang
   default_lang="$(detect_language "$INSTALL_LANG")"
 
-  if [[ "${GDRIVE_BACKUP_LANG:-}" =~ ^(de|en)$ || "${INSTALL_LANG:-}" =~ ^(de|en)$ ]]; then
+  if [[ "${GDRIVE_BACKUP_LANG:-}" =~ ^(de|en|fr|es|ja|yue|ko)$ || "${INSTALL_LANG:-}" =~ ^(de|en|fr|es|ja|yue|ko)$ ]]; then
     printf '%s' "$default_lang"
     return
   fi
 
   if command -v osascript >/dev/null 2>&1; then
-    local default_button="English"
-    [[ "$default_lang" == "de" ]] && default_button="Deutsch"
+    local default_label
+    default_label="$(language_label "$default_lang")"
     local answer
-    answer="$(/usr/bin/osascript - "$default_button" <<'OSA'
+    answer="$(/usr/bin/osascript - "$default_label" <<'OSA'
 on run argv
-  set defaultButton to item 1 of argv
+  set defaultLabel to item 1 of argv
+  set languageOptions to {"Deutsch", "English", "Français", "Español", "日本語", "粵語", "한국어"}
   try
-    set answer to display dialog "Choose the language for the backup helper." & return & return & "Sprache fuer den Backup-Helfer auswaehlen." with title "Google Drive Backup" buttons {"Deutsch", "English"} default button defaultButton
-    return button returned of answer
+    set picked to choose from list languageOptions with title "Google Drive Backup" with prompt "Choose the language for the backup helper." & return & "Sprache fuer den Backup-Helfer auswaehlen." default items {defaultLabel} OK button name "OK" cancel button name "Cancel"
+    if picked is false then return defaultLabel
+    return item 1 of picked
   on error
-    return defaultButton
+    return defaultLabel
   end try
 end run
 OSA
-)" || answer="$default_button"
-    if [[ "$answer" == "Deutsch" ]]; then
-      printf 'de'
-    else
-      printf 'en'
-    fi
+)" || answer="$default_label"
+    language_code_from_label "$answer"
     return
   fi
 
   if [[ -t 0 ]]; then
-    printf 'Language / Sprache [de/en] (%s): ' "$default_lang" >&2
+    printf 'Language / Sprache [de/en/fr/es/ja/yue/ko] (%s): ' "$default_lang" >&2
     local answer=""
     read -r answer || true
     answer="${answer:-$default_lang}"

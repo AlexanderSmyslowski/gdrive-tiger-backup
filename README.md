@@ -66,6 +66,11 @@ On first install, the installer asks which language the helper should use:
 
 - Deutsch
 - English
+- Français
+- Español
+- 日本語
+- 粵語
+- 한국어
 
 For unattended installs, set it explicitly:
 
@@ -96,7 +101,7 @@ GDRIVE_BACKUP_CONFIRM=1
 GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
 ```
 
-Use `GDRIVE_BACKUP_LANG=de` for German.
+Supported values for `GDRIVE_BACKUP_LANG` are `de`, `en`, `fr`, `es`, `ja`, `yue`, and `ko`.
 Set `GDRIVE_BACKUP_CONFIRM=0` only if you deliberately want fully automatic backups whenever the configured volume is mounted.
 Set `GDRIVE_BACKUP_AUTO_CREATE_VOLUME=0` if you want to create the backup volume yourself.
 
