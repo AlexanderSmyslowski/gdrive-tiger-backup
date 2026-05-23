@@ -175,6 +175,9 @@ static NSString *T(NSString *language, NSString *key) {
 @property(nonatomic, copy) NSString *confirmDetail;
 @property(nonatomic, copy) NSString *primaryActionTitle;
 @property(nonatomic, copy) NSString *secondaryActionTitle;
+@property(nonatomic) CGFloat progressPercent;
+@property(nonatomic, copy) NSString *progressTitle;
+@property(nonatomic, copy) NSString *progressDetail;
 @property(nonatomic, copy) void (^minimizeHandler)(void);
 @property(nonatomic, copy) void (^confirmHandler)(BOOL approved);
 @property(nonatomic, strong) NSTimer *timer;
@@ -197,6 +200,7 @@ static NSString *T(NSString *language, NSString *key) {
     self = [super initWithFrame:frameRect];
     if (self) {
         self.wantsLayer = YES;
+        self.progressPercent = -1;
         self.timer = [NSTimer scheduledTimerWithTimeInterval:(1.0 / 30.0)
                                                      repeats:YES
                                                        block:^(NSTimer *timer) {
@@ -398,8 +402,8 @@ static NSString *T(NSString *language, NSString *key) {
 
     [@"Google Drive Backup" drawInRect:NSMakeRect(76, 16, 300, 20) withAttributes:titleAttributes];
     NSString *language = self.language ?: @"en";
-    NSString *subtitle = self.confirmMode ? (self.confirmTitle ?: T(language, @"confirmTarget")) : (self.completed ? T(language, @"completed") : T(language, @"running"));
-    NSString *hint = self.confirmMode ? (self.confirmDetail ?: @"") : (self.completed ? T(language, @"completedHint") : T(language, @"runningHint"));
+    NSString *subtitle = self.confirmMode ? (self.confirmTitle ?: T(language, @"confirmTarget")) : (self.completed ? T(language, @"completed") : (self.progressTitle ?: T(language, @"running")));
+    NSString *hint = self.confirmMode ? (self.confirmDetail ?: @"") : (self.completed ? T(language, @"completedHint") : (self.progressDetail ?: T(language, @"runningHint")));
     [subtitle drawInRect:NSMakeRect(112, 76, 250, 18) withAttributes:subtitleAttributes];
 
     if (self.confirmMode) {
@@ -418,12 +422,21 @@ static NSString *T(NSString *language, NSString *key) {
     }
 
     NSBezierPath *outer = [NSBezierPath bezierPathWithRoundedRect:rect xRadius:9 yRadius:9];
+    [[NSColor colorWithCalibratedWhite:0.91 alpha:1.0] setFill];
+    [outer fill];
     [[NSColor colorWithCalibratedWhite:0.35 alpha:0.55] setStroke];
     outer.lineWidth = 1;
     [outer stroke];
 
     NSRect inner = NSInsetRect(rect, 2, 2);
     NSBezierPath *innerPath = [NSBezierPath bezierPathWithRoundedRect:inner xRadius:7 yRadius:7];
+    CGFloat fraction = 1.0;
+    if (!self.completed && self.progressPercent >= 0) {
+        fraction = MAX(0.0, MIN(1.0, self.progressPercent / 100.0));
+    }
+    NSRect fillRect = inner;
+    fillRect.size.width = floor(NSWidth(inner) * fraction);
+
     NSArray<NSColor *> *colors = self.completed ? @[
         [NSColor colorWithCalibratedRed:0.43 green:0.90 blue:0.35 alpha:1.0],
         [NSColor colorWithCalibratedRed:0.08 green:0.55 blue:0.18 alpha:1.0]
@@ -432,14 +445,19 @@ static NSString *T(NSString *language, NSString *key) {
         [NSColor colorWithCalibratedRed:0.03 green:0.33 blue:0.90 alpha:1.0]
     ];
     NSGradient *blueGradient = [[NSGradient alloc] initWithColors:colors];
-    [blueGradient drawInBezierPath:innerPath angle:-90];
 
     [NSGraphicsContext saveGraphicsState];
     [innerPath addClip];
+    if (fillRect.size.width > 0) {
+        NSRectClip(fillRect);
+        [blueGradient drawInRect:inner angle:-90];
+    }
+
     CGFloat spacing = 18;
     CGFloat offset = fmod(self.phase, spacing);
     [[[NSColor whiteColor] colorWithAlphaComponent:0.22] setFill];
-    for (CGFloat x = -NSHeight(inner) * 2 - spacing + offset; x <= NSWidth(inner) + spacing; x += spacing) {
+    CGFloat stripeLimit = self.progressPercent >= 0 || self.completed ? NSWidth(fillRect) : NSWidth(inner);
+    for (CGFloat x = -NSHeight(inner) * 2 - spacing + offset; x <= stripeLimit + spacing; x += spacing) {
         NSBezierPath *stripe = [NSBezierPath bezierPath];
         [stripe moveToPoint:NSMakePoint(NSMinX(inner) + x, NSMaxY(inner))];
         [stripe lineToPoint:NSMakePoint(NSMinX(inner) + x + 10, NSMaxY(inner))];
@@ -453,6 +471,25 @@ static NSString *T(NSString *language, NSString *key) {
     NSBezierPath *gloss = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(NSMinX(inner) + 2, NSMinY(inner) + 2, NSWidth(inner) - 4, NSHeight(inner) * 0.42) xRadius:5 yRadius:5];
     [[[NSColor whiteColor] colorWithAlphaComponent:0.34] setFill];
     [gloss fill];
+
+    NSString *progressText = @"";
+    if (self.completed) {
+        progressText = @"100%";
+    } else if (self.progressPercent >= 0) {
+        progressText = [NSString stringWithFormat:@"%.0f%%", self.progressPercent];
+    }
+
+    if (progressText.length > 0) {
+        NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
+        style.alignment = NSTextAlignmentCenter;
+        NSDictionary *attributes = @{
+            NSFontAttributeName: [NSFont fontWithName:@"Lucida Grande Bold" size:10] ?: [NSFont boldSystemFontOfSize:10],
+            NSForegroundColorAttributeName: [NSColor whiteColor],
+            NSParagraphStyleAttributeName: style
+        };
+        [progressText drawInRect:NSMakeRect(NSMinX(rect), NSMinY(rect) + 3, NSWidth(rect), 13)
+                  withAttributes:attributes];
+    }
 }
 
 - (NSRect)primaryButtonRect {
@@ -495,6 +532,7 @@ static NSString *T(NSString *language, NSString *key) {
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, copy) NSString *sentinelPath;
+@property(nonatomic, copy) NSString *progressPath;
 @property(nonatomic) BOOL confirmMode;
 @property(nonatomic, copy) NSString *language;
 @property(nonatomic, copy) NSString *confirmTitle;
@@ -504,6 +542,7 @@ static NSString *T(NSString *language, NSString *key) {
 @property(nonatomic, copy) NSString *confirmResponsePath;
 @property(nonatomic, strong) NSTimer *sentinelTimer;
 @property(nonatomic, strong) NSTimer *confirmTimeoutTimer;
+@property(nonatomic, strong) NSTimer *progressTimer;
 @property(nonatomic) BOOL hiddenByUser;
 @property(nonatomic) BOOL completing;
 @property(nonatomic) BOOL confirmationAnswered;
@@ -537,6 +576,9 @@ static NSString *T(NSString *language, NSString *key) {
         }
     } else if (arguments.count > 1) {
         self.sentinelPath = arguments[1];
+        if (arguments.count > 2) {
+            self.progressPath = arguments[2];
+        }
     }
 
     [NSApp setApplicationIconImage:CreateApplicationIcon()];
@@ -593,12 +635,19 @@ static NSString *T(NSString *language, NSString *key) {
                                                                block:^(NSTimer *timer) {
             [self checkSentinel];
         }];
+        self.progressTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
+                                                             repeats:YES
+                                                               block:^(NSTimer *timer) {
+            [self readProgressFile];
+        }];
+        [self readProgressFile];
     }
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
     [self.sentinelTimer invalidate];
     [self.confirmTimeoutTimer invalidate];
+    [self.progressTimer invalidate];
     if (self.confirmMode && !self.confirmationAnswered) {
         [self writeConfirmation:NO];
     }
@@ -692,6 +741,56 @@ static NSString *T(NSString *language, NSString *key) {
     }
 }
 
+- (NSDictionary<NSString *, NSString *> *)parseProgressContent:(NSString *)content {
+    NSMutableDictionary<NSString *, NSString *> *values = [NSMutableDictionary dictionary];
+    for (NSString *line in [content componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+        NSRange range = [line rangeOfString:@"="];
+        if (range.location == NSNotFound) {
+            continue;
+        }
+        NSString *key = [line substringToIndex:range.location];
+        NSString *value = [line substringFromIndex:range.location + 1];
+        values[key] = value;
+    }
+    return values;
+}
+
+- (void)readProgressFile {
+    if (!self.progressPath.length) {
+        return;
+    }
+
+    NSString *content = [NSString stringWithContentsOfFile:self.progressPath
+                                                  encoding:NSUTF8StringEncoding
+                                                     error:nil];
+    if (!content.length) {
+        return;
+    }
+
+    NSDictionary<NSString *, NSString *> *values = [self parseProgressContent:content];
+    TigerBackupView *contentView = (TigerBackupView *)self.window.contentView;
+
+    NSString *label = values[@"label"];
+    NSString *phase = values[@"phase"];
+    if (label.length && phase.length) {
+        contentView.progressTitle = [NSString stringWithFormat:@"%@ · %@", phase, label];
+    } else if (label.length) {
+        contentView.progressTitle = label;
+    }
+
+    NSString *detail = values[@"detail"];
+    if (detail.length) {
+        contentView.progressDetail = detail;
+    }
+
+    NSString *percent = values[@"percent"];
+    if (percent.length) {
+        contentView.progressPercent = MAX(0.0, MIN(100.0, percent.doubleValue));
+    }
+
+    contentView.needsDisplay = YES;
+}
+
 - (void)showCompletionAndQuit {
     if (self.completing) {
         return;
@@ -703,6 +802,7 @@ static NSString *T(NSString *language, NSString *key) {
 
     TigerBackupView *contentView = (TigerBackupView *)self.window.contentView;
     contentView.completed = YES;
+    contentView.progressPercent = 100;
     contentView.needsDisplay = YES;
 
     BOOL wasHidden = self.hiddenByUser || !self.window.isVisible;

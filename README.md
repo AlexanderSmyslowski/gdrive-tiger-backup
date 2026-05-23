@@ -19,6 +19,7 @@ The backup is read-only from Google Drive's perspective. It uses `rclone copy`, 
 - A `flock` lock prevents two backup jobs from running at the same time.
 - Before a real backup starts, the Tiger helper asks whether this volume should be used.
 - The native AppKit helper appears while the backup runs.
+- During each `rclone copy`, the helper shows live progress, percent, transferred size, speed, and ETA when rclone reports it.
 - The yellow Tiger-style button minimizes the helper into the Dock.
 - Clicking the Dock icon restores the helper.
 - When the backup finishes, the helper pops back up even if it was minimized.
@@ -118,6 +119,8 @@ Run manually:
 ```bash
 /usr/local/bin/backup-google-drive.sh --run
 ```
+
+The progress bar reflects the currently active copy phase, for example `My Drive`, `Shared with me`, or one Shared Drive. It also shows the phase count, such as `3/5`. A single global percentage across all Drive areas would require an expensive pre-scan of every source.
 
 Watch logs:
 

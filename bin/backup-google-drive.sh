@@ -21,10 +21,13 @@ LOCK="${GDRIVE_BACKUP_LOCK:-$HOME/Library/Logs/gdrive-backup.lock}"
 MOUNT_SETTLE_SECONDS="${MOUNT_SETTLE_SECONDS:-5}"
 ANIMATION_APP="${GDRIVE_BACKUP_ANIMATION_APP:-$HOME/Applications/GDrive Backup Tiger.app}"
 ANIMATION_SENTINEL=""
+PROGRESS_FILE=""
 CONFIRM_BACKUP="${GDRIVE_BACKUP_CONFIRM:-1}"
 AUTO_CREATE_VOLUME="${GDRIVE_BACKUP_AUTO_CREATE_VOLUME:-1}"
 BACKUP_LANG="${GDRIVE_BACKUP_LANG:-auto}"
 TARGET_APPROVED=0
+COPY_INDEX=0
+COPY_TOTAL=0
 
 mkdir -p "$HOME/Library/Logs"
 exec >>"$LOG" 2>&1
@@ -86,6 +89,8 @@ t() {
     de:log_confirmed) printf 'Backup durch Benutzer bestaetigt.' ;;
     de:log_skipped) printf 'Backup nicht bestaetigt; ueberspringe.' ;;
     de:log_setup_skipped) printf 'Volume-Einrichtung nicht bestaetigt; ueberspringe.' ;;
+    de:progress_preparing) printf 'Wird vorbereitet ...' ;;
+    de:progress_done) printf 'Kopiervorgang abgeschlossen.' ;;
     en:not_now) printf 'Not now' ;;
     en:start_backup) printf 'Start backup' ;;
     en:use_volume) printf 'Use this volume?' ;;
@@ -94,6 +99,8 @@ t() {
     en:log_confirmed) printf 'Backup confirmed by user.' ;;
     en:log_skipped) printf 'Backup was not confirmed; skipping.' ;;
     en:log_setup_skipped) printf 'Volume setup was not confirmed; skipping.' ;;
+    en:progress_preparing) printf 'Preparing ...' ;;
+    en:progress_done) printf 'Copy completed.' ;;
     fr:not_now) printf 'Pas maintenant' ;;
     fr:start_backup) printf 'Sauvegarder' ;;
     fr:use_volume) printf 'Utiliser ce volume ?' ;;
@@ -102,6 +109,8 @@ t() {
     fr:log_confirmed) printf 'Sauvegarde confirmée par l utilisateur.' ;;
     fr:log_skipped) printf 'Sauvegarde non confirmée; ignorée.' ;;
     fr:log_setup_skipped) printf 'Création du volume non confirmée; ignorée.' ;;
+    fr:progress_preparing) printf 'Préparation ...' ;;
+    fr:progress_done) printf 'Copie terminée.' ;;
     es:not_now) printf 'Ahora no' ;;
     es:start_backup) printf 'Iniciar copia' ;;
     es:use_volume) printf '¿Usar este volumen?' ;;
@@ -110,6 +119,8 @@ t() {
     es:log_confirmed) printf 'Copia confirmada por el usuario.' ;;
     es:log_skipped) printf 'Copia no confirmada; se omite.' ;;
     es:log_setup_skipped) printf 'Configuración del volumen no confirmada; se omite.' ;;
+    es:progress_preparing) printf 'Preparando ...' ;;
+    es:progress_done) printf 'Copia completada.' ;;
     ja:not_now) printf '今はしない' ;;
     ja:start_backup) printf 'バックアップ開始' ;;
     ja:use_volume) printf 'このボリュームを使いますか？' ;;
@@ -118,6 +129,8 @@ t() {
     ja:log_confirmed) printf 'ユーザーがバックアップを確認しました。' ;;
     ja:log_skipped) printf 'バックアップは確認されませんでした。スキップします。' ;;
     ja:log_setup_skipped) printf 'ボリューム作成は確認されませんでした。スキップします。' ;;
+    ja:progress_preparing) printf '準備中...' ;;
+    ja:progress_done) printf 'コピー完了。' ;;
     yue:not_now) printf '暫時唔好' ;;
     yue:start_backup) printf '開始備份' ;;
     yue:use_volume) printf '使用呢個卷宗？' ;;
@@ -126,6 +139,8 @@ t() {
     yue:log_confirmed) printf '使用者已確認備份。' ;;
     yue:log_skipped) printf '備份未確認，略過。' ;;
     yue:log_setup_skipped) printf '卷宗設定未確認，略過。' ;;
+    yue:progress_preparing) printf '準備中...' ;;
+    yue:progress_done) printf '複製完成。' ;;
     ko:not_now) printf '지금 안 함' ;;
     ko:start_backup) printf '백업 시작' ;;
     ko:use_volume) printf '이 볼륨을 사용할까요?' ;;
@@ -134,8 +149,66 @@ t() {
     ko:log_confirmed) printf '사용자가 백업을 확인했습니다.' ;;
     ko:log_skipped) printf '백업이 확인되지 않아 건너뜁니다.' ;;
     ko:log_setup_skipped) printf '볼륨 설정이 확인되지 않아 건너뜁니다.' ;;
+    ko:progress_preparing) printf '준비 중...' ;;
+    ko:progress_done) printf '복사 완료.' ;;
     *) printf '%s' "$key" ;;
   esac
+}
+
+progress_escape() {
+  local value="${1:-}"
+  value="${value//$'\r'/ }"
+  value="${value//$'\n'/ }"
+  printf '%s' "$value"
+}
+
+write_progress() {
+  [[ -n "${PROGRESS_FILE:-}" ]] || return 0
+
+  local label="${1:-}"
+  local percent="${2:-}"
+  local detail="${3:-}"
+  local phase="${4:-}"
+  local tmp="${PROGRESS_FILE}.$$"
+
+  {
+    printf 'label=%s\n' "$(progress_escape "$label")"
+    [[ -n "$phase" ]] && printf 'phase=%s\n' "$(progress_escape "$phase")"
+    [[ -n "$percent" ]] && printf 'percent=%s\n' "$(progress_escape "$percent")"
+    [[ -n "$detail" ]] && printf 'detail=%s\n' "$(progress_escape "$detail")"
+  } >"$tmp" && mv -f "$tmp" "$PROGRESS_FILE"
+}
+
+update_progress_from_rclone_line() {
+  local label="$1"
+  local phase="$2"
+  local line="$3"
+
+  if [[ "$line" =~ Transferred:[[:space:]]*(.*) ]]; then
+    [[ "$line" == *"B /"* ]] || return 0
+    local detail="${BASH_REMATCH[1]}"
+    local percent=""
+    if [[ "$detail" =~ ([0-9]+)% ]]; then
+      percent="${BASH_REMATCH[1]}"
+    fi
+    if [[ -n "$percent" ]]; then
+      write_progress "$label" "$percent" "$detail" "$phase"
+    fi
+  fi
+}
+
+run_rclone_with_progress() {
+  local label="$1"
+  local phase="$2"
+  shift 2
+
+  local line status
+  "$@" 2>&1 | while IFS= read -r line; do
+    printf '%s\n' "$line"
+    update_progress_from_rclone_line "$label" "$phase" "$line"
+  done
+  status=${PIPESTATUS[0]}
+  return "$status"
 }
 
 start_animation() {
@@ -154,12 +227,22 @@ start_animation() {
   }
   printf '%s\n' "$$" >"$ANIMATION_SENTINEL"
 
-  if /usr/bin/open -n "$ANIMATION_APP" --args "$ANIMATION_SENTINEL" >/dev/null 2>&1; then
+  PROGRESS_FILE="$(mktemp "${TMPDIR:-/tmp}/gdrive-backup-progress.XXXXXX")" || {
+    log "WARNUNG: Fortschrittsdatei fuer Backup-Animation konnte nicht angelegt werden."
+    PROGRESS_FILE=""
+  }
+  if [[ -n "$PROGRESS_FILE" ]]; then
+    write_progress "Google Drive Backup" "" "$(t progress_preparing)" ""
+  fi
+
+  if /usr/bin/open -n "$ANIMATION_APP" --args "$ANIMATION_SENTINEL" "$PROGRESS_FILE" >/dev/null 2>&1; then
     log "Backup-Animation gestartet."
   else
     log "WARNUNG: Backup-Animation konnte nicht gestartet werden."
     rm -f "$ANIMATION_SENTINEL"
     ANIMATION_SENTINEL=""
+    rm -f "$PROGRESS_FILE"
+    PROGRESS_FILE=""
   fi
 }
 
@@ -167,6 +250,10 @@ stop_animation() {
   if [[ -n "${ANIMATION_SENTINEL:-}" ]]; then
     rm -f "$ANIMATION_SENTINEL"
     ANIMATION_SENTINEL=""
+  fi
+  if [[ -n "${PROGRESS_FILE:-}" ]]; then
+    rm -f "$PROGRESS_FILE"
+    PROGRESS_FILE=""
   fi
 }
 
@@ -465,7 +552,7 @@ trap 'cleanup; exit 143' TERM
 RCLONE_OPTS=(
   --drive-export-formats docx,xlsx,pptx
   --create-empty-src-dirs
-  --stats 60s
+  --stats 10s
   --log-level INFO
   --retries 3
   --low-level-retries 10
@@ -483,6 +570,12 @@ copy_one() {
   local source="$2"
   local dest="$3"
   shift 3
+  local phase=""
+
+  COPY_INDEX=$((COPY_INDEX + 1))
+  if (( COPY_TOTAL > 0 )); then
+    phase="${COPY_INDEX}/${COPY_TOTAL}"
+  fi
 
   if [[ "$DRY_RUN" == "0" ]]; then
     mkdir -p "$dest" || {
@@ -493,7 +586,9 @@ copy_one() {
   fi
 
   log "Kopiere $label -> $dest"
-  if rclone copy "$source" "$dest" "$@" "${RCLONE_OPTS[@]}"; then
+  write_progress "$label" "0" "$(t progress_preparing)" "$phase"
+  if run_rclone_with_progress "$label" "$phase" rclone copy "$source" "$dest" "$@" "${RCLONE_OPTS[@]}"; then
+    write_progress "$label" "100" "$(t progress_done)" "$phase"
     log "OK: $label"
   else
     log "FEHLER: $label"
@@ -501,13 +596,14 @@ copy_one() {
   fi
 }
 
-copy_one "My Drive" "${REMOTE}:" "$DEST_ROOT/My Drive"
-copy_one "Shared with me" "${REMOTE}:" "$DEST_ROOT/Shared with me" --drive-shared-with-me
-
 drives_json="$(mktemp "${TMPDIR:-/tmp}/gdrive-shared-drives.XXXXXX")"
 if rclone backend --json drives "${REMOTE}:" >"$drives_json"; then
   drive_count="$(jq 'length' "$drives_json" 2>/dev/null || printf '0')"
   log "$drive_count Shared Drive(s) gefunden."
+  COPY_TOTAL=$((2 + drive_count))
+
+  copy_one "My Drive" "${REMOTE}:" "$DEST_ROOT/My Drive"
+  copy_one "Shared with me" "${REMOTE}:" "$DEST_ROOT/Shared with me" --drive-shared-with-me
 
   while IFS=$'\t' read -r drive_id drive_name; do
     [[ -n "$drive_id" ]] || continue
@@ -520,6 +616,10 @@ if rclone backend --json drives "${REMOTE}:" >"$drives_json"; then
 else
   log "FEHLER: Shared Drives konnten nicht gelesen werden."
   errors=$((errors + 1))
+
+  COPY_TOTAL=2
+  copy_one "My Drive" "${REMOTE}:" "$DEST_ROOT/My Drive"
+  copy_one "Shared with me" "${REMOTE}:" "$DEST_ROOT/Shared with me" --drive-shared-with-me
 fi
 rm -f "$drives_json"
 
