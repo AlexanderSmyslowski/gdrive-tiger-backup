@@ -23,6 +23,7 @@ ANIMATION_APP="${GDRIVE_BACKUP_ANIMATION_APP:-$HOME/Applications/GDrive Backup T
 ANIMATION_SENTINEL=""
 CONFIRM_BACKUP="${GDRIVE_BACKUP_CONFIRM:-1}"
 AUTO_CREATE_VOLUME="${GDRIVE_BACKUP_AUTO_CREATE_VOLUME:-1}"
+BACKUP_LANG="${GDRIVE_BACKUP_LANG:-auto}"
 TARGET_APPROVED=0
 
 mkdir -p "$HOME/Library/Logs"
@@ -38,6 +39,54 @@ safe_name() {
   value="${value//:/_}"
   value="${value//$'\n'/_}"
   printf '%s' "$value"
+}
+
+detect_language() {
+  local value="${1:-auto}"
+  value="${value,,}"
+
+  case "$value" in
+    de*) printf 'de' ;;
+    en*) printf 'en' ;;
+    auto|"")
+      local locale="${LANG:-}"
+      if command -v defaults >/dev/null 2>&1; then
+        locale="$(defaults read -g AppleLocale 2>/dev/null || printf '%s' "$locale")"
+      fi
+      locale="${locale,,}"
+      if [[ "$locale" == de* ]]; then
+        printf 'de'
+      else
+        printf 'en'
+      fi
+      ;;
+    *) printf 'en' ;;
+  esac
+}
+
+BACKUP_LANG="$(detect_language "$BACKUP_LANG")"
+
+t() {
+  local key="$1"
+  case "$BACKUP_LANG:$key" in
+    de:not_now) printf 'Nicht jetzt' ;;
+    de:start_backup) printf 'Backup starten' ;;
+    de:use_volume) printf 'Dieses Volume verwenden?' ;;
+    de:create_volume) printf 'Backup-Volume anlegen?' ;;
+    de:create_volume_action) printf 'Volume anlegen' ;;
+    de:log_confirmed) printf 'Backup durch Benutzer bestaetigt.' ;;
+    de:log_skipped) printf 'Backup nicht bestaetigt; ueberspringe.' ;;
+    de:log_setup_skipped) printf 'Volume-Einrichtung nicht bestaetigt; ueberspringe.' ;;
+    en:not_now) printf 'Not now' ;;
+    en:start_backup) printf 'Start backup' ;;
+    en:use_volume) printf 'Use this volume?' ;;
+    en:create_volume) printf 'Create backup volume?' ;;
+    en:create_volume_action) printf 'Create volume' ;;
+    en:log_confirmed) printf 'Backup confirmed by user.' ;;
+    en:log_skipped) printf 'Backup was not confirmed; skipping.' ;;
+    en:log_setup_skipped) printf 'Volume setup was not confirmed; skipping.' ;;
+    *) printf '%s' "$key" ;;
+  esac
 }
 
 start_animation() {
@@ -106,6 +155,8 @@ confirm_prompt() {
   local title="$1"
   local detail="$2"
   local primary_button="$3"
+  local secondary_button
+  secondary_button="$(t not_now)"
 
   if [[ "$CONFIRM_BACKUP" == "0" || "${BACKUP_ASSUME_YES:-0}" == "1" ]]; then
     return 0
@@ -123,7 +174,7 @@ confirm_prompt() {
     }
     : >"$response"
 
-    if /usr/bin/open -W -n "$ANIMATION_APP" --args --confirm "$title" "$detail" "$primary_button" "$response" >/dev/null 2>&1; then
+    if /usr/bin/open -W -n "$ANIMATION_APP" --args --confirm "$title" "$detail" "$primary_button" "$secondary_button" "$response" >/dev/null 2>&1; then
       decision="$(tr -d '\r\n' <"$response" 2>/dev/null || true)"
     fi
     rm -f "$response"
@@ -136,13 +187,14 @@ confirm_prompt() {
   fi
 
   if command -v osascript >/dev/null 2>&1; then
-    decision="$(/usr/bin/osascript - "$title" "$detail" "$primary_button" <<'OSA'
+    decision="$(/usr/bin/osascript - "$title" "$detail" "$primary_button" "$secondary_button" <<'OSA'
 on run argv
   set dialogTitle to item 1 of argv
   set dialogDetail to item 2 of argv
   set primaryButton to item 3 of argv
+  set secondaryButton to item 4 of argv
   try
-    set answer to display dialog dialogTitle & return & return & dialogDetail with title "Google Drive Backup" buttons {"Nicht jetzt", primaryButton} default button "Nicht jetzt" cancel button "Nicht jetzt" giving up after 120
+    set answer to display dialog dialogTitle & return & return & dialogDetail with title "Google Drive Backup" buttons {secondaryButton, primaryButton} default button secondaryButton cancel button secondaryButton giving up after 120
     if gave up of answer then return "no"
     if button returned of answer is primaryButton then return "yes"
   end try
@@ -164,13 +216,13 @@ confirm_backup_target() {
     return 0
   fi
 
-  if confirm_prompt "Dieses Volume verwenden?" "$VOLUME" "Backup starten"; then
+  if confirm_prompt "$(t use_volume)" "$VOLUME" "$(t start_backup)"; then
     TARGET_APPROVED=1
-    log "Backup durch Benutzer bestaetigt."
+    log "$(t log_confirmed)"
     return 0
   fi
 
-  log "Backup nicht bestaetigt; ueberspringe."
+  log "$(t log_skipped)"
   return 1
 }
 
@@ -277,8 +329,8 @@ ensure_backup_volume() {
   fi
 
   IFS=$'\t' read -r source_mount container source_name <<<"$candidate"
-  if ! confirm_prompt "Backup-Volume anlegen?" "${source_name} -> ${BACKUP_VOLUME_NAME}" "Volume anlegen"; then
-    log "Volume-Einrichtung nicht bestaetigt; ueberspringe."
+  if ! confirm_prompt "$(t create_volume)" "${source_name} -> ${BACKUP_VOLUME_NAME}" "$(t create_volume_action)"; then
+    log "$(t log_setup_skipped)"
     return 1
   fi
 

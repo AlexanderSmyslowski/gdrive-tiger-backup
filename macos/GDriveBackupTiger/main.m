@@ -49,13 +49,69 @@ static NSImage *CreateApplicationIcon(void) {
     return image;
 }
 
+static NSString *TrimConfigValue(NSString *value) {
+    NSString *trimmed = [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (trimmed.length >= 2) {
+        unichar first = [trimmed characterAtIndex:0];
+        unichar last = [trimmed characterAtIndex:trimmed.length - 1];
+        if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
+            trimmed = [trimmed substringWithRange:NSMakeRange(1, trimmed.length - 2)];
+        }
+    }
+    return trimmed;
+}
+
+static NSString *ConfiguredLanguage(void) {
+    NSString *configPath = [NSHomeDirectory() stringByAppendingPathComponent:@".config/gdrive-tiger-backup/config"];
+    NSString *config = [NSString stringWithContentsOfFile:configPath encoding:NSUTF8StringEncoding error:nil];
+    for (NSString *line in [config componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+        if ([line hasPrefix:@"GDRIVE_BACKUP_LANG="]) {
+            NSString *value = TrimConfigValue([line substringFromIndex:[@"GDRIVE_BACKUP_LANG=" length]]).lowercaseString;
+            if ([value hasPrefix:@"de"]) {
+                return @"de";
+            }
+            if ([value hasPrefix:@"en"]) {
+                return @"en";
+            }
+        }
+    }
+
+    NSString *preferred = NSLocale.preferredLanguages.firstObject.lowercaseString;
+    return [preferred hasPrefix:@"de"] ? @"de" : @"en";
+}
+
+static NSString *T(NSString *language, NSString *key) {
+    BOOL german = [language isEqualToString:@"de"];
+    NSDictionary<NSString *, NSString *> *de = @{
+        @"confirmTarget": @"Dieses Volume verwenden?",
+        @"startBackup": @"Backup starten",
+        @"notNow": @"Nicht jetzt",
+        @"running": @"Sicherung wird erstellt ...",
+        @"completed": @"Sicherung abgeschlossen.",
+        @"runningHint": @"Bitte Festplatte nicht auswerfen.",
+        @"completedHint": @"Backup ist fertig."
+    };
+    NSDictionary<NSString *, NSString *> *en = @{
+        @"confirmTarget": @"Use this volume?",
+        @"startBackup": @"Start backup",
+        @"notNow": @"Not now",
+        @"running": @"Backup is running ...",
+        @"completed": @"Backup completed.",
+        @"runningHint": @"Please do not eject the disk.",
+        @"completedHint": @"Backup is done."
+    };
+    return (german ? de[key] : en[key]) ?: key;
+}
+
 @interface TigerBackupView : NSView
 @property(nonatomic) CGFloat phase;
 @property(nonatomic) BOOL completed;
 @property(nonatomic) BOOL confirmMode;
+@property(nonatomic, copy) NSString *language;
 @property(nonatomic, copy) NSString *confirmTitle;
 @property(nonatomic, copy) NSString *confirmDetail;
 @property(nonatomic, copy) NSString *primaryActionTitle;
+@property(nonatomic, copy) NSString *secondaryActionTitle;
 @property(nonatomic, copy) void (^minimizeHandler)(void);
 @property(nonatomic, copy) void (^confirmHandler)(BOOL approved);
 @property(nonatomic, strong) NSTimer *timer;
@@ -278,8 +334,9 @@ static NSImage *CreateApplicationIcon(void) {
     };
 
     [@"Google Drive Backup" drawInRect:NSMakeRect(76, 16, 300, 20) withAttributes:titleAttributes];
-    NSString *subtitle = self.confirmMode ? (self.confirmTitle ?: @"Dieses Volume verwenden?") : (self.completed ? @"Sicherung abgeschlossen." : @"Sicherung wird erstellt ...");
-    NSString *hint = self.confirmMode ? (self.confirmDetail ?: @"") : (self.completed ? @"Backup ist fertig." : @"Bitte Festplatte nicht auswerfen.");
+    NSString *language = self.language ?: @"en";
+    NSString *subtitle = self.confirmMode ? (self.confirmTitle ?: T(language, @"confirmTarget")) : (self.completed ? T(language, @"completed") : T(language, @"running"));
+    NSString *hint = self.confirmMode ? (self.confirmDetail ?: @"") : (self.completed ? T(language, @"completedHint") : T(language, @"runningHint"));
     [subtitle drawInRect:NSMakeRect(112, 76, 250, 18) withAttributes:subtitleAttributes];
 
     if (self.confirmMode) {
@@ -291,8 +348,9 @@ static NSImage *CreateApplicationIcon(void) {
 
 - (void)drawProgressBarInRect:(NSRect)rect {
     if (self.confirmMode) {
-        [self drawButtonWithTitle:@"Nicht jetzt" inRect:[self secondaryButtonRect] primary:NO];
-        [self drawButtonWithTitle:(self.primaryActionTitle ?: @"Backup starten") inRect:[self primaryButtonRect] primary:YES];
+        NSString *language = self.language ?: @"en";
+        [self drawButtonWithTitle:(self.secondaryActionTitle ?: T(language, @"notNow")) inRect:[self secondaryButtonRect] primary:NO];
+        [self drawButtonWithTitle:(self.primaryActionTitle ?: T(language, @"startBackup")) inRect:[self primaryButtonRect] primary:YES];
         return;
     }
 
@@ -375,9 +433,11 @@ static NSImage *CreateApplicationIcon(void) {
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, copy) NSString *sentinelPath;
 @property(nonatomic) BOOL confirmMode;
+@property(nonatomic, copy) NSString *language;
 @property(nonatomic, copy) NSString *confirmTitle;
 @property(nonatomic, copy) NSString *confirmDetail;
 @property(nonatomic, copy) NSString *primaryActionTitle;
+@property(nonatomic, copy) NSString *secondaryActionTitle;
 @property(nonatomic, copy) NSString *confirmResponsePath;
 @property(nonatomic, strong) NSTimer *sentinelTimer;
 @property(nonatomic, strong) NSTimer *confirmTimeoutTimer;
@@ -389,18 +449,27 @@ static NSImage *CreateApplicationIcon(void) {
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
+    self.language = ConfiguredLanguage();
     NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
     if (arguments.count > 1 && [arguments[1] isEqualToString:@"--confirm"]) {
         self.confirmMode = YES;
-        if (arguments.count > 5) {
+        if (arguments.count > 6) {
             self.confirmTitle = arguments[2];
             self.confirmDetail = arguments[3];
             self.primaryActionTitle = arguments[4];
+            self.secondaryActionTitle = arguments[5];
+            self.confirmResponsePath = arguments[6];
+        } else if (arguments.count > 5) {
+            self.confirmTitle = arguments[2];
+            self.confirmDetail = arguments[3];
+            self.primaryActionTitle = arguments[4];
+            self.secondaryActionTitle = T(self.language, @"notNow");
             self.confirmResponsePath = arguments[5];
         } else if (arguments.count > 3) {
-            self.confirmTitle = @"Dieses Volume verwenden?";
+            self.confirmTitle = T(self.language, @"confirmTarget");
             self.confirmDetail = arguments[2];
-            self.primaryActionTitle = @"Backup starten";
+            self.primaryActionTitle = T(self.language, @"startBackup");
+            self.secondaryActionTitle = T(self.language, @"notNow");
             self.confirmResponsePath = arguments[3];
         }
     } else if (arguments.count > 1) {
@@ -426,9 +495,11 @@ static NSImage *CreateApplicationIcon(void) {
     TigerBackupView *contentView = [[TigerBackupView alloc] initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
     __weak typeof(self) weakSelf = self;
     contentView.confirmMode = self.confirmMode;
+    contentView.language = self.language;
     contentView.confirmTitle = self.confirmTitle;
     contentView.confirmDetail = self.confirmDetail;
     contentView.primaryActionTitle = self.primaryActionTitle;
+    contentView.secondaryActionTitle = self.secondaryActionTitle;
     contentView.minimizeHandler = ^{
         [weakSelf minimizeWindow];
     };

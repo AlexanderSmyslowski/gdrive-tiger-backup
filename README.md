@@ -62,6 +62,17 @@ Pick or create a writable backup volume, for example:
 BACKUP_VOLUME="/Volumes/GoogleDrive-Backup" ./install.sh
 ```
 
+On first install, the installer asks which language the helper should use:
+
+- Deutsch
+- English
+
+For unattended installs, set it explicitly:
+
+```bash
+GDRIVE_BACKUP_LANG=en BACKUP_VOLUME="/Volumes/GoogleDrive-Backup" ./install.sh
+```
+
 You can also install first and let the helper create a dedicated APFS volume the first time an external APFS disk is attached. The app will ask before it does anything. This is non-destructive: it uses `diskutil apfs addVolume` to add a sibling APFS volume in the same APFS container. It does not erase or repartition the disk.
 
 To install Homebrew dependencies as part of the installer:
@@ -80,10 +91,12 @@ The installer writes:
 The default config keeps confirmation enabled:
 
 ```bash
+GDRIVE_BACKUP_LANG=en
 GDRIVE_BACKUP_CONFIRM=1
 GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
 ```
 
+Use `GDRIVE_BACKUP_LANG=de` for German.
 Set `GDRIVE_BACKUP_CONFIRM=0` only if you deliberately want fully automatic backups whenever the configured volume is mounted.
 Set `GDRIVE_BACKUP_AUTO_CREATE_VOLUME=0` if you want to create the backup volume yourself.
 

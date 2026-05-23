@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 BACKUP_VOLUME="${BACKUP_VOLUME:-/Volumes/GoogleDrive-Backup}"
 BACKUP_VOLUME_NAME="${BACKUP_VOLUME_NAME:-$(basename "$BACKUP_VOLUME")}"
 RCLONE_REMOTE="${RCLONE_REMOTE:-gdrive}"
+INSTALL_LANG="${GDRIVE_BACKUP_LANG:-${INSTALL_LANG:-auto}}"
 CONFIG_DIR="$HOME/.config/gdrive-tiger-backup"
 CONFIG_FILE="$CONFIG_DIR/config"
 APP_DIR="$HOME/Applications/GDrive Backup Tiger.app"
@@ -28,14 +29,92 @@ done
 
 mkdir -p "$CONFIG_DIR" "$HOME/Applications" "$APP_CONTENTS/MacOS" "$APP_CONTENTS/Resources" "$HOME/Library/LaunchAgents"
 
+detect_language() {
+  local value="${1:-auto}"
+  value="${value,,}"
+
+  case "$value" in
+    de*) printf 'de' ;;
+    en*) printf 'en' ;;
+    auto|"")
+      local locale="${LANG:-}"
+      if command -v defaults >/dev/null 2>&1; then
+        locale="$(defaults read -g AppleLocale 2>/dev/null || printf '%s' "$locale")"
+      fi
+      locale="${locale,,}"
+      if [[ "$locale" == de* ]]; then
+        printf 'de'
+      else
+        printf 'en'
+      fi
+      ;;
+    *) printf 'en' ;;
+  esac
+}
+
+choose_language() {
+  local default_lang
+  default_lang="$(detect_language "$INSTALL_LANG")"
+
+  if [[ "${GDRIVE_BACKUP_LANG:-}" =~ ^(de|en)$ || "${INSTALL_LANG:-}" =~ ^(de|en)$ ]]; then
+    printf '%s' "$default_lang"
+    return
+  fi
+
+  if command -v osascript >/dev/null 2>&1; then
+    local default_button="English"
+    [[ "$default_lang" == "de" ]] && default_button="Deutsch"
+    local answer
+    answer="$(/usr/bin/osascript - "$default_button" <<'OSA'
+on run argv
+  set defaultButton to item 1 of argv
+  try
+    set answer to display dialog "Choose the language for the backup helper." & return & return & "Sprache fuer den Backup-Helfer auswaehlen." with title "Google Drive Backup" buttons {"Deutsch", "English"} default button defaultButton
+    return button returned of answer
+  on error
+    return defaultButton
+  end try
+end run
+OSA
+)" || answer="$default_button"
+    if [[ "$answer" == "Deutsch" ]]; then
+      printf 'de'
+    else
+      printf 'en'
+    fi
+    return
+  fi
+
+  if [[ -t 0 ]]; then
+    printf 'Language / Sprache [de/en] (%s): ' "$default_lang" >&2
+    local answer=""
+    read -r answer || true
+    answer="${answer:-$default_lang}"
+    printf '%s' "$(detect_language "$answer")"
+    return
+  fi
+
+  printf '%s' "$default_lang"
+}
+
+CONFIG_LANG=""
+if [[ -f "$CONFIG_FILE" ]] && grep -q '^GDRIVE_BACKUP_LANG=' "$CONFIG_FILE"; then
+  CONFIG_LANG="$(grep '^GDRIVE_BACKUP_LANG=' "$CONFIG_FILE" | tail -n 1 | cut -d= -f2-)"
+else
+  CONFIG_LANG="$(choose_language)"
+fi
+
 if [[ ! -f "$CONFIG_FILE" ]]; then
   {
     printf 'GDRIVE_BACKUP_VOLUME=%q\n' "$BACKUP_VOLUME"
     printf 'GDRIVE_BACKUP_VOLUME_NAME=%q\n' "$BACKUP_VOLUME_NAME"
     printf 'RCLONE_REMOTE=%q\n' "$RCLONE_REMOTE"
+    printf 'GDRIVE_BACKUP_LANG=%q\n' "$CONFIG_LANG"
     printf 'GDRIVE_BACKUP_CONFIRM=1\n'
     printf 'GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1\n'
   } >"$CONFIG_FILE"
+elif ! grep -q '^GDRIVE_BACKUP_LANG=' "$CONFIG_FILE"; then
+  printf 'GDRIVE_BACKUP_LANG=%q\n' "$CONFIG_LANG" >>"$CONFIG_FILE"
 fi
 
 install -m 644 "$ROOT/macos/GDriveBackupTiger/Info.plist" "$APP_CONTENTS/Info.plist"
