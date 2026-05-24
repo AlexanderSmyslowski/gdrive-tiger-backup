@@ -126,7 +126,16 @@ static NSString *T(NSString *language, NSString *key) {
         @"statusDiscoveryDone": @"Netzwerksuche abgeschlossen.",
         @"statusBackupStarted": @"Backup gestartet.",
         @"statusDryRunStarted": @"Prüflauf gestartet. Es wird nichts kopiert.",
-        @"selectMountedVolume": @"Volume auswählen"
+        @"selectMountedVolume": @"Volume auswählen",
+        @"aboutMenu": @"Über GDrive Backup Tiger",
+        @"settingsMenu": @"Einstellungen ...",
+        @"hideMenu": @"GDrive Backup Tiger ausblenden",
+        @"quitMenu": @"GDrive Backup Tiger beenden",
+        @"settingsTitle": @"Einstellungen",
+        @"languageSetting": @"Sprache",
+        @"cancel": @"Abbrechen",
+        @"done": @"Fertig",
+        @"languageSaved": @"Sprache gespeichert."
     };
     NSDictionary<NSString *, NSString *> *en = @{
         @"confirmTarget": @"Use this volume?",
@@ -163,7 +172,16 @@ static NSString *T(NSString *language, NSString *key) {
         @"statusDiscoveryDone": @"Network search completed.",
         @"statusBackupStarted": @"Backup started.",
         @"statusDryRunStarted": @"Check started. No files will be copied.",
-        @"selectMountedVolume": @"Select volume"
+        @"selectMountedVolume": @"Select volume",
+        @"aboutMenu": @"About GDrive Backup Tiger",
+        @"settingsMenu": @"Settings ...",
+        @"hideMenu": @"Hide GDrive Backup Tiger",
+        @"quitMenu": @"Quit GDrive Backup Tiger",
+        @"settingsTitle": @"Settings",
+        @"languageSetting": @"Language",
+        @"cancel": @"Cancel",
+        @"done": @"Done",
+        @"languageSaved": @"Language saved."
     };
     NSDictionary<NSString *, NSString *> *fr = @{
         @"confirmTarget": @"Utiliser ce volume ?",
@@ -172,7 +190,44 @@ static NSString *T(NSString *language, NSString *key) {
         @"running": @"Sauvegarde en cours ...",
         @"completed": @"Sauvegarde terminée.",
         @"runningHint": @"Veuillez ne pas éjecter le disque.",
-        @"completedHint": @"Sauvegarde terminée."
+        @"completedHint": @"Sauvegarde terminée.",
+        @"setupTitle": @"Destination et mode de démarrage",
+        @"targetType": @"Destination app/planifiée",
+        @"externalVolume": @"Disque externe",
+        @"nas": @"NAS / Réseau",
+        @"mountedNas": @"NAS monté",
+        @"refresh": @"Actualiser",
+        @"discover": @"Rechercher",
+        @"openFinder": @"Ouvrir dans le Finder",
+        @"nasUrl": @"URL du NAS",
+        @"nasMount": @"Point de montage",
+        @"nasSubdir": @"Dossier cible",
+        @"schedule": @"Démarrage",
+        @"scheduleManual": @"Manuel uniquement",
+        @"scheduleLogin": @"À la connexion",
+        @"scheduleHourly": @"Toutes les heures",
+        @"scheduleDaily": @"Tous les jours 20:00",
+        @"save": @"Enregistrer",
+        @"dryRun": @"Vérifier la sauvegarde",
+        @"backupNow": @"Sauvegarder",
+        @"dryRunTip": @"Vérifie la source et la destination sans copier de fichiers.",
+        @"backupNowTip": @"Lance la vraie sauvegarde vers la destination choisie.",
+        @"statusReady": @"Prêt.",
+        @"statusSaved": @"Enregistré.",
+        @"statusSearching": @"Recherche sur le réseau ...",
+        @"statusDiscoveryDone": @"Recherche réseau terminée.",
+        @"statusBackupStarted": @"Sauvegarde lancée.",
+        @"statusDryRunStarted": @"Vérification lancée. Aucun fichier ne sera copié.",
+        @"selectMountedVolume": @"Choisir un volume",
+        @"aboutMenu": @"À propos de GDrive Backup Tiger",
+        @"settingsMenu": @"Réglages ...",
+        @"hideMenu": @"Masquer GDrive Backup Tiger",
+        @"quitMenu": @"Quitter GDrive Backup Tiger",
+        @"settingsTitle": @"Réglages",
+        @"languageSetting": @"Langue",
+        @"cancel": @"Annuler",
+        @"done": @"Terminé",
+        @"languageSaved": @"Langue enregistrée."
     };
     NSDictionary<NSString *, NSString *> *es = @{
         @"confirmTarget": @"¿Usar este volumen?",
@@ -181,7 +236,44 @@ static NSString *T(NSString *language, NSString *key) {
         @"running": @"Copia en curso ...",
         @"completed": @"Copia completada.",
         @"runningHint": @"No expulses el disco.",
-        @"completedHint": @"La copia esta lista."
+        @"completedHint": @"La copia esta lista.",
+        @"setupTitle": @"Destino y modo de inicio",
+        @"targetType": @"Destino app/programado",
+        @"externalVolume": @"Disco externo",
+        @"nas": @"NAS / Red",
+        @"mountedNas": @"NAS montado",
+        @"refresh": @"Actualizar",
+        @"discover": @"Buscar",
+        @"openFinder": @"Abrir en Finder",
+        @"nasUrl": @"URL del NAS",
+        @"nasMount": @"Punto de montaje",
+        @"nasSubdir": @"Carpeta destino",
+        @"schedule": @"Inicio",
+        @"scheduleManual": @"Solo manual",
+        @"scheduleLogin": @"Al iniciar sesión",
+        @"scheduleHourly": @"Cada hora",
+        @"scheduleDaily": @"Diario 20:00",
+        @"save": @"Guardar",
+        @"dryRun": @"Comprobar copia",
+        @"backupNow": @"Copiar ahora",
+        @"dryRunTip": @"Comprueba origen y destino sin copiar archivos.",
+        @"backupNowTip": @"Inicia la copia real hacia el destino elegido.",
+        @"statusReady": @"Listo.",
+        @"statusSaved": @"Guardado.",
+        @"statusSearching": @"Buscando en la red ...",
+        @"statusDiscoveryDone": @"Búsqueda de red completada.",
+        @"statusBackupStarted": @"Copia iniciada.",
+        @"statusDryRunStarted": @"Comprobación iniciada. No se copiarán archivos.",
+        @"selectMountedVolume": @"Seleccionar volumen",
+        @"aboutMenu": @"Acerca de GDrive Backup Tiger",
+        @"settingsMenu": @"Configuración ...",
+        @"hideMenu": @"Ocultar GDrive Backup Tiger",
+        @"quitMenu": @"Salir de GDrive Backup Tiger",
+        @"settingsTitle": @"Configuración",
+        @"languageSetting": @"Idioma",
+        @"cancel": @"Cancelar",
+        @"done": @"Listo",
+        @"languageSaved": @"Idioma guardado."
     };
     NSDictionary<NSString *, NSString *> *ja = @{
         @"confirmTarget": @"このボリュームを使いますか？",
@@ -190,7 +282,44 @@ static NSString *T(NSString *language, NSString *key) {
         @"running": @"バックアップ中...",
         @"completed": @"バックアップ完了。",
         @"runningHint": @"ディスクを取り出さないでください。",
-        @"completedHint": @"完了しました。"
+        @"completedHint": @"完了しました。",
+        @"setupTitle": @"バックアップ先と開始方法",
+        @"targetType": @"アプリ/スケジュール先",
+        @"externalVolume": @"外部ディスク",
+        @"nas": @"NAS / ネットワーク",
+        @"mountedNas": @"マウント済みNAS",
+        @"refresh": @"更新",
+        @"discover": @"検索",
+        @"openFinder": @"Finderで開く",
+        @"nasUrl": @"NAS URL",
+        @"nasMount": @"マウント先",
+        @"nasSubdir": @"保存先フォルダ",
+        @"schedule": @"開始",
+        @"scheduleManual": @"手動のみ",
+        @"scheduleLogin": @"ログイン時",
+        @"scheduleHourly": @"毎時",
+        @"scheduleDaily": @"毎日 20:00",
+        @"save": @"保存",
+        @"dryRun": @"バックアップ確認",
+        @"backupNow": @"今すぐバックアップ",
+        @"dryRunTip": @"ファイルをコピーせず、元と保存先を確認します。",
+        @"backupNowTip": @"選択した保存先へ実際のバックアップを開始します。",
+        @"statusReady": @"準備完了。",
+        @"statusSaved": @"保存しました。",
+        @"statusSearching": @"ネットワーク検索中...",
+        @"statusDiscoveryDone": @"ネットワーク検索完了。",
+        @"statusBackupStarted": @"バックアップを開始しました。",
+        @"statusDryRunStarted": @"確認を開始しました。ファイルはコピーされません。",
+        @"selectMountedVolume": @"ボリュームを選択",
+        @"aboutMenu": @"GDrive Backup Tigerについて",
+        @"settingsMenu": @"設定...",
+        @"hideMenu": @"GDrive Backup Tigerを隠す",
+        @"quitMenu": @"GDrive Backup Tigerを終了",
+        @"settingsTitle": @"設定",
+        @"languageSetting": @"言語",
+        @"cancel": @"キャンセル",
+        @"done": @"完了",
+        @"languageSaved": @"言語を保存しました。"
     };
     NSDictionary<NSString *, NSString *> *yue = @{
         @"confirmTarget": @"使用呢個卷宗？",
@@ -199,7 +328,44 @@ static NSString *T(NSString *language, NSString *key) {
         @"running": @"正在備份...",
         @"completed": @"備份完成。",
         @"runningHint": @"請勿退出磁碟。",
-        @"completedHint": @"備份已完成。"
+        @"completedHint": @"備份已完成。",
+        @"setupTitle": @"備份目的地同啟動方式",
+        @"targetType": @"App/排程目的地",
+        @"externalVolume": @"外置磁碟",
+        @"nas": @"NAS / 網絡",
+        @"mountedNas": @"已掛載 NAS",
+        @"refresh": @"重新整理",
+        @"discover": @"搜尋",
+        @"openFinder": @"喺 Finder 開啟",
+        @"nasUrl": @"NAS URL",
+        @"nasMount": @"掛載點",
+        @"nasSubdir": @"目的地資料夾",
+        @"schedule": @"啟動",
+        @"scheduleManual": @"只限手動",
+        @"scheduleLogin": @"登入時",
+        @"scheduleHourly": @"每小時",
+        @"scheduleDaily": @"每日 20:00",
+        @"save": @"儲存",
+        @"dryRun": @"檢查備份",
+        @"backupNow": @"即刻備份",
+        @"dryRunTip": @"只檢查來源同目的地，唔會複製檔案。",
+        @"backupNowTip": @"開始真正備份到已選目的地。",
+        @"statusReady": @"準備好。",
+        @"statusSaved": @"已儲存。",
+        @"statusSearching": @"搜尋網絡中...",
+        @"statusDiscoveryDone": @"網絡搜尋完成。",
+        @"statusBackupStarted": @"備份已開始。",
+        @"statusDryRunStarted": @"檢查已開始。唔會複製檔案。",
+        @"selectMountedVolume": @"選擇卷宗",
+        @"aboutMenu": @"關於 GDrive Backup Tiger",
+        @"settingsMenu": @"設定...",
+        @"hideMenu": @"隱藏 GDrive Backup Tiger",
+        @"quitMenu": @"結束 GDrive Backup Tiger",
+        @"settingsTitle": @"設定",
+        @"languageSetting": @"語言",
+        @"cancel": @"取消",
+        @"done": @"完成",
+        @"languageSaved": @"語言已儲存。"
     };
     NSDictionary<NSString *, NSString *> *ko = @{
         @"confirmTarget": @"이 볼륨을 사용할까요?",
@@ -208,7 +374,44 @@ static NSString *T(NSString *language, NSString *key) {
         @"running": @"백업 중...",
         @"completed": @"백업 완료.",
         @"runningHint": @"디스크를 꺼내지 마세요.",
-        @"completedHint": @"백업이 완료되었습니다."
+        @"completedHint": @"백업이 완료되었습니다.",
+        @"setupTitle": @"백업 대상 및 시작 방식",
+        @"targetType": @"앱/예약 대상",
+        @"externalVolume": @"외장 디스크",
+        @"nas": @"NAS / 네트워크",
+        @"mountedNas": @"마운트된 NAS",
+        @"refresh": @"새로 고침",
+        @"discover": @"검색",
+        @"openFinder": @"Finder에서 열기",
+        @"nasUrl": @"NAS URL",
+        @"nasMount": @"마운트 지점",
+        @"nasSubdir": @"대상 폴더",
+        @"schedule": @"시작",
+        @"scheduleManual": @"수동만",
+        @"scheduleLogin": @"로그인 시",
+        @"scheduleHourly": @"매시간",
+        @"scheduleDaily": @"매일 20:00",
+        @"save": @"저장",
+        @"dryRun": @"백업 확인",
+        @"backupNow": @"지금 백업",
+        @"dryRunTip": @"파일을 복사하지 않고 원본과 대상을 확인합니다.",
+        @"backupNowTip": @"선택한 대상에 실제 백업을 시작합니다.",
+        @"statusReady": @"준비됨.",
+        @"statusSaved": @"저장됨.",
+        @"statusSearching": @"네트워크 검색 중...",
+        @"statusDiscoveryDone": @"네트워크 검색 완료.",
+        @"statusBackupStarted": @"백업 시작됨.",
+        @"statusDryRunStarted": @"확인이 시작되었습니다. 파일은 복사되지 않습니다.",
+        @"selectMountedVolume": @"볼륨 선택",
+        @"aboutMenu": @"GDrive Backup Tiger 정보",
+        @"settingsMenu": @"설정...",
+        @"hideMenu": @"GDrive Backup Tiger 가리기",
+        @"quitMenu": @"GDrive Backup Tiger 종료",
+        @"settingsTitle": @"설정",
+        @"languageSetting": @"언어",
+        @"cancel": @"취소",
+        @"done": @"완료",
+        @"languageSaved": @"언어가 저장되었습니다."
     };
 
     NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *tables = @{
@@ -229,6 +432,23 @@ static NSString *ConfigPath(void) {
 
 static NSString *ScheduleAgentPath(void) {
     return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/LaunchAgents/com.commcats.gdrivebackup.schedule.plist"];
+}
+
+static NSArray<NSString *> *SupportedLanguageCodes(void) {
+    return @[@"de", @"en", @"fr", @"es", @"ja", @"yue", @"ko"];
+}
+
+static NSString *LanguageDisplayName(NSString *code) {
+    NSDictionary<NSString *, NSString *> *names = @{
+        @"de": @"Deutsch",
+        @"en": @"English",
+        @"fr": @"Français",
+        @"es": @"Español",
+        @"ja": @"日本語",
+        @"yue": @"粵語",
+        @"ko": @"한국어"
+    };
+    return names[code] ?: @"English";
 }
 
 static NSMutableDictionary<NSString *, NSString *> *ReadConfigDictionary(void) {
@@ -934,8 +1154,81 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     return button;
 }
 
+- (void)buildMainMenu {
+    NSMenu *mainMenu = [[NSMenu alloc] initWithTitle:@""];
+    NSMenuItem *appMenuItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
+    [mainMenu addItem:appMenuItem];
+
+    NSMenu *appMenu = [[NSMenu alloc] initWithTitle:@"GDrive Backup Tiger"];
+    NSMenuItem *aboutItem = [[NSMenuItem alloc] initWithTitle:T(self.language, @"aboutMenu")
+                                                       action:@selector(showAbout:)
+                                                keyEquivalent:@""];
+    aboutItem.target = self;
+    [appMenu addItem:aboutItem];
+
+    NSMenuItem *settingsItem = [[NSMenuItem alloc] initWithTitle:T(self.language, @"settingsMenu")
+                                                          action:@selector(showSettings:)
+                                                   keyEquivalent:@","];
+    settingsItem.target = self;
+    settingsItem.keyEquivalentModifierMask = NSEventModifierFlagCommand;
+    [appMenu addItem:settingsItem];
+    [appMenu addItem:[NSMenuItem separatorItem]];
+    [appMenu addItemWithTitle:T(self.language, @"hideMenu") action:@selector(hide:) keyEquivalent:@"h"];
+    [appMenu addItemWithTitle:T(self.language, @"quitMenu") action:@selector(terminate:) keyEquivalent:@"q"];
+    appMenuItem.submenu = appMenu;
+
+    NSApp.mainMenu = mainMenu;
+}
+
+- (void)showAbout:(id)sender {
+    NSString *version = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"";
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"GDrive Backup Tiger";
+    alert.informativeText = [NSString stringWithFormat:@"Version %@\nmacOS launchd Google Drive backup with external disk and NAS support.", version];
+    [alert addButtonWithTitle:T(self.language, @"done")];
+    [alert runModal];
+}
+
+- (void)showSettings:(id)sender {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = T(self.language, @"settingsTitle");
+    alert.informativeText = T(self.language, @"languageSetting");
+
+    NSPopUpButton *languagePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 0, 240, 28)];
+    for (NSString *code in SupportedLanguageCodes()) {
+        [languagePopup addItemWithTitle:LanguageDisplayName(code)];
+        languagePopup.lastItem.representedObject = code;
+        if ([code isEqualToString:self.language]) {
+            [languagePopup selectItem:languagePopup.lastItem];
+        }
+    }
+    alert.accessoryView = languagePopup;
+    [alert addButtonWithTitle:T(self.language, @"done")];
+    [alert addButtonWithTitle:T(self.language, @"cancel")];
+
+    if ([alert runModal] != NSAlertFirstButtonReturn) {
+        return;
+    }
+
+    NSString *selectedLanguage = languagePopup.selectedItem.representedObject ?: @"en";
+    NSError *error = nil;
+    if (!WriteConfigUpdates(@{@"GDRIVE_BACKUP_LANG": selectedLanguage}, &error)) {
+        self.statusField.stringValue = error.localizedDescription ?: @"Save failed.";
+        return;
+    }
+
+    self.language = selectedLanguage;
+    [self buildMainMenu];
+    if (self.setupMode) {
+        [self.window orderOut:nil];
+        self.window = nil;
+        [self showSetupWindow];
+    }
+}
+
 - (void)showSetupWindow {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    [self buildMainMenu];
     [NSApp setApplicationIconImage:CreateApplicationIcon()];
 
     NSSize size = NSMakeSize(610, 430);

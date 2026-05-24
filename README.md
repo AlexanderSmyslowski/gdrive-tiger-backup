@@ -2,7 +2,7 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window.
 
-Current release: `v1.3.1` with parallel external-disk and NAS backup support.
+Current release: `v1.4.0` with a normal macOS menu bar, settings, and language selection.
 
 It backs up:
 
@@ -161,6 +161,8 @@ Supported values for `GDRIVE_BACKUP_TARGET` are `apfs` and `nas`.
 Supported values for `GDRIVE_BACKUP_SCHEDULE` are `manual`, `login`, `hourly`, and `daily`.
 Set `GDRIVE_BACKUP_CONFIRM=0` only if you deliberately want fully automatic backups whenever the configured volume is mounted.
 Set `GDRIVE_BACKUP_AUTO_CREATE_VOLUME=0` if you want to create the backup volume yourself.
+
+The app includes setup UI translations for Deutsch, English, Français, Español, 日本語, 粵語, and 한국어. Open `/Applications/GDrive Backup Tiger.app`, then use `GDrive Backup Tiger > Settings` to change the language.
 
 ## Optional Safety Check
 

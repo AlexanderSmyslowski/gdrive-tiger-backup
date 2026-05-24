@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.4.0 - 2026-05-24
+
+- Make the setup app a normal macOS app with its own menu bar.
+- Add About and Settings menu items.
+- Add in-app language switching.
+- Complete setup UI translations for Deutsch, English, Français, Español, 日本語, 粵語, and 한국어.
+
 ## v1.3.1 - 2026-05-24
 
 - Add explicit modern bundle icon metadata so Finder and LaunchServices reliably show the app icon in `/Applications`.
