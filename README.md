@@ -2,7 +2,7 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window.
 
-Current release: `v1.2.0` with a setup UI, NAS destination support, and manual or scheduled NAS backups.
+Current release: `v1.2.1` with a setup UI, NAS destination support, and manual or scheduled NAS backups.
 
 It backs up:
 

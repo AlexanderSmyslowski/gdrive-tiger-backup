@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.1 - 2026-05-24
+
+- Detect SMB, AFP, and NFS mounts directly from macOS `mount` output so already mounted NAS shares appear reliably in the setup UI.
+- Auto-select a matching mounted NAS share after Finder mounts it.
+- Avoid guessing a bogus mount path from server-only URLs such as `smb://nas.local`.
+
 ## v1.2.0 - 2026-05-24
 
 - Add a Tiger-style setup window for external disk and NAS backup targets.

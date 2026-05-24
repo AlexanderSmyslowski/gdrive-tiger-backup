@@ -20,13 +20,50 @@ lowercase() {
 
 nas_mount_from_url() {
   local url="${1%%\?*}"
-  local share
+  local without_scheme path share
   url="${url%/}"
-  share="${url##*/}"
 
-  if [[ -n "$share" && "$share" != "$url" ]]; then
+  without_scheme="${url#*://}"
+  if [[ "$without_scheme" == "$url" || "$without_scheme" != */* ]]; then
+    return 0
+  fi
+
+  path="${without_scheme#*/}"
+  share="${path%%/*}"
+  if [[ -n "$share" ]]; then
     printf '/Volumes/%s' "$share"
   fi
+}
+
+nas_host_from_url() {
+  local url="${1%%\?*}"
+  local without_scheme host
+  without_scheme="${url#*://}"
+  [[ "$without_scheme" != "$url" ]] || return 0
+  without_scheme="${without_scheme#*@}"
+  host="${without_scheme%%/*}"
+  printf '%s' "$(lowercase "$host")"
+}
+
+find_nas_mount_for_url() {
+  local host line source mount_path source_host
+  host="$(nas_host_from_url "$1")"
+  [[ -n "$host" ]] || return 0
+
+  while IFS= read -r line; do
+    [[ "$line" == *" on /Volumes/"* ]] || continue
+    [[ "$line" == *" (smbfs,"* || "$line" == *" (afpfs,"* || "$line" == *" (nfs,"* ]] || continue
+    source="${line%% on /Volumes/*}"
+    source="${source#//}"
+    source="${source#*@}"
+    source_host="${source%%/*}"
+    source_host="$(lowercase "$source_host")"
+    [[ "$source_host" == "$host" ]] || continue
+    mount_path="${line#* on }"
+    mount_path="${mount_path%% (*}"
+    printf '%s' "$mount_path"
+    return 0
+  done < <(/sbin/mount)
 }
 
 CONFIG_FILE="${GDRIVE_BACKUP_CONFIG:-$HOME/.config/gdrive-tiger-backup/config}"
@@ -51,8 +88,15 @@ if [[ "$BACKUP_TARGET" == "nas" ]]; then
   if [[ -z "$NAS_MOUNT" && -n "$NAS_URL" ]]; then
     NAS_MOUNT="$(nas_mount_from_url "$NAS_URL")"
   fi
+  if [[ -z "$NAS_MOUNT" && -n "$NAS_URL" ]]; then
+    NAS_MOUNT="$(find_nas_mount_for_url "$NAS_URL")"
+  fi
   VOLUME="$NAS_MOUNT"
-  DEST_ROOT="${GDRIVE_BACKUP_DEST_ROOT:-${NAS_MOUNT%/}/$NAS_SUBDIR}"
+  if [[ -n "$NAS_MOUNT" ]]; then
+    DEST_ROOT="${GDRIVE_BACKUP_DEST_ROOT:-${NAS_MOUNT%/}/$NAS_SUBDIR}"
+  else
+    DEST_ROOT="${GDRIVE_BACKUP_DEST_ROOT:-}"
+  fi
 else
   VOLUME="${GDRIVE_BACKUP_VOLUME:-/Volumes/$BACKUP_VOLUME_NAME}"
   DEST_ROOT="${GDRIVE_BACKUP_DEST_ROOT:-$VOLUME}"
@@ -578,7 +622,11 @@ OSA
 
 ensure_nas_destination() {
   if [[ -z "$NAS_MOUNT" ]]; then
-    log "FEHLER: NAS-Ziel ist nicht konfiguriert. Setze GDRIVE_BACKUP_NAS_MOUNT oder GDRIVE_BACKUP_NAS_URL."
+    if [[ -n "$NAS_URL" ]]; then
+      log "NAS-URL ist konfiguriert, aber keine gemountete Freigabe wurde gefunden. Oeffne die NAS-URL im Finder oder waehle den Mountpunkt in der Setup-App."
+    else
+      log "FEHLER: NAS-Ziel ist nicht konfiguriert. Setze GDRIVE_BACKUP_NAS_MOUNT oder GDRIVE_BACKUP_NAS_URL."
+    fi
     return 1
   fi
 

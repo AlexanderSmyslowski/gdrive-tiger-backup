@@ -330,6 +330,7 @@ static NSString *RunCommand(NSString *launchPath, NSArray<NSString *> *arguments
 
 static NSArray<NSDictionary<NSString *, NSString *> *> *MountedNetworkVolumes(void) {
     NSMutableArray<NSDictionary<NSString *, NSString *> *> *volumes = [NSMutableArray array];
+    NSMutableDictionary<NSString *, NSMutableDictionary<NSString *, NSString *> *> *byPath = [NSMutableDictionary dictionary];
     NSArray<NSString *> *names = [NSFileManager.defaultManager contentsOfDirectoryAtPath:@"/Volumes" error:nil] ?: @[];
     for (NSString *name in names) {
         if ([name hasPrefix:@"."]) {
@@ -352,13 +353,60 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *MountedNetworkVolumes(vo
             continue;
         }
 
-        [volumes addObject:@{
+        NSMutableDictionary<NSString *, NSString *> *volume = [@{
             @"name": name,
             @"path": path,
             @"url": remountURL.absoluteString ?: @"",
             @"writable": [NSFileManager.defaultManager isWritableFileAtPath:path] ? @"1" : @"0",
             @"readable": [NSFileManager.defaultManager isReadableFileAtPath:path] ? @"1" : @"0"
-        }];
+        } mutableCopy];
+        byPath[path] = volume;
+        [volumes addObject:volume];
+    }
+
+    int status = 0;
+    NSString *mountOutput = RunCommand(@"/sbin/mount", @[], nil, &status);
+    for (NSString *line in [mountOutput componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+        if (![line containsString:@" on /Volumes/"] || (![line containsString:@" (smbfs,"] && ![line containsString:@" (afpfs,"] && ![line containsString:@" (nfs,"])) {
+            continue;
+        }
+
+        NSRange onRange = [line rangeOfString:@" on /Volumes/"];
+        NSRange typeRange = [line rangeOfString:@" (" options:0 range:NSMakeRange(NSMaxRange(onRange), line.length - NSMaxRange(onRange))];
+        if (onRange.location == NSNotFound || typeRange.location == NSNotFound) {
+            continue;
+        }
+
+        NSString *source = [line substringToIndex:onRange.location];
+        NSString *path = [line substringWithRange:NSMakeRange(onRange.location + 4, typeRange.location - (onRange.location + 4))];
+        NSString *name = path.lastPathComponent;
+        NSString *url = @"";
+        if ([source hasPrefix:@"//"]) {
+            NSString *withoutSlashes = [source substringFromIndex:2];
+            NSRange atRange = [withoutSlashes rangeOfString:@"@" options:NSBackwardsSearch];
+            if (atRange.location != NSNotFound) {
+                withoutSlashes = [withoutSlashes substringFromIndex:atRange.location + 1];
+            }
+            url = [@"smb://" stringByAppendingString:withoutSlashes];
+        }
+
+        NSMutableDictionary<NSString *, NSString *> *volume = byPath[path];
+        if (volume) {
+            if (url.length && !volume[@"url"].length) {
+                volume[@"url"] = url;
+            }
+            continue;
+        }
+
+        volume = [@{
+            @"name": name ?: path,
+            @"path": path,
+            @"url": url,
+            @"writable": [NSFileManager.defaultManager isWritableFileAtPath:path] ? @"1" : @"0",
+            @"readable": [NSFileManager.defaultManager isReadableFileAtPath:path] ? @"1" : @"0"
+        } mutableCopy];
+        byPath[path] = volume;
+        [volumes addObject:volume];
     }
     return volumes;
 }
@@ -988,6 +1036,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.mountedNasPopup.lastItem.representedObject = @{};
 
     NSArray<NSDictionary<NSString *, NSString *> *> *volumes = MountedNetworkVolumes();
+    NSString *currentMount = self.nasMountField.stringValue;
+    NSString *wantedHost = [self hostPartFromURLString:self.nasURLField.stringValue];
+    NSDictionary<NSString *, NSString *> *autoSelection = nil;
+
     for (NSDictionary<NSString *, NSString *> *volume in volumes) {
         NSString *title = [NSString stringWithFormat:@"%@ — %@", volume[@"name"], volume[@"path"]];
         [self.mountedNasPopup addItemWithTitle:title];
@@ -995,7 +1047,53 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
         if ([volume[@"path"] isEqualToString:self.nasMountField.stringValue]) {
             [self.mountedNasPopup selectItem:self.mountedNasPopup.lastItem];
         }
+
+        NSString *volumeHost = [self hostPartFromURLString:volume[@"url"]];
+        if (!currentMount.length && wantedHost.length && [volumeHost isEqualToString:wantedHost]) {
+            autoSelection = volume;
+            [self.mountedNasPopup selectItem:self.mountedNasPopup.lastItem];
+        }
     }
+
+    if (!currentMount.length && !autoSelection && volumes.count == 1) {
+        autoSelection = volumes.firstObject;
+        [self.mountedNasPopup selectItemAtIndex:1];
+    }
+
+    if (autoSelection) {
+        self.nasMountField.stringValue = autoSelection[@"path"] ?: @"";
+        NSString *url = autoSelection[@"url"];
+        if (url.length) {
+            self.nasURLField.stringValue = url;
+        }
+        [self.targetPopup selectItemAtIndex:1];
+    }
+}
+
+- (NSString *)hostPartFromURLString:(NSString *)urlString {
+    if (!urlString.length) {
+        return @"";
+    }
+
+    NSURL *url = [NSURL URLWithString:urlString];
+    if (url.host.length) {
+        return url.host.lowercaseString;
+    }
+
+    NSString *withoutScheme = urlString;
+    NSRange schemeRange = [withoutScheme rangeOfString:@"://"];
+    if (schemeRange.location != NSNotFound) {
+        withoutScheme = [withoutScheme substringFromIndex:NSMaxRange(schemeRange)];
+    }
+    NSRange atRange = [withoutScheme rangeOfString:@"@" options:NSBackwardsSearch];
+    if (atRange.location != NSNotFound) {
+        withoutScheme = [withoutScheme substringFromIndex:atRange.location + 1];
+    }
+    NSRange slashRange = [withoutScheme rangeOfString:@"/"];
+    if (slashRange.location != NSNotFound) {
+        withoutScheme = [withoutScheme substringToIndex:slashRange.location];
+    }
+    return withoutScheme.lowercaseString;
 }
 
 - (void)selectMountedNAS:(id)sender {
@@ -1055,6 +1153,12 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     NSURL *url = [NSURL URLWithString:urlString];
     if (url) {
         [NSWorkspace.sharedWorkspace openURL:url];
+        [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:NO block:^(NSTimer *timer) {
+            [self refreshMountedNAS:nil];
+        }];
+        [NSTimer scheduledTimerWithTimeInterval:6.0 repeats:NO block:^(NSTimer *timer) {
+            [self refreshMountedNAS:nil];
+        }];
     }
 }
 
