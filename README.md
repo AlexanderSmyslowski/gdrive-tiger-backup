@@ -2,7 +2,7 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window.
 
-Current release: `v1.3.0` with parallel external-disk and NAS backup support.
+Current release: `v1.3.1` with parallel external-disk and NAS backup support.
 
 It backs up:
 

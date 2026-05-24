@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.3.1 - 2026-05-24
+
+- Add explicit modern bundle icon metadata so Finder and LaunchServices reliably show the app icon in `/Applications`.
+
 ## v1.3.0 - 2026-05-24
 
 - Install the helper app into the global `/Applications` folder by default.
