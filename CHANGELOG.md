@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.0 - 2026-05-24
+
+- Install the helper app into the global `/Applications` folder by default.
+- Keep external-disk mount backups active even when NAS backups are configured.
+- Treat the setup UI target as the app/scheduled backup target, so external disks and NAS can be used in parallel.
+
 ## v1.2.2 - 2026-05-24
 
 - Rename the setup UI `Dry Run` action to `Backup prüfen` / `Check backup`.

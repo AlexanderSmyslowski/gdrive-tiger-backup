@@ -22,7 +22,7 @@ RCLONE_REMOTE="${RCLONE_REMOTE:-gdrive}"
 INSTALL_LANG="${GDRIVE_BACKUP_LANG:-${INSTALL_LANG:-auto}}"
 CONFIG_DIR="$HOME/.config/gdrive-tiger-backup"
 CONFIG_FILE="$CONFIG_DIR/config"
-APP_DIR="$HOME/Applications/GDrive Backup Tiger.app"
+APP_DIR="${APP_DIR:-/Applications/GDrive Backup Tiger.app}"
 APP_CONTENTS="$APP_DIR/Contents"
 AGENT_SRC="$ROOT/launchd/com.commcats.gdrivebackup.plist"
 AGENT_DST="$HOME/Library/LaunchAgents/com.commcats.gdrivebackup.plist"
@@ -45,7 +45,7 @@ if [[ ! -x /usr/libexec/PlistBuddy ]]; then
   exit 127
 fi
 
-mkdir -p "$CONFIG_DIR" "$HOME/Applications" "$APP_CONTENTS/MacOS" "$APP_CONTENTS/Resources" "$HOME/Library/LaunchAgents"
+mkdir -p "$CONFIG_DIR" "$APP_CONTENTS/MacOS" "$APP_CONTENTS/Resources" "$HOME/Library/LaunchAgents"
 
 detect_language() {
   local value="${1:-auto}"
@@ -215,5 +215,6 @@ launchctl bootstrap "gui/$(id -u)" "$AGENT_DST"
 launchctl enable "gui/$(id -u)/com.commcats.gdrivebackup"
 
 echo "Installed gdrive-tiger-backup."
+echo "App: $APP_DIR"
 echo "Config: $CONFIG_FILE"
 echo "Run a dry-run with: /usr/local/bin/backup-google-drive.sh --dry-run"

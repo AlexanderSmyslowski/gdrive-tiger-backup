@@ -72,7 +72,12 @@ if [[ -f "$CONFIG_FILE" ]]; then
   source "$CONFIG_FILE"
 fi
 
-REQUESTED_BACKUP_TARGET="${GDRIVE_BACKUP_TARGET:-apfs}"
+BACKUP_TRIGGER="${GDRIVE_BACKUP_TRIGGER:-manual}"
+if [[ "$BACKUP_TRIGGER" == "mount" ]]; then
+  REQUESTED_BACKUP_TARGET="apfs"
+else
+  REQUESTED_BACKUP_TARGET="${GDRIVE_BACKUP_TARGET:-apfs}"
+fi
 BACKUP_TARGET="$(lowercase "$REQUESTED_BACKUP_TARGET")"
 case "$BACKUP_TARGET" in
   apfs|volume|disk) BACKUP_TARGET="apfs" ;;
@@ -107,13 +112,15 @@ REMOTE="${REMOTE%:}"
 LOG="${GDRIVE_BACKUP_LOG:-$HOME/Library/Logs/gdrive-backup.log}"
 LOCK="${GDRIVE_BACKUP_LOCK:-$HOME/Library/Logs/gdrive-backup.lock}"
 MOUNT_SETTLE_SECONDS="${MOUNT_SETTLE_SECONDS:-5}"
-ANIMATION_APP="${GDRIVE_BACKUP_ANIMATION_APP:-$HOME/Applications/GDrive Backup Tiger.app}"
+ANIMATION_APP="${GDRIVE_BACKUP_ANIMATION_APP:-/Applications/GDrive Backup Tiger.app}"
+if [[ ! -d "$ANIMATION_APP" && -d "$HOME/Applications/GDrive Backup Tiger.app" ]]; then
+  ANIMATION_APP="$HOME/Applications/GDrive Backup Tiger.app"
+fi
 ANIMATION_SENTINEL=""
 PROGRESS_FILE=""
 CONFIRM_BACKUP="${GDRIVE_BACKUP_CONFIRM:-1}"
 AUTO_CREATE_VOLUME="${GDRIVE_BACKUP_AUTO_CREATE_VOLUME:-1}"
 BACKUP_LANG="${GDRIVE_BACKUP_LANG:-auto}"
-BACKUP_TRIGGER="${GDRIVE_BACKUP_TRIGGER:-manual}"
 NAS_START_ON_MOUNT="${GDRIVE_BACKUP_NAS_START_ON_MOUNT:-0}"
 TARGET_APPROVED=0
 COPY_INDEX=0
@@ -697,10 +704,6 @@ log "Start: remote=${REMOTE}: dry_run=$DRY_RUN target=$BACKUP_TARGET mount=$VOLU
 if [[ "$BACKUP_TARGET" == "invalid" ]]; then
   log "FEHLER: Ungueltiger Zieltyp '$REQUESTED_BACKUP_TARGET'. Erlaubt sind 'apfs' und 'nas'."
   exit 64
-fi
-if [[ "$BACKUP_TARGET" == "nas" && "$BACKUP_TRIGGER" == "mount" && "$NAS_START_ON_MOUNT" != "1" ]]; then
-  log "NAS-Ziel ist konfiguriert; Mount-Trigger ist deaktiviert. Verwende Setup-App, manuellen Start oder Zeitplan."
-  exit 0
 fi
 sleep "$MOUNT_SETTLE_SECONDS"
 

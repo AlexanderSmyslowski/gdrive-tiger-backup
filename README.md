@@ -2,7 +2,7 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window.
 
-Current release: `v1.2.2` with a setup UI, NAS destination support, and manual or scheduled NAS backups.
+Current release: `v1.3.0` with parallel external-disk and NAS backup support.
 
 It backs up:
 
@@ -18,10 +18,11 @@ The backup is read-only from Google Drive's perspective. It uses `rclone copy`, 
 - A user LaunchAgent starts on every volume mount via `StartOnMount`.
 - The shell script checks whether the configured backup volume exists.
 - On first use, if the backup volume does not exist yet, the helper can ask to create a dedicated APFS volume on the newly attached external APFS disk.
-- Alternatively, the destination can be a mounted NAS share, for example SMB, AFP, or NFS under `/Volumes`.
+- In parallel, the setup window can configure a mounted NAS share, for example SMB, AFP, or NFS under `/Volumes`.
 - The setup window can select already mounted NAS shares, run a small Bonjour search, save a schedule, and start a backup manually.
 - A `flock` lock prevents two backup jobs from running at the same time.
 - Before a real backup starts, the Tiger helper asks whether this volume or NAS destination should be used.
+- External disks and NAS targets are independent: plugging in the configured external disk still opens the confirmation dialog even when NAS backups are configured.
 - The native AppKit helper appears while the backup runs.
 - During each `rclone copy`, the helper shows live progress, percent, transferred size, speed, and ETA when rclone reports it.
 - The yellow Tiger-style button minimizes the helper into the Dock.
@@ -114,7 +115,7 @@ NAS_SUBDIR="GoogleDrive-Backup" \
 
 The tool does not store NAS usernames or passwords. Use Finder or Keychain for credentials.
 
-After installation, open the setup UI:
+After installation, open the setup UI from `/Applications/GDrive Backup Tiger.app` or run:
 
 ```bash
 /usr/local/bin/backup-google-drive.sh --setup
@@ -122,7 +123,7 @@ After installation, open the setup UI:
 
 The setup window can:
 
-- choose between external disk and NAS backup targets
+- choose the target for app-started and scheduled backups
 - select an already mounted NAS volume from `/Volumes`
 - run a best-effort Bonjour search for SMB and AFP services
 - open a NAS URL in Finder so macOS can mount it through Keychain
@@ -132,7 +133,7 @@ The setup window can:
 The installer writes:
 
 - `/usr/local/bin/backup-google-drive.sh`
-- `~/Applications/GDrive Backup Tiger.app`
+- `/Applications/GDrive Backup Tiger.app`
 - `~/Library/LaunchAgents/com.commcats.gdrivebackup.plist`
 - `~/.config/gdrive-tiger-backup/config`
 
@@ -205,7 +206,7 @@ Time Machine backup volumes can be protected by macOS ACLs. If the root of your 
 
 The built-in first-use setup does exactly that for APFS disks after confirmation. For non-APFS disks, create or format a suitable APFS volume yourself first.
 
-Thunderbolt, USB, SD-card, and other directly attached disks are all just mounted volumes to macOS, so the `StartOnMount` agent can handle them. NAS and Ethernet storage usually appear as network volumes under `/Volumes`; because they may stay mounted for a long time, NAS backups default to manual or scheduled starts instead of running on every unrelated mount event.
+Thunderbolt, USB, SD-card, and other directly attached disks are all just mounted volumes to macOS, so the `StartOnMount` agent can handle them. NAS and Ethernet storage usually appear as network volumes under `/Volumes`; because they may stay mounted for a long time, NAS backups default to manual or scheduled starts instead of running on every unrelated mount event. These modes can be used together: external-disk backups remain mount-triggered, while NAS backups run from the app or schedule.
 
 ## License
 
