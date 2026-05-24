@@ -1,6 +1,6 @@
 APP_DIR := /Applications/GDrive Backup Tiger.app
 
-.PHONY: build install dry-run
+.PHONY: build install dry-run pkg clean
 
 build:
 	mkdir -p "$(APP_DIR)/Contents/MacOS" "$(APP_DIR)/Contents/Resources" build
@@ -17,3 +17,9 @@ install:
 
 dry-run:
 	/usr/local/bin/backup-google-drive.sh --dry-run
+
+pkg:
+	./packaging/build-pkg.sh
+
+clean:
+	rm -rf build dist

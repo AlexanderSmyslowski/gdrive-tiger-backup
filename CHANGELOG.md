@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.5.0 - 2026-05-24
+
+- Add a reproducible macOS `.pkg` build for GitHub releases.
+- Install the app into `/Applications`, the backup script into `/usr/local/bin`, and the mount LaunchAgent for the currently logged-in user.
+- Open the setup UI after package installation so users can choose language, external disk, NAS, and schedule settings.
+- Add release-download instructions and maintainer packaging docs.
+
 ## v1.4.0 - 2026-05-24
 
 - Make the setup app a normal macOS app with its own menu bar.

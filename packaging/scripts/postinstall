@@ -1,0 +1,63 @@
+#!/bin/bash
+set -u
+
+PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
+
+APP_PATH="/Applications/GDrive Backup Tiger.app"
+SCRIPT_PATH="/usr/local/bin/backup-google-drive.sh"
+AGENT_SOURCE="/usr/local/share/gdrive-tiger-backup/launchd/com.commcats.gdrivebackup.plist"
+
+console_user="$(/usr/bin/stat -f '%Su' /dev/console 2>/dev/null || true)"
+if [[ -z "$console_user" || "$console_user" == "root" || "$console_user" == "loginwindow" ]]; then
+  exit 0
+fi
+
+console_uid="$(/usr/bin/id -u "$console_user" 2>/dev/null || true)"
+console_gid="$(/usr/bin/id -g "$console_user" 2>/dev/null || true)"
+user_home="$(/usr/bin/dscl . -read "/Users/$console_user" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')"
+if [[ -z "$console_uid" || -z "$console_gid" || -z "$user_home" || ! -d "$user_home" ]]; then
+  exit 0
+fi
+
+agent_dir="$user_home/Library/LaunchAgents"
+agent_dest="$agent_dir/com.commcats.gdrivebackup.plist"
+config_dir="$user_home/.config/gdrive-tiger-backup"
+config_file="$config_dir/config"
+
+/bin/mkdir -p "$agent_dir" "$config_dir" "$user_home/Library/Logs"
+/usr/sbin/chown "$console_uid:$console_gid" "$agent_dir" "$config_dir" "$user_home/Library/Logs"
+
+if [[ -f "$AGENT_SOURCE" ]]; then
+  /usr/bin/install -m 644 "$AGENT_SOURCE" "$agent_dest"
+  /usr/libexec/PlistBuddy -c 'Delete :EnvironmentVariables' "$agent_dest" >/dev/null 2>&1 || true
+  /usr/libexec/PlistBuddy -c 'Add :EnvironmentVariables dict' "$agent_dest"
+  /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:HOME string $user_home" "$agent_dest"
+  /usr/libexec/PlistBuddy -c 'Add :EnvironmentVariables:PATH string /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin' "$agent_dest"
+  /usr/libexec/PlistBuddy -c 'Add :EnvironmentVariables:GDRIVE_BACKUP_TRIGGER string mount' "$agent_dest"
+  /usr/sbin/chown "$console_uid:$console_gid" "$agent_dest"
+
+  /bin/launchctl bootout "gui/$console_uid" "$agent_dest" >/dev/null 2>&1 || true
+  /bin/launchctl bootstrap "gui/$console_uid" "$agent_dest" >/dev/null 2>&1 || true
+  /bin/launchctl enable "gui/$console_uid/com.commcats.gdrivebackup" >/dev/null 2>&1 || true
+fi
+
+if [[ ! -f "$config_file" ]]; then
+  {
+    printf 'GDRIVE_BACKUP_TARGET=apfs\n'
+    printf 'GDRIVE_BACKUP_VOLUME=/Volumes/GoogleDrive-Backup\n'
+    printf 'GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup\n'
+    printf 'RCLONE_REMOTE=gdrive\n'
+    printf 'GDRIVE_BACKUP_LANG=auto\n'
+    printf 'GDRIVE_BACKUP_CONFIRM=1\n'
+    printf 'GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1\n'
+    printf 'GDRIVE_BACKUP_SCHEDULE=manual\n'
+  } >"$config_file"
+  /usr/sbin/chown "$console_uid:$console_gid" "$config_file"
+fi
+
+if [[ -d "$APP_PATH" && -x "$SCRIPT_PATH" ]]; then
+  /bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" /usr/bin/open -n "$APP_PATH" --args --setup >/dev/null 2>&1 || true
+fi
+
+exit 0

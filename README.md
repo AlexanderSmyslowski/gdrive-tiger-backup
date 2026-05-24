@@ -2,7 +2,7 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window.
 
-Current release: `v1.4.0` with a normal macOS menu bar, settings, and language selection.
+Current release: `v1.5.0` with a downloadable macOS installer package, a normal macOS menu bar, settings, and language selection.
 
 It backs up:
 
@@ -61,6 +61,25 @@ rclone lsd gdrive:
 ```
 
 ## Install
+
+### Install from GitHub release
+
+For most users, download the latest installer from the GitHub releases page:
+
+1. Open <https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/latest>
+2. Download `GDrive-Backup-Tiger-1.5.0.pkg` from `Assets`.
+3. Double-click the package and follow the macOS Installer.
+4. Open `/Applications/GDrive Backup Tiger.app` to choose language, external disk, NAS, and schedule settings.
+
+The package installs:
+
+- `/Applications/GDrive Backup Tiger.app`
+- `/usr/local/bin/backup-google-drive.sh`
+- `~/Library/LaunchAgents/com.commcats.gdrivebackup.plist` for the currently logged-in user
+
+The package is currently unsigned because the project does not yet have an Apple Developer ID Installer certificate. macOS may ask for confirmation before opening it.
+
+### Install from source
 
 Pick or create a writable backup volume, for example:
 
@@ -213,6 +232,16 @@ Thunderbolt, USB, SD-card, and other directly attached disks are all just mounte
 ## rclone Community
 
 This project is intended as a small companion helper for rclone, not as a replacement. A ready-to-submit rclone Wiki entry and forum post are in [`docs/rclone-community-submission.md`](docs/rclone-community-submission.md).
+
+## Maintainer Packaging
+
+Build a local installer package:
+
+```bash
+make pkg
+```
+
+The package is written to `dist/GDrive-Backup-Tiger-<version>.pkg`.
 
 ## License
 
