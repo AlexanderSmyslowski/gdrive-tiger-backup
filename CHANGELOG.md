@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2.2 - 2026-05-24
+
+- Rename the setup UI `Dry Run` action to `Backup prüfen` / `Check backup`.
+- Clarify that the check is optional and does not copy files.
+
 ## v1.2.1 - 2026-05-24
 
 - Detect SMB, AFP, and NFS mounts directly from macOS `mount` output so already mounted NAS shares appear reliably in the setup UI.

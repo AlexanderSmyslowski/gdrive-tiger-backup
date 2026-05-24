@@ -2,7 +2,7 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window.
 
-Current release: `v1.2.1` with a setup UI, NAS destination support, and manual or scheduled NAS backups.
+Current release: `v1.2.2` with a setup UI, NAS destination support, and manual or scheduled NAS backups.
 
 It backs up:
 
@@ -127,7 +127,7 @@ The setup window can:
 - run a best-effort Bonjour search for SMB and AFP services
 - open a NAS URL in Finder so macOS can mount it through Keychain
 - save manual, login, hourly, or daily launchd start modes
-- start a backup or dry-run immediately
+- start a backup immediately or run an optional no-copy check
 
 The installer writes:
 
@@ -161,9 +161,9 @@ Supported values for `GDRIVE_BACKUP_SCHEDULE` are `manual`, `login`, `hourly`, a
 Set `GDRIVE_BACKUP_CONFIRM=0` only if you deliberately want fully automatic backups whenever the configured volume is mounted.
 Set `GDRIVE_BACKUP_AUTO_CREATE_VOLUME=0` if you want to create the backup volume yourself.
 
-## Test First
+## Optional Safety Check
 
-Always run a dry-run before the first real backup:
+You can run an optional check before the first real backup. In the setup UI this is called `Check backup` / `Backup prüfen`; it does not copy files.
 
 ```bash
 /usr/local/bin/backup-google-drive.sh --dry-run

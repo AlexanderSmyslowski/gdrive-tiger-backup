@@ -116,14 +116,16 @@ static NSString *T(NSString *language, NSString *key) {
         @"scheduleHourly": @"Stündlich",
         @"scheduleDaily": @"Täglich 20:00",
         @"save": @"Speichern",
-        @"dryRun": @"Dry Run",
+        @"dryRun": @"Backup prüfen",
         @"backupNow": @"Backup jetzt",
+        @"dryRunTip": @"Prüft Quelle und Ziel, ohne Dateien zu kopieren.",
+        @"backupNowTip": @"Startet das echte Backup und schreibt auf das gewählte Ziel.",
         @"statusReady": @"Bereit.",
         @"statusSaved": @"Gespeichert.",
         @"statusSearching": @"Suche im Netzwerk ...",
         @"statusDiscoveryDone": @"Netzwerksuche abgeschlossen.",
         @"statusBackupStarted": @"Backup gestartet.",
-        @"statusDryRunStarted": @"Dry Run gestartet.",
+        @"statusDryRunStarted": @"Prüflauf gestartet. Es wird nichts kopiert.",
         @"selectMountedVolume": @"Volume auswählen"
     };
     NSDictionary<NSString *, NSString *> *en = @{
@@ -151,14 +153,16 @@ static NSString *T(NSString *language, NSString *key) {
         @"scheduleHourly": @"Hourly",
         @"scheduleDaily": @"Daily 20:00",
         @"save": @"Save",
-        @"dryRun": @"Dry Run",
+        @"dryRun": @"Check backup",
         @"backupNow": @"Back up now",
+        @"dryRunTip": @"Checks source and destination without copying files.",
+        @"backupNowTip": @"Starts the real backup and writes to the selected destination.",
         @"statusReady": @"Ready.",
         @"statusSaved": @"Saved.",
         @"statusSearching": @"Searching network ...",
         @"statusDiscoveryDone": @"Network search completed.",
         @"statusBackupStarted": @"Backup started.",
-        @"statusDryRunStarted": @"Dry run started.",
+        @"statusDryRunStarted": @"Check started. No files will be copied.",
         @"selectMountedVolume": @"Select volume"
     };
     NSDictionary<NSString *, NSString *> *fr = @{
@@ -1021,9 +1025,14 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.statusField.textColor = [NSColor colorWithCalibratedWhite:0.36 alpha:1.0];
     [content addSubview:self.statusField];
 
-    [content addSubview:[self button:T(self.language, @"save") frame:NSMakeRect(304, 383, 88, 30) action:@selector(saveSetup:)]];
-    [content addSubview:[self button:T(self.language, @"dryRun") frame:NSMakeRect(400, 383, 88, 30) action:@selector(startDryRun:)]];
-    [content addSubview:[self button:T(self.language, @"backupNow") frame:NSMakeRect(496, 383, 88, 30) action:@selector(startBackupNow:)]];
+    NSButton *saveButton = [self button:T(self.language, @"save") frame:NSMakeRect(282, 383, 88, 30) action:@selector(saveSetup:)];
+    NSButton *dryRunButton = [self button:T(self.language, @"dryRun") frame:NSMakeRect(378, 383, 112, 30) action:@selector(startDryRun:)];
+    dryRunButton.toolTip = T(self.language, @"dryRunTip");
+    NSButton *backupButton = [self button:T(self.language, @"backupNow") frame:NSMakeRect(498, 383, 88, 30) action:@selector(startBackupNow:)];
+    backupButton.toolTip = T(self.language, @"backupNowTip");
+    [content addSubview:saveButton];
+    [content addSubview:dryRunButton];
+    [content addSubview:backupButton];
 
     [self refreshMountedNAS:nil];
     [self.window makeKeyAndOrderFront:nil];
