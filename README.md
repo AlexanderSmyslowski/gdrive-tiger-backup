@@ -77,7 +77,18 @@ The package installs:
 - `/usr/local/bin/backup-google-drive.sh`
 - `~/Library/LaunchAgents/com.commcats.gdrivebackup.plist` for the currently logged-in user
 
-The package is currently unsigned because the project does not yet have an Apple Developer ID Installer certificate. macOS may ask for confirmation before opening it.
+The package is currently unsigned because the project does not yet have an Apple Developer ID Installer certificate. If macOS says it cannot verify the package:
+
+1. Click `Done`, not `Move to Trash`.
+2. Open `System Settings > Privacy & Security`.
+3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-1.5.0.pkg`.
+4. Confirm with `Open Anyway`, then install the package.
+
+Advanced users can also remove the download quarantine flag before opening:
+
+```bash
+xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-1.5.0.pkg"
+```
 
 ### Install from source
 
