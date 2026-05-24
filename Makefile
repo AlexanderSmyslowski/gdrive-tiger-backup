@@ -1,4 +1,4 @@
-APP_DIR := $(HOME)/Applications/GDrive\ Backup\ Tiger.app
+APP_DIR := $(HOME)/Applications/GDrive Backup Tiger.app
 
 .PHONY: build install dry-run
 

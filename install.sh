@@ -2,8 +2,22 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+lowercase() {
+  printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
+}
+
 BACKUP_VOLUME="${BACKUP_VOLUME:-/Volumes/GoogleDrive-Backup}"
 BACKUP_VOLUME_NAME="${BACKUP_VOLUME_NAME:-$(basename "$BACKUP_VOLUME")}"
+BACKUP_TARGET="${GDRIVE_BACKUP_TARGET:-${BACKUP_TARGET:-apfs}}"
+BACKUP_TARGET="$(lowercase "$BACKUP_TARGET")"
+case "$BACKUP_TARGET" in
+  apfs|volume|disk) BACKUP_TARGET="apfs" ;;
+  nas|network|smb|afp|nfs) BACKUP_TARGET="nas" ;;
+  *) echo "Invalid BACKUP_TARGET/GDRIVE_BACKUP_TARGET: $BACKUP_TARGET" >&2; exit 64 ;;
+esac
+NAS_MOUNT="${GDRIVE_BACKUP_NAS_MOUNT:-${NAS_MOUNT:-}}"
+NAS_URL="${GDRIVE_BACKUP_NAS_URL:-${NAS_URL:-}}"
+NAS_SUBDIR="${GDRIVE_BACKUP_NAS_SUBDIR:-${NAS_SUBDIR:-GoogleDrive-Backup}}"
 RCLONE_REMOTE="${RCLONE_REMOTE:-gdrive}"
 INSTALL_LANG="${GDRIVE_BACKUP_LANG:-${INSTALL_LANG:-auto}}"
 CONFIG_DIR="$HOME/.config/gdrive-tiger-backup"
@@ -31,7 +45,7 @@ mkdir -p "$CONFIG_DIR" "$HOME/Applications" "$APP_CONTENTS/MacOS" "$APP_CONTENTS
 
 detect_language() {
   local value="${1:-auto}"
-  value="${value,,}"
+  value="$(lowercase "$value")"
 
   case "$value" in
     de*) printf 'de' ;;
@@ -46,7 +60,7 @@ detect_language() {
       if command -v defaults >/dev/null 2>&1; then
         locale="$(defaults read -g AppleLocale 2>/dev/null || printf '%s' "$locale")"
       fi
-      locale="${locale,,}"
+      locale="$(lowercase "$locale")"
       case "$locale" in
         de*) printf 'de' ;;
         fr*) printf 'fr' ;;
@@ -139,8 +153,15 @@ fi
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
   {
-    printf 'GDRIVE_BACKUP_VOLUME=%q\n' "$BACKUP_VOLUME"
-    printf 'GDRIVE_BACKUP_VOLUME_NAME=%q\n' "$BACKUP_VOLUME_NAME"
+    printf 'GDRIVE_BACKUP_TARGET=%q\n' "$BACKUP_TARGET"
+    if [[ "$BACKUP_TARGET" == "nas" ]]; then
+      [[ -n "$NAS_MOUNT" ]] && printf 'GDRIVE_BACKUP_NAS_MOUNT=%q\n' "$NAS_MOUNT"
+      [[ -n "$NAS_URL" ]] && printf 'GDRIVE_BACKUP_NAS_URL=%q\n' "$NAS_URL"
+      printf 'GDRIVE_BACKUP_NAS_SUBDIR=%q\n' "$NAS_SUBDIR"
+    else
+      printf 'GDRIVE_BACKUP_VOLUME=%q\n' "$BACKUP_VOLUME"
+      printf 'GDRIVE_BACKUP_VOLUME_NAME=%q\n' "$BACKUP_VOLUME_NAME"
+    fi
     printf 'RCLONE_REMOTE=%q\n' "$RCLONE_REMOTE"
     printf 'GDRIVE_BACKUP_LANG=%q\n' "$CONFIG_LANG"
     printf 'GDRIVE_BACKUP_CONFIRM=1\n'
@@ -148,6 +169,20 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
   } >"$CONFIG_FILE"
 elif ! grep -q '^GDRIVE_BACKUP_LANG=' "$CONFIG_FILE"; then
   printf 'GDRIVE_BACKUP_LANG=%q\n' "$CONFIG_LANG" >>"$CONFIG_FILE"
+fi
+if [[ -f "$CONFIG_FILE" ]] && ! grep -q '^GDRIVE_BACKUP_TARGET=' "$CONFIG_FILE"; then
+  printf 'GDRIVE_BACKUP_TARGET=%q\n' "$BACKUP_TARGET" >>"$CONFIG_FILE"
+fi
+if [[ -f "$CONFIG_FILE" && "$BACKUP_TARGET" == "nas" ]]; then
+  if [[ -n "$NAS_MOUNT" ]] && ! grep -q '^GDRIVE_BACKUP_NAS_MOUNT=' "$CONFIG_FILE"; then
+    printf 'GDRIVE_BACKUP_NAS_MOUNT=%q\n' "$NAS_MOUNT" >>"$CONFIG_FILE"
+  fi
+  if [[ -n "$NAS_URL" ]] && ! grep -q '^GDRIVE_BACKUP_NAS_URL=' "$CONFIG_FILE"; then
+    printf 'GDRIVE_BACKUP_NAS_URL=%q\n' "$NAS_URL" >>"$CONFIG_FILE"
+  fi
+  if ! grep -q '^GDRIVE_BACKUP_NAS_SUBDIR=' "$CONFIG_FILE"; then
+    printf 'GDRIVE_BACKUP_NAS_SUBDIR=%q\n' "$NAS_SUBDIR" >>"$CONFIG_FILE"
+  fi
 fi
 
 install -m 644 "$ROOT/macos/GDriveBackupTiger/Info.plist" "$APP_CONTENTS/Info.plist"

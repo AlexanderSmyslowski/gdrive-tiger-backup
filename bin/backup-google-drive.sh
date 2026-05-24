@@ -4,15 +4,49 @@ set -uo pipefail
 PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export PATH
 
+lowercase() {
+  printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
+}
+
+nas_mount_from_url() {
+  local url="${1%%\?*}"
+  local share
+  url="${url%/}"
+  share="${url##*/}"
+
+  if [[ -n "$share" && "$share" != "$url" ]]; then
+    printf '/Volumes/%s' "$share"
+  fi
+}
+
 CONFIG_FILE="${GDRIVE_BACKUP_CONFIG:-$HOME/.config/gdrive-tiger-backup/config}"
 if [[ -f "$CONFIG_FILE" ]]; then
   # shellcheck source=/dev/null
   source "$CONFIG_FILE"
 fi
 
+REQUESTED_BACKUP_TARGET="${GDRIVE_BACKUP_TARGET:-apfs}"
+BACKUP_TARGET="$(lowercase "$REQUESTED_BACKUP_TARGET")"
+case "$BACKUP_TARGET" in
+  apfs|volume|disk) BACKUP_TARGET="apfs" ;;
+  nas|network|smb|afp|nfs) BACKUP_TARGET="nas" ;;
+  *) BACKUP_TARGET="invalid" ;;
+esac
+
 BACKUP_VOLUME_NAME="${GDRIVE_BACKUP_VOLUME_NAME:-GoogleDrive-Backup}"
-VOLUME="${GDRIVE_BACKUP_VOLUME:-/Volumes/$BACKUP_VOLUME_NAME}"
-DEST_ROOT="${GDRIVE_BACKUP_DEST_ROOT:-$VOLUME}"
+NAS_URL="${GDRIVE_BACKUP_NAS_URL:-}"
+NAS_MOUNT="${GDRIVE_BACKUP_NAS_MOUNT:-}"
+NAS_SUBDIR="${GDRIVE_BACKUP_NAS_SUBDIR:-GoogleDrive-Backup}"
+if [[ "$BACKUP_TARGET" == "nas" ]]; then
+  if [[ -z "$NAS_MOUNT" && -n "$NAS_URL" ]]; then
+    NAS_MOUNT="$(nas_mount_from_url "$NAS_URL")"
+  fi
+  VOLUME="$NAS_MOUNT"
+  DEST_ROOT="${GDRIVE_BACKUP_DEST_ROOT:-${NAS_MOUNT%/}/$NAS_SUBDIR}"
+else
+  VOLUME="${GDRIVE_BACKUP_VOLUME:-/Volumes/$BACKUP_VOLUME_NAME}"
+  DEST_ROOT="${GDRIVE_BACKUP_DEST_ROOT:-$VOLUME}"
+fi
 REMOTE="${RCLONE_REMOTE:-gdrive}"
 REMOTE="${REMOTE%:}"
 
@@ -46,7 +80,7 @@ safe_name() {
 
 detect_language() {
   local value="${1:-auto}"
-  value="${value,,}"
+  value="$(lowercase "$value")"
 
   case "$value" in
     de*) printf 'de' ;;
@@ -61,7 +95,7 @@ detect_language() {
       if command -v defaults >/dev/null 2>&1; then
         locale="$(defaults read -g AppleLocale 2>/dev/null || printf '%s' "$locale")"
       fi
-      locale="${locale,,}"
+      locale="$(lowercase "$locale")"
       case "$locale" in
         de*) printf 'de' ;;
         fr*) printf 'fr' ;;
@@ -84,6 +118,7 @@ t() {
     de:not_now) printf 'Nicht jetzt' ;;
     de:start_backup) printf 'Backup starten' ;;
     de:use_volume) printf 'Dieses Volume verwenden?' ;;
+    de:use_destination) printf 'Dieses Backup-Ziel verwenden?' ;;
     de:create_volume) printf 'Backup-Volume anlegen?' ;;
     de:create_volume_action) printf 'Volume anlegen' ;;
     de:log_confirmed) printf 'Backup durch Benutzer bestaetigt.' ;;
@@ -94,6 +129,7 @@ t() {
     en:not_now) printf 'Not now' ;;
     en:start_backup) printf 'Start backup' ;;
     en:use_volume) printf 'Use this volume?' ;;
+    en:use_destination) printf 'Use this backup destination?' ;;
     en:create_volume) printf 'Create backup volume?' ;;
     en:create_volume_action) printf 'Create volume' ;;
     en:log_confirmed) printf 'Backup confirmed by user.' ;;
@@ -104,6 +140,7 @@ t() {
     fr:not_now) printf 'Pas maintenant' ;;
     fr:start_backup) printf 'Sauvegarder' ;;
     fr:use_volume) printf 'Utiliser ce volume ?' ;;
+    fr:use_destination) printf 'Utiliser cette destination ?' ;;
     fr:create_volume) printf 'Créer le volume de sauvegarde ?' ;;
     fr:create_volume_action) printf 'Créer volume' ;;
     fr:log_confirmed) printf 'Sauvegarde confirmée par l utilisateur.' ;;
@@ -114,6 +151,7 @@ t() {
     es:not_now) printf 'Ahora no' ;;
     es:start_backup) printf 'Iniciar copia' ;;
     es:use_volume) printf '¿Usar este volumen?' ;;
+    es:use_destination) printf '¿Usar este destino de copia?' ;;
     es:create_volume) printf '¿Crear volumen de copia?' ;;
     es:create_volume_action) printf 'Crear volumen' ;;
     es:log_confirmed) printf 'Copia confirmada por el usuario.' ;;
@@ -124,6 +162,7 @@ t() {
     ja:not_now) printf '今はしない' ;;
     ja:start_backup) printf 'バックアップ開始' ;;
     ja:use_volume) printf 'このボリュームを使いますか？' ;;
+    ja:use_destination) printf 'このバックアップ先を使いますか？' ;;
     ja:create_volume) printf 'バックアップ用ボリュームを作成？' ;;
     ja:create_volume_action) printf 'ボリューム作成' ;;
     ja:log_confirmed) printf 'ユーザーがバックアップを確認しました。' ;;
@@ -134,6 +173,7 @@ t() {
     yue:not_now) printf '暫時唔好' ;;
     yue:start_backup) printf '開始備份' ;;
     yue:use_volume) printf '使用呢個卷宗？' ;;
+    yue:use_destination) printf '使用呢個備份目的地？' ;;
     yue:create_volume) printf '建立備份卷宗？' ;;
     yue:create_volume_action) printf '建立卷宗' ;;
     yue:log_confirmed) printf '使用者已確認備份。' ;;
@@ -144,6 +184,7 @@ t() {
     ko:not_now) printf '지금 안 함' ;;
     ko:start_backup) printf '백업 시작' ;;
     ko:use_volume) printf '이 볼륨을 사용할까요?' ;;
+    ko:use_destination) printf '이 백업 대상을 사용할까요?' ;;
     ko:create_volume) printf '백업 볼륨을 만들까요?' ;;
     ko:create_volume_action) printf '볼륨 생성' ;;
     ko:log_confirmed) printf '사용자가 백업을 확인했습니다.' ;;
@@ -352,7 +393,16 @@ confirm_backup_target() {
     return 0
   fi
 
-  if confirm_prompt "$(t use_volume)" "$VOLUME" "$(t start_backup)"; then
+  local title
+  local detail="$VOLUME"
+  if [[ "$BACKUP_TARGET" == "nas" ]]; then
+    title="$(t use_destination)"
+    detail="$DEST_ROOT"
+  else
+    title="$(t use_volume)"
+  fi
+
+  if confirm_prompt "$title" "$detail" "$(t start_backup)"; then
     TARGET_APPROVED=1
     log "$(t log_confirmed)"
     return 0
@@ -411,6 +461,9 @@ persist_volume_config() {
   mkdir -p "$(dirname "$CONFIG_FILE")"
   touch "$CONFIG_FILE"
 
+  if ! grep -q '^GDRIVE_BACKUP_TARGET=' "$CONFIG_FILE"; then
+    printf 'GDRIVE_BACKUP_TARGET=apfs\n' >>"$CONFIG_FILE"
+  fi
   if ! grep -q '^GDRIVE_BACKUP_VOLUME=' "$CONFIG_FILE"; then
     printf 'GDRIVE_BACKUP_VOLUME=%q\n' "$VOLUME" >>"$CONFIG_FILE"
   fi
@@ -495,6 +548,68 @@ ensure_backup_volume() {
   return 1
 }
 
+mount_nas_url() {
+  [[ -n "$NAS_URL" ]] || return 1
+
+  log "NAS-Freigabe ist noch nicht gemountet; versuche zu mounten: $NAS_URL"
+  if command -v osascript >/dev/null 2>&1; then
+    /usr/bin/osascript - "$NAS_URL" <<'OSA'
+on run argv
+  mount volume (item 1 of argv)
+end run
+OSA
+    return $?
+  fi
+
+  /usr/bin/open "$NAS_URL"
+}
+
+ensure_nas_destination() {
+  if [[ -z "$NAS_MOUNT" ]]; then
+    log "FEHLER: NAS-Ziel ist nicht konfiguriert. Setze GDRIVE_BACKUP_NAS_MOUNT oder GDRIVE_BACKUP_NAS_URL."
+    return 1
+  fi
+
+  if [[ ! -d "$NAS_MOUNT" && -n "$NAS_URL" ]]; then
+    if [[ "$DRY_RUN" == "1" ]]; then
+      log "DRY-RUN: NAS-Freigabe wuerde bei Bedarf gemountet: $NAS_URL"
+      return 1
+    else
+      mount_nas_url || log "WARNUNG: NAS-Freigabe konnte nicht automatisch gemountet werden."
+    fi
+  fi
+
+  local waited=0
+  while [[ ! -d "$NAS_MOUNT" && "$waited" -lt 30 ]]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  if [[ ! -d "$NAS_MOUNT" ]]; then
+    log "NAS-Ziel ist nicht gemountet: $NAS_MOUNT"
+    return 1
+  fi
+
+  if [[ "$DRY_RUN" == "0" && ! -w "$NAS_MOUNT" ]]; then
+    log "FEHLER: NAS-Mount ist nicht beschreibbar: $NAS_MOUNT"
+    return 1
+  fi
+
+  log "NAS-Ziel bereit: mount=$NAS_MOUNT ziel=$DEST_ROOT"
+  return 0
+}
+
+ensure_backup_target() {
+  case "$BACKUP_TARGET" in
+    apfs) ensure_backup_volume ;;
+    nas) ensure_nas_destination ;;
+    *)
+      log "FEHLER: Ungueltiger Zieltyp '$BACKUP_TARGET'. Erlaubt sind 'apfs' und 'nas'."
+      return 1
+      ;;
+  esac
+}
+
 DRY_RUN=1
 for arg in "$@"; do
   case "$arg" in
@@ -507,7 +622,11 @@ for arg in "$@"; do
   esac
 done
 
-log "Start: remote=${REMOTE}: dry_run=$DRY_RUN volume=$VOLUME"
+log "Start: remote=${REMOTE}: dry_run=$DRY_RUN target=$BACKUP_TARGET mount=$VOLUME dest=$DEST_ROOT"
+if [[ "$BACKUP_TARGET" == "invalid" ]]; then
+  log "FEHLER: Ungueltiger Zieltyp '$REQUESTED_BACKUP_TARGET'. Erlaubt sind 'apfs' und 'nas'."
+  exit 64
+fi
 sleep "$MOUNT_SETTLE_SECONDS"
 
 for cmd in rclone flock jq diskutil plutil; do
@@ -523,7 +642,7 @@ if ! flock -n 9; then
   exit 0
 fi
 
-if ! ensure_backup_volume; then
+if ! ensure_backup_target; then
   exit 0
 fi
 

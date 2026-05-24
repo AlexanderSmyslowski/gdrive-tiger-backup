@@ -2,6 +2,8 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window.
 
+Current release: `v1.1.0` with APFS volume and NAS destination support.
+
 It backs up:
 
 - My Drive
@@ -16,8 +18,9 @@ The backup is read-only from Google Drive's perspective. It uses `rclone copy`, 
 - A user LaunchAgent starts on every volume mount via `StartOnMount`.
 - The shell script checks whether the configured backup volume exists.
 - On first use, if the backup volume does not exist yet, the helper can ask to create a dedicated APFS volume on the newly attached external APFS disk.
+- Alternatively, the destination can be a mounted NAS share, for example SMB, AFP, or NFS under `/Volumes`.
 - A `flock` lock prevents two backup jobs from running at the same time.
-- Before a real backup starts, the Tiger helper asks whether this volume should be used.
+- Before a real backup starts, the Tiger helper asks whether this volume or NAS destination should be used.
 - The native AppKit helper appears while the backup runs.
 - During each `rclone copy`, the helper shows live progress, percent, transferred size, speed, and ETA when rclone reports it.
 - The yellow Tiger-style button minimizes the helper into the Dock.
@@ -87,6 +90,29 @@ To install Homebrew dependencies as part of the installer:
 INSTALL_DEPS=1 BACKUP_VOLUME="/Volumes/GoogleDrive-Backup" ./install.sh
 ```
 
+### Install for a NAS
+
+Mount the NAS share once in Finder and save the credentials in Keychain. Then install with a NAS target:
+
+```bash
+BACKUP_TARGET=nas \
+NAS_MOUNT="/Volumes/Backups" \
+NAS_SUBDIR="GoogleDrive-Backup" \
+./install.sh
+```
+
+You can also let the script ask macOS to mount the share when it is not already mounted:
+
+```bash
+BACKUP_TARGET=nas \
+NAS_URL="smb://nas.local/Backups" \
+NAS_MOUNT="/Volumes/Backups" \
+NAS_SUBDIR="GoogleDrive-Backup" \
+./install.sh
+```
+
+The tool does not store NAS usernames or passwords. Use Finder or Keychain for credentials.
+
 The installer writes:
 
 - `/usr/local/bin/backup-google-drive.sh`
@@ -97,12 +123,23 @@ The installer writes:
 The default config keeps confirmation enabled:
 
 ```bash
+GDRIVE_BACKUP_TARGET=apfs
 GDRIVE_BACKUP_LANG=en
 GDRIVE_BACKUP_CONFIRM=1
 GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
 ```
 
+For NAS backups, the config looks like this:
+
+```bash
+GDRIVE_BACKUP_TARGET=nas
+GDRIVE_BACKUP_NAS_MOUNT=/Volumes/Backups
+GDRIVE_BACKUP_NAS_URL=smb://nas.local/Backups
+GDRIVE_BACKUP_NAS_SUBDIR=GoogleDrive-Backup
+```
+
 Supported values for `GDRIVE_BACKUP_LANG` are `de`, `en`, `fr`, `es`, `ja`, `yue`, and `ko`.
+Supported values for `GDRIVE_BACKUP_TARGET` are `apfs` and `nas`.
 Set `GDRIVE_BACKUP_CONFIRM=0` only if you deliberately want fully automatic backups whenever the configured volume is mounted.
 Set `GDRIVE_BACKUP_AUTO_CREATE_VOLUME=0` if you want to create the backup volume yourself.
 
@@ -149,6 +186,8 @@ launchctl print "gui/$(id -u)/com.commcats.gdrivebackup"
 Time Machine backup volumes can be protected by macOS ACLs. If the root of your Time Machine disk is not writable, create a separate APFS volume such as `/Volumes/GoogleDrive-Backup` in the same APFS container and use that as `BACKUP_VOLUME`.
 
 The built-in first-use setup does exactly that for APFS disks after confirmation. For non-APFS disks, create or format a suitable APFS volume yourself first.
+
+For NAS backups, `StartOnMount` usually fires when macOS mounts the network share. If your NAS or VPN setup does not trigger a mount event reliably, run `/usr/local/bin/backup-google-drive.sh --run` manually or add a separate schedule.
 
 ## License
 
