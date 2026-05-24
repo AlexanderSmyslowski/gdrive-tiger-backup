@@ -2,7 +2,7 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window.
 
-Current release: `v1.1.0` with APFS volume and NAS destination support.
+Current release: `v1.1.1` with APFS volume and NAS destination support.
 
 It backs up:
 

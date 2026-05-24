@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.1.1 - 2026-05-24
+
+- Make the backup script robust when launchd starts it without an explicit `HOME` environment variable.
+
 ## v1.1.0 - 2026-05-24
 
 - Add NAS destination support with `GDRIVE_BACKUP_TARGET=nas`.

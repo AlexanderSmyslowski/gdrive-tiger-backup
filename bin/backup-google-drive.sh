@@ -4,6 +4,16 @@ set -uo pipefail
 PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export PATH
 
+if [[ -z "${HOME:-}" ]]; then
+  HOME="$(/usr/bin/dscl . -read "/Users/$(/usr/bin/id -un)" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')"
+  export HOME
+fi
+
+if [[ -z "${HOME:-}" || ! -d "$HOME" ]]; then
+  printf 'FEHLER: HOME konnte nicht ermittelt werden.\n' >&2
+  exit 78
+fi
+
 lowercase() {
   printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
 }

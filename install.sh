@@ -40,6 +40,10 @@ for cmd in clang codesign iconutil install launchctl; do
     exit 127
   fi
 done
+if [[ ! -x /usr/libexec/PlistBuddy ]]; then
+  echo "Missing required command: /usr/libexec/PlistBuddy" >&2
+  exit 127
+fi
 
 mkdir -p "$CONFIG_DIR" "$HOME/Applications" "$APP_CONTENTS/MacOS" "$APP_CONTENTS/Resources" "$HOME/Library/LaunchAgents"
 
@@ -200,6 +204,10 @@ codesign --force --deep --sign - "$APP_DIR" >/dev/null
 
 sudo install -m 755 "$ROOT/bin/backup-google-drive.sh" /usr/local/bin/backup-google-drive.sh
 install -m 644 "$AGENT_SRC" "$AGENT_DST"
+/usr/libexec/PlistBuddy -c 'Delete :EnvironmentVariables' "$AGENT_DST" >/dev/null 2>&1 || true
+/usr/libexec/PlistBuddy -c 'Add :EnvironmentVariables dict' "$AGENT_DST"
+/usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:HOME string $HOME" "$AGENT_DST"
+/usr/libexec/PlistBuddy -c 'Add :EnvironmentVariables:PATH string /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin' "$AGENT_DST"
 
 launchctl bootout "gui/$(id -u)" "$AGENT_DST" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$AGENT_DST"
