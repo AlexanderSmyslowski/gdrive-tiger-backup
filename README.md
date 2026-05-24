@@ -210,6 +210,10 @@ The built-in first-use setup does exactly that for APFS disks after confirmation
 
 Thunderbolt, USB, SD-card, and other directly attached disks are all just mounted volumes to macOS, so the `StartOnMount` agent can handle them. NAS and Ethernet storage usually appear as network volumes under `/Volumes`; because they may stay mounted for a long time, NAS backups default to manual or scheduled starts instead of running on every unrelated mount event. These modes can be used together: external-disk backups remain mount-triggered, while NAS backups run from the app or schedule.
 
+## rclone Community
+
+This project is intended as a small companion helper for rclone, not as a replacement. A ready-to-submit rclone Wiki entry and forum post are in [`docs/rclone-community-submission.md`](docs/rclone-community-submission.md).
+
 ## License
 
 MIT
