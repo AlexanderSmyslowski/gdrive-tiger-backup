@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.2.0 - 2026-05-24
+
+- Add a Tiger-style setup window for external disk and NAS backup targets.
+- Let users select already mounted NAS shares from `/Volumes`.
+- Add best-effort Bonjour discovery for SMB and AFP services.
+- Add setup UI actions for saving config, opening NAS URLs in Finder, dry-runs, and starting a backup now.
+- Add optional NAS schedules: manual, login, hourly, or daily at 20:00.
+- Prevent NAS configs from running on every unrelated `StartOnMount` event by default.
+
 ## v1.1.1 - 2026-05-24
 
 - Make the backup script robust when launchd starts it without an explicit `HOME` environment variable.

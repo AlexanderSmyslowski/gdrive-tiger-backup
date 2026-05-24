@@ -69,6 +69,8 @@ PROGRESS_FILE=""
 CONFIRM_BACKUP="${GDRIVE_BACKUP_CONFIRM:-1}"
 AUTO_CREATE_VOLUME="${GDRIVE_BACKUP_AUTO_CREATE_VOLUME:-1}"
 BACKUP_LANG="${GDRIVE_BACKUP_LANG:-auto}"
+BACKUP_TRIGGER="${GDRIVE_BACKUP_TRIGGER:-manual}"
+NAS_START_ON_MOUNT="${GDRIVE_BACKUP_NAS_START_ON_MOUNT:-0}"
 TARGET_APPROVED=0
 COPY_INDEX=0
 COPY_TOTAL=0
@@ -621,10 +623,12 @@ ensure_backup_target() {
 }
 
 DRY_RUN=1
+SETUP_UI=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     --run) DRY_RUN=0 ;;
+    --setup) SETUP_UI=1 ;;
     *)
       log "Unbekannter Parameter: $arg"
       exit 64
@@ -632,10 +636,23 @@ for arg in "$@"; do
   esac
 done
 
+if [[ "$SETUP_UI" == "1" ]]; then
+  if [[ -d "$ANIMATION_APP" ]]; then
+    /usr/bin/open -n "$ANIMATION_APP" --args --setup >/dev/null 2>&1
+    exit 0
+  fi
+  log "FEHLER: Setup-App nicht gefunden: $ANIMATION_APP"
+  exit 69
+fi
+
 log "Start: remote=${REMOTE}: dry_run=$DRY_RUN target=$BACKUP_TARGET mount=$VOLUME dest=$DEST_ROOT"
 if [[ "$BACKUP_TARGET" == "invalid" ]]; then
   log "FEHLER: Ungueltiger Zieltyp '$REQUESTED_BACKUP_TARGET'. Erlaubt sind 'apfs' und 'nas'."
   exit 64
+fi
+if [[ "$BACKUP_TARGET" == "nas" && "$BACKUP_TRIGGER" == "mount" && "$NAS_START_ON_MOUNT" != "1" ]]; then
+  log "NAS-Ziel ist konfiguriert; Mount-Trigger ist deaktiviert. Verwende Setup-App, manuellen Start oder Zeitplan."
+  exit 0
 fi
 sleep "$MOUNT_SETTLE_SECONDS"
 

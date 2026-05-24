@@ -208,6 +208,7 @@ install -m 644 "$AGENT_SRC" "$AGENT_DST"
 /usr/libexec/PlistBuddy -c 'Add :EnvironmentVariables dict' "$AGENT_DST"
 /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:HOME string $HOME" "$AGENT_DST"
 /usr/libexec/PlistBuddy -c 'Add :EnvironmentVariables:PATH string /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin' "$AGENT_DST"
+/usr/libexec/PlistBuddy -c 'Add :EnvironmentVariables:GDRIVE_BACKUP_TRIGGER string mount' "$AGENT_DST"
 
 launchctl bootout "gui/$(id -u)" "$AGENT_DST" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$AGENT_DST"

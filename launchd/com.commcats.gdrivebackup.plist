@@ -16,6 +16,14 @@
   <key>StartOnMount</key>
   <true/>
 
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>GDRIVE_BACKUP_TRIGGER</key>
+    <string>mount</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
   <key>RunAtLoad</key>
   <false/>
 </dict>

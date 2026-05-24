@@ -1,4 +1,5 @@
 #import <Cocoa/Cocoa.h>
+#include <unistd.h>
 
 static NSImage *CreateApplicationIcon(void) {
     NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(128, 128)];
@@ -97,7 +98,33 @@ static NSString *T(NSString *language, NSString *key) {
         @"running": @"Sicherung wird erstellt ...",
         @"completed": @"Sicherung abgeschlossen.",
         @"runningHint": @"Bitte Festplatte nicht auswerfen.",
-        @"completedHint": @"Backup ist fertig."
+        @"completedHint": @"Backup ist fertig.",
+        @"setupTitle": @"Backup-Ziel und Startmodus",
+        @"targetType": @"Zieltyp",
+        @"externalVolume": @"Externe Platte",
+        @"nas": @"NAS / Netzwerk",
+        @"mountedNas": @"Gemountete NAS",
+        @"refresh": @"Aktualisieren",
+        @"discover": @"Suchen",
+        @"openFinder": @"Im Finder öffnen",
+        @"nasUrl": @"NAS-URL",
+        @"nasMount": @"Mountpunkt",
+        @"nasSubdir": @"Zielordner",
+        @"schedule": @"Starten",
+        @"scheduleManual": @"Nur manuell",
+        @"scheduleLogin": @"Beim Login",
+        @"scheduleHourly": @"Stündlich",
+        @"scheduleDaily": @"Täglich 20:00",
+        @"save": @"Speichern",
+        @"dryRun": @"Dry Run",
+        @"backupNow": @"Backup jetzt",
+        @"statusReady": @"Bereit.",
+        @"statusSaved": @"Gespeichert.",
+        @"statusSearching": @"Suche im Netzwerk ...",
+        @"statusDiscoveryDone": @"Netzwerksuche abgeschlossen.",
+        @"statusBackupStarted": @"Backup gestartet.",
+        @"statusDryRunStarted": @"Dry Run gestartet.",
+        @"selectMountedVolume": @"Volume auswählen"
     };
     NSDictionary<NSString *, NSString *> *en = @{
         @"confirmTarget": @"Use this volume?",
@@ -106,7 +133,33 @@ static NSString *T(NSString *language, NSString *key) {
         @"running": @"Backup is running ...",
         @"completed": @"Backup completed.",
         @"runningHint": @"Please do not eject the disk.",
-        @"completedHint": @"Backup is done."
+        @"completedHint": @"Backup is done.",
+        @"setupTitle": @"Backup target and trigger",
+        @"targetType": @"Target type",
+        @"externalVolume": @"External disk",
+        @"nas": @"NAS / Network",
+        @"mountedNas": @"Mounted NAS",
+        @"refresh": @"Refresh",
+        @"discover": @"Search",
+        @"openFinder": @"Open in Finder",
+        @"nasUrl": @"NAS URL",
+        @"nasMount": @"Mount point",
+        @"nasSubdir": @"Destination folder",
+        @"schedule": @"Start",
+        @"scheduleManual": @"Manual only",
+        @"scheduleLogin": @"At login",
+        @"scheduleHourly": @"Hourly",
+        @"scheduleDaily": @"Daily 20:00",
+        @"save": @"Save",
+        @"dryRun": @"Dry Run",
+        @"backupNow": @"Back up now",
+        @"statusReady": @"Ready.",
+        @"statusSaved": @"Saved.",
+        @"statusSearching": @"Searching network ...",
+        @"statusDiscoveryDone": @"Network search completed.",
+        @"statusBackupStarted": @"Backup started.",
+        @"statusDryRunStarted": @"Dry run started.",
+        @"selectMountedVolume": @"Select volume"
     };
     NSDictionary<NSString *, NSString *> *fr = @{
         @"confirmTarget": @"Utiliser ce volume ?",
@@ -164,6 +217,197 @@ static NSString *T(NSString *language, NSString *key) {
         @"ko": ko
     };
     return (tables[language][key] ?: en[key]) ?: key;
+}
+
+static NSString *ConfigPath(void) {
+    return [NSHomeDirectory() stringByAppendingPathComponent:@".config/gdrive-tiger-backup/config"];
+}
+
+static NSString *ScheduleAgentPath(void) {
+    return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/LaunchAgents/com.commcats.gdrivebackup.schedule.plist"];
+}
+
+static NSMutableDictionary<NSString *, NSString *> *ReadConfigDictionary(void) {
+    NSMutableDictionary<NSString *, NSString *> *values = [NSMutableDictionary dictionary];
+    NSString *config = [NSString stringWithContentsOfFile:ConfigPath() encoding:NSUTF8StringEncoding error:nil];
+    for (NSString *line in [config componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+        NSRange range = [line rangeOfString:@"="];
+        if (range.location == NSNotFound || [line hasPrefix:@"#"]) {
+            continue;
+        }
+        NSString *key = [[line substringToIndex:range.location] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        NSString *value = TrimConfigValue([line substringFromIndex:range.location + 1]);
+        if (key.length) {
+            values[key] = value;
+        }
+    }
+    return values;
+}
+
+static NSString *ShellQuote(NSString *value) {
+    NSString *escaped = [value ?: @"" stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
+    return [NSString stringWithFormat:@"'%@'", escaped];
+}
+
+static BOOL WriteConfigUpdates(NSDictionary<NSString *, NSString *> *updates, NSError **error) {
+    NSString *path = ConfigPath();
+    NSString *dir = [path stringByDeletingLastPathComponent];
+    [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+
+    NSString *config = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] ?: @"";
+    NSMutableArray<NSString *> *lines = [[config componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet] mutableCopy];
+    NSMutableSet<NSString *> *remaining = [NSMutableSet setWithArray:updates.allKeys];
+
+    for (NSUInteger index = 0; index < lines.count; index++) {
+        NSString *line = lines[index];
+        NSRange range = [line rangeOfString:@"="];
+        if (range.location == NSNotFound || [line hasPrefix:@"#"]) {
+            continue;
+        }
+        NSString *key = [[line substringToIndex:range.location] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        NSString *value = updates[key];
+        if (value) {
+            lines[index] = [NSString stringWithFormat:@"%@=%@", key, ShellQuote(value)];
+            [remaining removeObject:key];
+        }
+    }
+
+    if (lines.count && lines.lastObject.length == 0) {
+        [lines removeLastObject];
+    }
+
+    NSArray<NSString *> *orderedKeys = @[
+        @"GDRIVE_BACKUP_TARGET",
+        @"GDRIVE_BACKUP_NAS_MOUNT",
+        @"GDRIVE_BACKUP_NAS_URL",
+        @"GDRIVE_BACKUP_NAS_SUBDIR",
+        @"GDRIVE_BACKUP_NAS_START_ON_MOUNT",
+        @"GDRIVE_BACKUP_SCHEDULE"
+    ];
+    for (NSString *key in orderedKeys) {
+        if ([remaining containsObject:key]) {
+            [lines addObject:[NSString stringWithFormat:@"%@=%@", key, ShellQuote(updates[key])]];
+            [remaining removeObject:key];
+        }
+    }
+    for (NSString *key in remaining.allObjects) {
+        [lines addObject:[NSString stringWithFormat:@"%@=%@", key, ShellQuote(updates[key])]];
+    }
+
+    NSString *newConfig = [[lines arrayByAddingObject:@""] componentsJoinedByString:@"\n"];
+    return [newConfig writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:error];
+}
+
+static NSString *RunCommand(NSString *launchPath, NSArray<NSString *> *arguments, NSDictionary<NSString *, NSString *> *environment, int *statusOut) {
+    NSTask *task = [[NSTask alloc] init];
+    task.launchPath = launchPath;
+    task.arguments = arguments ?: @[];
+    if (environment) {
+        NSMutableDictionary *env = NSProcessInfo.processInfo.environment.mutableCopy;
+        [env addEntriesFromDictionary:environment];
+        task.environment = env;
+    }
+
+    NSPipe *pipe = [NSPipe pipe];
+    task.standardOutput = pipe;
+    task.standardError = pipe;
+    @try {
+        [task launch];
+        [task waitUntilExit];
+    } @catch (NSException *exception) {
+        if (statusOut) {
+            *statusOut = 127;
+        }
+        return exception.reason ?: @"";
+    }
+
+    if (statusOut) {
+        *statusOut = task.terminationStatus;
+    }
+    NSData *data = [pipe.fileHandleForReading readDataToEndOfFile];
+    return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"";
+}
+
+static NSArray<NSDictionary<NSString *, NSString *> *> *MountedNetworkVolumes(void) {
+    NSMutableArray<NSDictionary<NSString *, NSString *> *> *volumes = [NSMutableArray array];
+    NSArray<NSString *> *names = [NSFileManager.defaultManager contentsOfDirectoryAtPath:@"/Volumes" error:nil] ?: @[];
+    for (NSString *name in names) {
+        if ([name hasPrefix:@"."]) {
+            continue;
+        }
+        NSString *path = [@"/Volumes" stringByAppendingPathComponent:name];
+        BOOL isDirectory = NO;
+        if (![NSFileManager.defaultManager fileExistsAtPath:path isDirectory:&isDirectory] || !isDirectory) {
+            continue;
+        }
+
+        NSURL *url = [NSURL fileURLWithPath:path];
+        NSNumber *isLocal = nil;
+        NSURL *remountURL = nil;
+        [url getResourceValue:&isLocal forKey:NSURLVolumeIsLocalKey error:nil];
+        [url getResourceValue:&remountURL forKey:NSURLVolumeURLForRemountingKey error:nil];
+
+        BOOL networkVolume = (isLocal && !isLocal.boolValue) || remountURL.absoluteString.length > 0;
+        if (!networkVolume) {
+            continue;
+        }
+
+        [volumes addObject:@{
+            @"name": name,
+            @"path": path,
+            @"url": remountURL.absoluteString ?: @"",
+            @"writable": [NSFileManager.defaultManager isWritableFileAtPath:path] ? @"1" : @"0",
+            @"readable": [NSFileManager.defaultManager isReadableFileAtPath:path] ? @"1" : @"0"
+        }];
+    }
+    return volumes;
+}
+
+static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(void) {
+    NSString *script = @"pids=''; for t in _smb._tcp _afpovertcp._tcp; do /usr/bin/dns-sd -B \"$t\" local 2>/dev/null & pids=\"$pids $!\"; done; sleep 3; for p in $pids; do kill \"$p\" 2>/dev/null; done; wait 2>/dev/null";
+    int status = 0;
+    NSString *output = RunCommand(@"/bin/bash", @[@"-lc", script], nil, &status);
+    NSMutableArray<NSDictionary<NSString *, NSString *> *> *services = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+
+    for (NSString *line in [output componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+        if (![line containsString:@" Add "]) {
+            continue;
+        }
+        NSString *scheme = nil;
+        NSString *typeToken = nil;
+        if ([line containsString:@"_smb._tcp."]) {
+            scheme = @"smb";
+            typeToken = @"_smb._tcp.";
+        } else if ([line containsString:@"_afpovertcp._tcp."]) {
+            scheme = @"afp";
+            typeToken = @"_afpovertcp._tcp.";
+        } else {
+            continue;
+        }
+
+        NSRange range = [line rangeOfString:typeToken];
+        if (range.location == NSNotFound) {
+            continue;
+        }
+        NSString *name = [[line substringFromIndex:NSMaxRange(range)] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (!name.length) {
+            continue;
+        }
+        NSString *hostPart = [[name lowercaseString] stringByReplacingOccurrencesOfString:@" " withString:@"-"];
+        NSString *candidateURL = [NSString stringWithFormat:@"%@://%@.local", scheme, hostPart];
+        NSString *key = [NSString stringWithFormat:@"%@:%@", scheme, name];
+        if ([seen containsObject:key]) {
+            continue;
+        }
+        [seen addObject:key];
+        [services addObject:@{
+            @"name": name,
+            @"url": candidateURL,
+            @"scheme": scheme.uppercaseString
+        }];
+    }
+    return services;
 }
 
 @interface TigerBackupView : NSView
@@ -529,11 +773,62 @@ static NSString *T(NSString *language, NSString *key) {
 
 @end
 
+@interface TigerSetupView : NSView
+@end
+
+@implementation TigerSetupView
+
+- (BOOL)isFlipped {
+    return YES;
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    [super drawRect:dirtyRect];
+    NSRect bounds = self.bounds;
+
+    NSGradient *bodyGradient = [[NSGradient alloc] initWithColors:@[
+        [NSColor colorWithCalibratedWhite:0.97 alpha:1.0],
+        [NSColor colorWithCalibratedWhite:0.84 alpha:1.0]
+    ]];
+    [bodyGradient drawInRect:bounds angle:-90];
+
+    NSRect titleBar = NSMakeRect(0, 0, NSWidth(bounds), 64);
+    NSGradient *titleGradient = [[NSGradient alloc] initWithColors:@[
+        [NSColor colorWithCalibratedWhite:0.96 alpha:1.0],
+        [NSColor colorWithCalibratedWhite:0.72 alpha:1.0]
+    ]];
+    [titleGradient drawInRect:titleBar angle:-90];
+
+    [[NSColor colorWithCalibratedWhite:1.0 alpha:0.22] setFill];
+    for (CGFloat y = 72; y < NSHeight(bounds); y += 4) {
+        NSRectFill(NSMakeRect(0, y, NSWidth(bounds), 1));
+    }
+
+    [[NSColor colorWithCalibratedWhite:0.46 alpha:0.35] setFill];
+    NSRectFill(NSMakeRect(0, NSMaxY(titleBar) - 1, NSWidth(bounds), 1));
+
+    NSBezierPath *panel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 84, NSWidth(bounds) - 36, 222) xRadius:12 yRadius:12];
+    [[NSColor colorWithCalibratedWhite:1.0 alpha:0.54] setFill];
+    [panel fill];
+    [[NSColor colorWithCalibratedWhite:0.42 alpha:0.24] setStroke];
+    panel.lineWidth = 1;
+    [panel stroke];
+
+    NSBezierPath *schedulePanel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 318, NSWidth(bounds) - 36, 52) xRadius:12 yRadius:12];
+    [[NSColor colorWithCalibratedWhite:1.0 alpha:0.42] setFill];
+    [schedulePanel fill];
+    [[NSColor colorWithCalibratedWhite:0.42 alpha:0.20] setStroke];
+    [schedulePanel stroke];
+}
+
+@end
+
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, copy) NSString *sentinelPath;
 @property(nonatomic, copy) NSString *progressPath;
 @property(nonatomic) BOOL confirmMode;
+@property(nonatomic) BOOL setupMode;
 @property(nonatomic, copy) NSString *language;
 @property(nonatomic, copy) NSString *confirmTitle;
 @property(nonatomic, copy) NSString *confirmDetail;
@@ -546,13 +841,336 @@ static NSString *T(NSString *language, NSString *key) {
 @property(nonatomic) BOOL hiddenByUser;
 @property(nonatomic) BOOL completing;
 @property(nonatomic) BOOL confirmationAnswered;
+@property(nonatomic, strong) NSPopUpButton *targetPopup;
+@property(nonatomic, strong) NSPopUpButton *mountedNasPopup;
+@property(nonatomic, strong) NSPopUpButton *discoveredNasPopup;
+@property(nonatomic, strong) NSPopUpButton *schedulePopup;
+@property(nonatomic, strong) NSTextField *nasURLField;
+@property(nonatomic, strong) NSTextField *nasMountField;
+@property(nonatomic, strong) NSTextField *nasSubdirField;
+@property(nonatomic, strong) NSTextField *statusField;
 @end
 
 @implementation AppDelegate
 
+- (NSTextField *)label:(NSString *)text frame:(NSRect)frame {
+    NSTextField *label = [[NSTextField alloc] initWithFrame:frame];
+    label.stringValue = text ?: @"";
+    label.bezeled = NO;
+    label.drawsBackground = NO;
+    label.editable = NO;
+    label.selectable = NO;
+    label.font = [NSFont fontWithName:@"Lucida Grande" size:12] ?: [NSFont systemFontOfSize:12];
+    label.textColor = [NSColor colorWithCalibratedWhite:0.18 alpha:1.0];
+    return label;
+}
+
+- (NSTextField *)fieldWithFrame:(NSRect)frame {
+    NSTextField *field = [[NSTextField alloc] initWithFrame:frame];
+    field.font = [NSFont fontWithName:@"Lucida Grande" size:12] ?: [NSFont systemFontOfSize:12];
+    field.bezelStyle = NSTextFieldRoundedBezel;
+    return field;
+}
+
+- (NSButton *)button:(NSString *)title frame:(NSRect)frame action:(SEL)action {
+    NSButton *button = [[NSButton alloc] initWithFrame:frame];
+    button.title = title ?: @"";
+    button.bezelStyle = NSBezelStyleRounded;
+    button.target = self;
+    button.action = action;
+    button.font = [NSFont fontWithName:@"Lucida Grande" size:12] ?: [NSFont systemFontOfSize:12];
+    return button;
+}
+
+- (void)showSetupWindow {
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    [NSApp setApplicationIconImage:CreateApplicationIcon()];
+
+    NSSize size = NSMakeSize(610, 430);
+    NSRect screenFrame = NSScreen.mainScreen ? NSScreen.mainScreen.visibleFrame : NSMakeRect(0, 0, 1200, 800);
+    NSPoint origin = NSMakePoint(NSMidX(screenFrame) - size.width / 2, NSMidY(screenFrame) - size.height / 2);
+
+    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(origin.x, origin.y, size.width, size.height)
+                                             styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
+                                               backing:NSBackingStoreBuffered
+                                                 defer:NO];
+    self.window.title = @"GDrive Backup Tiger";
+    self.window.releasedWhenClosed = NO;
+
+    TigerSetupView *content = [[TigerSetupView alloc] initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
+    content.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    self.window.contentView = content;
+
+    NSMutableDictionary<NSString *, NSString *> *config = ReadConfigDictionary();
+    NSString *target = [config[@"GDRIVE_BACKUP_TARGET"] ?: @"apfs" lowercaseString];
+    NSString *schedule = [config[@"GDRIVE_BACKUP_SCHEDULE"] ?: @"manual" lowercaseString];
+
+    NSTextField *title = [self label:@"Google Drive Backup" frame:NSMakeRect(26, 16, 300, 22)];
+    title.font = [NSFont fontWithName:@"Lucida Grande Bold" size:17] ?: [NSFont boldSystemFontOfSize:17];
+    [content addSubview:title];
+
+    NSTextField *subtitle = [self label:T(self.language, @"setupTitle") frame:NSMakeRect(26, 39, 420, 18)];
+    subtitle.textColor = [NSColor colorWithCalibratedWhite:0.36 alpha:1.0];
+    [content addSubview:subtitle];
+
+    [content addSubview:[self label:T(self.language, @"targetType") frame:NSMakeRect(34, 100, 124, 22)]];
+    self.targetPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 96, 170, 28)];
+    [self.targetPopup addItemWithTitle:T(self.language, @"externalVolume")];
+    self.targetPopup.lastItem.representedObject = @"apfs";
+    [self.targetPopup addItemWithTitle:T(self.language, @"nas")];
+    self.targetPopup.lastItem.representedObject = @"nas";
+    [self.targetPopup selectItemAtIndex:[target isEqualToString:@"nas"] ? 1 : 0];
+    [content addSubview:self.targetPopup];
+
+    [content addSubview:[self label:T(self.language, @"mountedNas") frame:NSMakeRect(34, 136, 124, 22)]];
+    self.mountedNasPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 132, 270, 28)];
+    self.mountedNasPopup.target = self;
+    self.mountedNasPopup.action = @selector(selectMountedNAS:);
+    [content addSubview:self.mountedNasPopup];
+    [content addSubview:[self button:T(self.language, @"refresh") frame:NSMakeRect(444, 132, 120, 28) action:@selector(refreshMountedNAS:)]];
+
+    [content addSubview:[self label:T(self.language, @"nasUrl") frame:NSMakeRect(34, 174, 124, 22)]];
+    self.nasURLField = [self fieldWithFrame:NSMakeRect(164, 170, 270, 26)];
+    self.nasURLField.stringValue = config[@"GDRIVE_BACKUP_NAS_URL"] ?: @"";
+    [content addSubview:self.nasURLField];
+    [content addSubview:[self button:T(self.language, @"openFinder") frame:NSMakeRect(444, 169, 120, 28) action:@selector(openNASInFinder:)]];
+
+    [content addSubview:[self label:T(self.language, @"nasMount") frame:NSMakeRect(34, 210, 124, 22)]];
+    self.nasMountField = [self fieldWithFrame:NSMakeRect(164, 206, 270, 26)];
+    self.nasMountField.stringValue = config[@"GDRIVE_BACKUP_NAS_MOUNT"] ?: @"";
+    [content addSubview:self.nasMountField];
+
+    [content addSubview:[self label:T(self.language, @"nasSubdir") frame:NSMakeRect(34, 246, 124, 22)]];
+    self.nasSubdirField = [self fieldWithFrame:NSMakeRect(164, 242, 270, 26)];
+    self.nasSubdirField.stringValue = config[@"GDRIVE_BACKUP_NAS_SUBDIR"] ?: @"GoogleDrive-Backup";
+    [content addSubview:self.nasSubdirField];
+
+    self.discoveredNasPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 278, 270, 28)];
+    [self.discoveredNasPopup addItemWithTitle:@"Bonjour"];
+    self.discoveredNasPopup.target = self;
+    self.discoveredNasPopup.action = @selector(selectDiscoveredNAS:);
+    [content addSubview:self.discoveredNasPopup];
+    [content addSubview:[self button:T(self.language, @"discover") frame:NSMakeRect(444, 278, 120, 28) action:@selector(discoverNAS:)]];
+
+    [content addSubview:[self label:T(self.language, @"schedule") frame:NSMakeRect(34, 334, 124, 22)]];
+    self.schedulePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 330, 270, 28)];
+    NSArray<NSArray<NSString *> *> *scheduleItems = @[
+        @[T(self.language, @"scheduleManual"), @"manual"],
+        @[T(self.language, @"scheduleLogin"), @"login"],
+        @[T(self.language, @"scheduleHourly"), @"hourly"],
+        @[T(self.language, @"scheduleDaily"), @"daily"]
+    ];
+    for (NSArray<NSString *> *item in scheduleItems) {
+        [self.schedulePopup addItemWithTitle:item[0]];
+        self.schedulePopup.lastItem.representedObject = item[1];
+        if ([schedule isEqualToString:item[1]]) {
+            [self.schedulePopup selectItem:self.schedulePopup.lastItem];
+        }
+    }
+    [content addSubview:self.schedulePopup];
+
+    self.statusField = [self label:T(self.language, @"statusReady") frame:NSMakeRect(26, 388, 270, 20)];
+    self.statusField.textColor = [NSColor colorWithCalibratedWhite:0.36 alpha:1.0];
+    [content addSubview:self.statusField];
+
+    [content addSubview:[self button:T(self.language, @"save") frame:NSMakeRect(304, 383, 88, 30) action:@selector(saveSetup:)]];
+    [content addSubview:[self button:T(self.language, @"dryRun") frame:NSMakeRect(400, 383, 88, 30) action:@selector(startDryRun:)]];
+    [content addSubview:[self button:T(self.language, @"backupNow") frame:NSMakeRect(496, 383, 88, 30) action:@selector(startBackupNow:)]];
+
+    [self refreshMountedNAS:nil];
+    [self.window makeKeyAndOrderFront:nil];
+    [NSApp activateIgnoringOtherApps:YES];
+}
+
+- (void)refreshMountedNAS:(id)sender {
+    [self.mountedNasPopup removeAllItems];
+    [self.mountedNasPopup addItemWithTitle:T(self.language, @"selectMountedVolume")];
+    self.mountedNasPopup.lastItem.representedObject = @{};
+
+    NSArray<NSDictionary<NSString *, NSString *> *> *volumes = MountedNetworkVolumes();
+    for (NSDictionary<NSString *, NSString *> *volume in volumes) {
+        NSString *title = [NSString stringWithFormat:@"%@ — %@", volume[@"name"], volume[@"path"]];
+        [self.mountedNasPopup addItemWithTitle:title];
+        self.mountedNasPopup.lastItem.representedObject = volume;
+        if ([volume[@"path"] isEqualToString:self.nasMountField.stringValue]) {
+            [self.mountedNasPopup selectItem:self.mountedNasPopup.lastItem];
+        }
+    }
+}
+
+- (void)selectMountedNAS:(id)sender {
+    NSDictionary *volume = self.mountedNasPopup.selectedItem.representedObject;
+    NSString *path = volume[@"path"];
+    if (!path.length) {
+        return;
+    }
+    self.nasMountField.stringValue = path;
+    NSString *url = volume[@"url"];
+    if (url.length) {
+        self.nasURLField.stringValue = url;
+    }
+    [self.targetPopup selectItemAtIndex:1];
+}
+
+- (void)selectDiscoveredNAS:(id)sender {
+    NSDictionary *service = self.discoveredNasPopup.selectedItem.representedObject;
+    NSString *url = service[@"url"];
+    if (url.length) {
+        self.nasURLField.stringValue = url;
+        [self.targetPopup selectItemAtIndex:1];
+    }
+}
+
+- (void)discoverNAS:(id)sender {
+    self.statusField.stringValue = T(self.language, @"statusSearching");
+    [self.discoveredNasPopup removeAllItems];
+    [self.discoveredNasPopup addItemWithTitle:@"Bonjour"];
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSArray<NSDictionary<NSString *, NSString *> *> *services = DiscoverBonjourStorage();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self.discoveredNasPopup removeAllItems];
+            if (!services.count) {
+                [self.discoveredNasPopup addItemWithTitle:@"Bonjour"];
+            }
+            for (NSDictionary<NSString *, NSString *> *service in services) {
+                NSString *title = [NSString stringWithFormat:@"%@: %@", service[@"scheme"], service[@"name"]];
+                [self.discoveredNasPopup addItemWithTitle:title];
+                self.discoveredNasPopup.lastItem.representedObject = service;
+            }
+            self.statusField.stringValue = T(self.language, @"statusDiscoveryDone");
+        });
+    });
+}
+
+- (void)openNASInFinder:(id)sender {
+    NSString *urlString = self.nasURLField.stringValue;
+    if (!urlString.length) {
+        NSDictionary *service = self.discoveredNasPopup.selectedItem.representedObject;
+        urlString = service[@"url"];
+    }
+    if (!urlString.length) {
+        return;
+    }
+    NSURL *url = [NSURL URLWithString:urlString];
+    if (url) {
+        [NSWorkspace.sharedWorkspace openURL:url];
+    }
+}
+
+- (NSDictionary<NSString *, NSString *> *)currentSetupUpdates {
+    NSString *target = self.targetPopup.selectedItem.representedObject ?: @"apfs";
+    NSString *schedule = self.schedulePopup.selectedItem.representedObject ?: @"manual";
+    NSMutableDictionary<NSString *, NSString *> *updates = [NSMutableDictionary dictionary];
+    updates[@"GDRIVE_BACKUP_TARGET"] = target;
+    updates[@"GDRIVE_BACKUP_SCHEDULE"] = schedule;
+
+    if ([target isEqualToString:@"nas"]) {
+        updates[@"GDRIVE_BACKUP_NAS_MOUNT"] = self.nasMountField.stringValue ?: @"";
+        updates[@"GDRIVE_BACKUP_NAS_URL"] = self.nasURLField.stringValue ?: @"";
+        updates[@"GDRIVE_BACKUP_NAS_SUBDIR"] = self.nasSubdirField.stringValue.length ? self.nasSubdirField.stringValue : @"GoogleDrive-Backup";
+        updates[@"GDRIVE_BACKUP_NAS_START_ON_MOUNT"] = @"0";
+    }
+    return updates;
+}
+
+- (BOOL)saveSetupValues {
+    NSError *error = nil;
+    if (!WriteConfigUpdates([self currentSetupUpdates], &error)) {
+        self.statusField.stringValue = error.localizedDescription ?: @"Save failed.";
+        return NO;
+    }
+    [self applySchedule:self.schedulePopup.selectedItem.representedObject ?: @"manual"];
+    self.statusField.stringValue = T(self.language, @"statusSaved");
+    return YES;
+}
+
+- (void)saveSetup:(id)sender {
+    [self saveSetupValues];
+}
+
+- (void)startBackupNow:(id)sender {
+    if (![self saveSetupValues]) {
+        return;
+    }
+    [self launchBackupWithArgument:@"--run" assumeYes:YES];
+    self.statusField.stringValue = T(self.language, @"statusBackupStarted");
+}
+
+- (void)startDryRun:(id)sender {
+    if (![self saveSetupValues]) {
+        return;
+    }
+    [self launchBackupWithArgument:@"--dry-run" assumeYes:YES];
+    self.statusField.stringValue = T(self.language, @"statusDryRunStarted");
+}
+
+- (void)launchBackupWithArgument:(NSString *)argument assumeYes:(BOOL)assumeYes {
+    NSTask *task = [[NSTask alloc] init];
+    task.launchPath = @"/bin/bash";
+    task.arguments = @[@"/usr/local/bin/backup-google-drive.sh", argument];
+    NSMutableDictionary *environment = NSProcessInfo.processInfo.environment.mutableCopy;
+    environment[@"HOME"] = NSHomeDirectory();
+    environment[@"PATH"] = @"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+    environment[@"GDRIVE_BACKUP_TRIGGER"] = @"manual";
+    if (assumeYes) {
+        environment[@"BACKUP_ASSUME_YES"] = @"1";
+    }
+    task.environment = environment;
+    @try {
+        [task launch];
+    } @catch (NSException *exception) {
+        self.statusField.stringValue = exception.reason ?: @"Launch failed.";
+    }
+}
+
+- (NSString *)schedulePlistForMode:(NSString *)mode {
+    NSString *home = NSHomeDirectory();
+    NSMutableString *plist = [NSMutableString string];
+    [plist appendString:@"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"];
+    [plist appendString:@"<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"];
+    [plist appendString:@"<plist version=\"1.0\"><dict>\n"];
+    [plist appendString:@"  <key>Label</key><string>com.commcats.gdrivebackup.schedule</string>\n"];
+    [plist appendString:@"  <key>ProgramArguments</key><array><string>/bin/bash</string><string>/usr/local/bin/backup-google-drive.sh</string><string>--run</string></array>\n"];
+    [plist appendFormat:@"  <key>EnvironmentVariables</key><dict><key>HOME</key><string>%@</string><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string><key>GDRIVE_BACKUP_TRIGGER</key><string>schedule</string></dict>\n", home];
+    if ([mode isEqualToString:@"login"]) {
+        [plist appendString:@"  <key>RunAtLoad</key><true/>\n"];
+    } else if ([mode isEqualToString:@"hourly"]) {
+        [plist appendString:@"  <key>StartInterval</key><integer>3600</integer>\n"];
+    } else if ([mode isEqualToString:@"daily"]) {
+        [plist appendString:@"  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>0</integer></dict>\n"];
+    }
+    [plist appendString:@"</dict></plist>\n"];
+    return plist;
+}
+
+- (void)applySchedule:(NSString *)mode {
+    NSString *path = ScheduleAgentPath();
+    NSString *domain = [NSString stringWithFormat:@"gui/%d", getuid()];
+    NSString *service = [domain stringByAppendingString:@"/com.commcats.gdrivebackup.schedule"];
+    RunCommand(@"/bin/launchctl", @[@"bootout", domain, path], nil, NULL);
+
+    if (![mode isEqualToString:@"login"] && ![mode isEqualToString:@"hourly"] && ![mode isEqualToString:@"daily"]) {
+        [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+        return;
+    }
+
+    NSString *dir = [path stringByDeletingLastPathComponent];
+    [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    [[self schedulePlistForMode:mode] writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    RunCommand(@"/bin/launchctl", @[@"bootstrap", domain, path], nil, NULL);
+    RunCommand(@"/bin/launchctl", @[@"enable", service], nil, NULL);
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     self.language = ConfiguredLanguage();
     NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
+    if (arguments.count == 1 || (arguments.count > 1 && [arguments[1] isEqualToString:@"--setup"])) {
+        self.setupMode = YES;
+        [self showSetupWindow];
+        return;
+    }
+
     if (arguments.count > 1 && [arguments[1] isEqualToString:@"--confirm"]) {
         self.confirmMode = YES;
         if (arguments.count > 6) {
@@ -651,6 +1269,10 @@ static NSString *T(NSString *language, NSString *key) {
     if (self.confirmMode && !self.confirmationAnswered) {
         [self writeConfirmation:NO];
     }
+}
+
+- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
+    return self.setupMode;
 }
 
 - (void)minimizeWindow {
