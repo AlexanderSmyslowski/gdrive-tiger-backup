@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v1.7.0 - 2026-07-11
+
+- Add an in-app system check for required tools, the configured Google Drive remote, and the exact local or NAS destination.
+- Keep setup checks asynchronous, accessible, localized, and free of command output or credentials.
+- Detect a NAS share that disappears during copying, stop later copy phases, and show a specific reconnect-and-retry explanation.
+- Expand and reflow the setup window so the system check, destination controls, schedule, and actions never overlap.
+- Preserve the manual-start contract: a launched backup closes setup exactly once, while a process launch failure stays explicitly retryable.
+
 ## v1.6.1 - 2026-07-11
 
 - Show the real progress window as soon as a manual run owns the backup lock, before slow remote and destination checks.

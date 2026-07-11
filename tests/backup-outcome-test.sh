@@ -49,6 +49,9 @@ case "${1:-}" in
     if [[ "${FAKE_RCLONE_SLEEP_SECONDS:-0}" != "0" ]]; then
       /bin/sleep "$FAKE_RCLONE_SLEEP_SECONDS"
     fi
+    if [[ -n "${FAKE_RCLONE_DISCONNECT_MOUNT:-}" ]]; then
+      /bin/mv "$FAKE_RCLONE_DISCONNECT_MOUNT" "${FAKE_RCLONE_DISCONNECT_MOUNT}.disconnected"
+    fi
     exit "${FAKE_RCLONE_COPY_STATUS:-0}"
     ;;
 esac
@@ -110,6 +113,7 @@ run_backup() {
     FAKE_RCLONE_ARGS_FILE="${FAKE_RCLONE_ARGS_FILE:-}" \
     FAKE_RCLONE_SLEEP_SECONDS="${FAKE_RCLONE_SLEEP_SECONDS:-0}" \
     FAKE_RCLONE_STARTED_FILE="${FAKE_RCLONE_STARTED_FILE:-}" \
+    FAKE_RCLONE_DISCONNECT_MOUNT="${FAKE_RCLONE_DISCONNECT_MOUNT:-}" \
     FAKE_RCLONE_CONFIG_STARTED_FILE="${FAKE_RCLONE_CONFIG_STARTED_FILE:-}" \
     FAKE_RCLONE_CONFIG_SLEEP_SECONDS="${FAKE_RCLONE_CONFIG_SLEEP_SECONDS:-0}" \
     FAKE_FLOCK_STATUS="${FAKE_FLOCK_STATUS:-0}" \
@@ -410,6 +414,29 @@ test_source_permission_failure_stays_generic() {
   fi
 }
 
+test_lost_nas_mount_is_classified_and_stops_followup_copies() {
+  local name="lost NAS mount is classified and stops follow-up copies"
+  local status summary args_file copy_count
+  prepare_test_environment
+  args_file="$TEST_HOME/rclone-args"
+
+  FAKE_RCLONE_ARGS_FILE="$args_file" \
+    FAKE_RCLONE_DISCONNECT_MOUNT="$NAS_MOUNT" \
+    FAKE_RCLONE_COPY_STATUS=23 \
+    run_backup
+  status=$?
+  summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+  copy_count="$(/usr/bin/grep -c '^copy$' "$args_file" 2>/dev/null || true)"
+
+  if [[ "$status" == "1" && "$summary" == *$'status=failure\n'* &&
+        "$summary" == *$'reason=nas_connection_lost\n'* &&
+        "$copy_count" == "1" ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status copies=$copy_count summary=${summary//$'\n'/,})"
+  fi
+}
+
 test_confirmation_uses_injected_open_command() {
   local name="confirmation uses the testable open command"
   # This asserts literal shell source, so expansion would be a test bug.
@@ -546,6 +573,7 @@ test_locked_backup_opens_progress_before_remote_checks
 test_nas_copy_uses_smb_safe_serial_writes
 test_permission_failure_is_classified
 test_source_permission_failure_stays_generic
+test_lost_nas_mount_is_classified_and_stops_followup_copies
 test_confirmation_uses_injected_open_command
 test_declined_confirmation_is_skipped
 test_term_signal_publishes_cancellation

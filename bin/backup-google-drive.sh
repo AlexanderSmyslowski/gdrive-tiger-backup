@@ -1585,6 +1585,22 @@ fi
 
 errors=0
 
+validate_live_nas_destination() {
+  [[ "$BACKUP_TARGET" == "nas" ]] || return 0
+
+  if [[ ! -d "$NAS_MOUNT" ]]; then
+    RUN_STATE_REASON="nas_connection_lost"
+    log "FEHLER: NAS-Verbindung wurde waehrend des Backups getrennt."
+    return 1
+  fi
+  if [[ "$DRY_RUN" == "0" && ! -w "$NAS_MOUNT" ]]; then
+    RUN_STATE_REASON="destination_permission_denied"
+    log "FEHLER: NAS-Ziel ist waehrend des Backups nicht mehr beschreibbar."
+    return 1
+  fi
+  return 0
+}
+
 copy_one() {
   local label="$1"
   local source="$2"
@@ -1599,6 +1615,10 @@ copy_one() {
     phase="${COPY_INDEX}/${COPY_TOTAL}"
   fi
 
+  if ! validate_live_nas_destination; then
+    errors=$((errors + 1))
+    return
+  fi
   if ! validate_encrypted_apfs_destination; then
     log "FEHLER: Verschluesseltes Volume konnte vor '$label' nicht erneut bestaetigt werden."
     errors=$((errors + 1))
@@ -1645,6 +1665,13 @@ copy_one() {
   else
     run_rclone_with_progress "$label" "$phase" rclone copy "$source" "$dest" \
       "$@" "${RCLONE_OPTS[@]}" || copy_status=$?
+  fi
+
+  # A vanished SMB mount must never be recreated as an ordinary directory on
+  # the startup disk. Revalidate after every transfer before attempting the
+  # next destination, even when rclone itself returned success.
+  if ! validate_live_nas_destination; then
+    copy_status=1
   fi
 
   if [[ "$copy_status" == "0" ]]; then

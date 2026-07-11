@@ -5,6 +5,7 @@
 
 #import "ConfigSupport.h"
 #import "BackupStatusSupport.h"
+#import "SetupHealthSupport.h"
 #import "Localization.h"
 
 static NSImage *CreateApplicationIcon(void) {
@@ -810,6 +811,226 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 
 @end
 
+@interface TigerSetupHealthView : NSView
+@property(nonatomic, copy) NSString *language;
+@property(nonatomic, copy) NSDictionary<NSString *, id> *snapshot;
+@property(nonatomic) BOOL checking;
+@property(nonatomic, copy) void (^checkHandler)(void);
+@property(nonatomic, strong) NSTextField *titleLabel;
+@property(nonatomic, strong) NSButton *checkButton;
+@property(nonatomic, copy) NSArray<NSTextField *> *rowTitleLabels;
+@property(nonatomic, copy) NSArray<NSTextField *> *rowDetailLabels;
+@property(nonatomic, copy) NSArray<NSTextField *> *rowSymbolLabels;
+@end
+
+@implementation TigerSetupHealthView
+
+- (BOOL)isFlipped {
+    return YES;
+}
+
+- (void)layoutControls {
+    NSFont *buttonFont = self.checkButton.font ?: [NSFont systemFontOfSize:NSFont.systemFontSize];
+    CGFloat requiredWidth = [self.checkButton.title
+        sizeWithAttributes:@{NSFontAttributeName: buttonFont}].width + 32.0;
+    CGFloat buttonWidth = MIN(MAX(124.0, ceil(requiredWidth)), MAX(124.0, NSWidth(self.bounds) - 220.0));
+    self.checkButton.frame = NSMakeRect(NSWidth(self.bounds) - buttonWidth - 8.0, 4.0,
+                                        buttonWidth, 28.0);
+    self.titleLabel.frame = NSMakeRect(8.0, 7.0,
+        MAX(120.0, NSMinX(self.checkButton.frame) - 16.0), 18.0);
+}
+
+- (void)layout {
+    [super layout];
+    [self layoutControls];
+}
+
+- (NSTextField *)healthLabelWithFrame:(NSRect)frame
+                                  font:(NSFont *)font
+                                 color:(NSColor *)color {
+    NSTextField *label = [[NSTextField alloc] initWithFrame:frame];
+    label.bezeled = NO;
+    label.drawsBackground = NO;
+    label.editable = NO;
+    label.selectable = NO;
+    label.font = font;
+    label.textColor = color;
+    label.lineBreakMode = NSLineBreakByTruncatingTail;
+    label.accessibilityRole = NSAccessibilityStaticTextRole;
+    return label;
+}
+
+- (instancetype)initWithFrame:(NSRect)frame {
+    self = [super initWithFrame:frame];
+    if (!self) {
+        return nil;
+    }
+
+    NSFont *titleFont = [NSFont fontWithName:@"Lucida Grande Bold" size:11] ?:
+        [NSFont boldSystemFontOfSize:11];
+    NSFont *detailFont = [NSFont fontWithName:@"Lucida Grande" size:11] ?:
+        [NSFont systemFontOfSize:11];
+    NSColor *ink = [NSColor colorWithCalibratedWhite:0.18 alpha:1.0];
+    NSColor *muted = [NSColor colorWithCalibratedWhite:0.38 alpha:1.0];
+
+    self.titleLabel = [self healthLabelWithFrame:NSMakeRect(8, 7, 250, 18)
+                                            font:titleFont color:ink];
+    self.titleLabel.accessibilityLabel = @"System check";
+    [self addSubview:self.titleLabel];
+
+    NSArray<NSString *> *titles = @[@"Tools", @"Google Drive", @"Backup destination"];
+    NSMutableArray<NSTextField *> *titleLabels = [NSMutableArray array];
+    NSMutableArray<NSTextField *> *detailLabels = [NSMutableArray array];
+    NSMutableArray<NSTextField *> *symbolLabels = [NSMutableArray array];
+    for (NSUInteger index = 0; index < titles.count; index++) {
+        CGFloat y = 32.0 + index * 25.0;
+        NSTextField *symbol = [self healthLabelWithFrame:NSMakeRect(8, y, 22, 18)
+                                                    font:titleFont color:muted];
+        symbol.stringValue = @"?";
+        symbol.alignment = NSTextAlignmentCenter;
+        symbol.accessibilityLabel = @"Not checked";
+        [self addSubview:symbol];
+        [symbolLabels addObject:symbol];
+
+        NSTextField *title = [self healthLabelWithFrame:NSMakeRect(40, y, 126, 18)
+                                                   font:titleFont color:ink];
+        title.stringValue = titles[index];
+        title.accessibilityLabel = title.stringValue;
+        [self addSubview:title];
+        [titleLabels addObject:title];
+
+        NSTextField *detail = [self healthLabelWithFrame:NSMakeRect(172, y, 276, 18)
+                                                    font:detailFont color:muted];
+        detail.stringValue = @"Not checked";
+        detail.accessibilityLabel = [NSString stringWithFormat:@"%@: %@",
+            title.stringValue, detail.stringValue];
+        [self addSubview:detail];
+        [detailLabels addObject:detail];
+    }
+    self.rowTitleLabels = titleLabels;
+    self.rowDetailLabels = detailLabels;
+    self.rowSymbolLabels = symbolLabels;
+
+    self.checkButton = [[NSButton alloc] initWithFrame:NSMakeRect(450, 4, 124, 28)];
+    self.checkButton.bezelStyle = NSBezelStyleRounded;
+    self.checkButton.title = @"Check setup";
+    self.checkButton.target = self;
+    self.checkButton.action = @selector(startCheck:);
+    self.checkButton.accessibilityRole = NSAccessibilityButtonRole;
+    self.checkButton.accessibilityLabel = self.checkButton.title;
+    [self addSubview:self.checkButton];
+    self.language = @"en";
+    return self;
+}
+
+- (void)startCheck:(id)sender {
+    (void)sender;
+    if (self.checking || !self.checkHandler) {
+        return;
+    }
+    self.checking = YES;
+    self.checkHandler();
+}
+
+- (void)setChecking:(BOOL)checking {
+    _checking = checking;
+    self.checkButton.enabled = !checking;
+    self.checkButton.title = T(self.language ?: @"en",
+        checking ? @"setupCheckRunning" : @"setupCheckButton");
+    self.checkButton.accessibilityLabel = self.checkButton.title;
+    [self layoutControls];
+    if (!checking) {
+        [self applySnapshot:self.snapshot ?: @{}];
+        return;
+    }
+
+    for (NSUInteger index = 0; index < self.rowSymbolLabels.count; index++) {
+        NSTextField *symbolLabel = self.rowSymbolLabels[index];
+        NSTextField *titleLabel = self.rowTitleLabels[index];
+        NSTextField *detailLabel = self.rowDetailLabels[index];
+        NSString *detail = T(self.language ?: @"en", @"setupCheckRunning");
+        symbolLabel.stringValue = @"…";
+        symbolLabel.textColor = [NSColor colorWithCalibratedRed:0.05 green:0.32 blue:0.72 alpha:1.0];
+        symbolLabel.accessibilityLabel = detail;
+        detailLabel.stringValue = detail;
+        detailLabel.accessibilityLabel = [NSString stringWithFormat:@"%@: %@",
+            titleLabel.stringValue, detail];
+    }
+}
+
+- (void)setLanguage:(NSString *)language {
+    _language = [language copy] ?: @"en";
+    NSArray<NSString *> *titleKeys = @[
+        @"setupCheckDependenciesLabel",
+        @"setupCheckRemoteLabel",
+        @"setupCheckDestinationLabel"
+    ];
+    for (NSUInteger index = 0; index < titleKeys.count; index++) {
+        NSTextField *titleLabel = self.rowTitleLabels[index];
+        titleLabel.stringValue = T(_language, titleKeys[index]);
+        titleLabel.accessibilityLabel = titleLabel.stringValue;
+    }
+    self.checkButton.title = T(_language, @"setupCheckButton");
+    self.checkButton.accessibilityLabel = self.checkButton.title;
+    [self layoutControls];
+    self.titleLabel.stringValue = T(_language, @"setupCheckSectionTitle");
+    self.titleLabel.accessibilityLabel = self.titleLabel.stringValue;
+
+    NSDictionary<NSString *, id> *snapshot = self.snapshot ?: @{
+        @"dependencies": @{@"status": @"unknown", @"detailKey": @"setupCheckNotRun"},
+        @"remote": @{@"status": @"unknown", @"detailKey": @"setupCheckNotRun"},
+        @"destination": @{@"status": @"unknown", @"detailKey": @"setupCheckNotRun"}
+    };
+    [self applySnapshot:snapshot];
+}
+
+- (void)applySnapshot:(NSDictionary<NSString *, id> *)snapshot {
+    self.snapshot = snapshot;
+    NSArray<NSString *> *rowKeys = @[@"dependencies", @"remote", @"destination"];
+    NSDictionary<NSString *, NSArray *> *presentations = @{
+        @"ready": @[@"✓", [NSColor colorWithCalibratedRed:0.10 green:0.48 blue:0.18 alpha:1.0]],
+        @"failure": @[@"×", [NSColor colorWithCalibratedRed:0.70 green:0.10 blue:0.08 alpha:1.0]],
+        @"blocked": @[@"—", [NSColor colorWithCalibratedWhite:0.42 alpha:1.0]],
+        @"checking": @[@"…", [NSColor colorWithCalibratedRed:0.05 green:0.32 blue:0.72 alpha:1.0]],
+        @"unknown": @[@"?", [NSColor colorWithCalibratedWhite:0.42 alpha:1.0]]
+    };
+
+    for (NSUInteger index = 0; index < rowKeys.count; index++) {
+        NSDictionary<NSString *, id> *row = [snapshot[rowKeys[index]]
+            isKindOfClass:NSDictionary.class] ? snapshot[rowKeys[index]] : @{};
+        NSString *status = [row[@"status"] isKindOfClass:NSString.class]
+            ? row[@"status"] : @"unknown";
+        NSArray *presentation = presentations[status] ?: presentations[@"unknown"];
+        NSString *detailKey = [row[@"detailKey"] isKindOfClass:NSString.class]
+            ? row[@"detailKey"] : @"setupCheckNotRun";
+        NSString *detail = T(self.language ?: @"en", detailKey);
+        if ([detailKey isEqualToString:@"setupCheckDependenciesMissing"] &&
+            [row[@"missing"] isKindOfClass:NSArray.class]) {
+            NSMutableArray<NSString *> *missing = [NSMutableArray array];
+            for (id value in row[@"missing"]) {
+                if ([value isKindOfClass:NSString.class] && [value length]) {
+                    [missing addObject:value];
+                }
+            }
+            detail = [NSString stringWithFormat:detail,
+                [missing componentsJoinedByString:@", "]];
+        }
+
+        NSTextField *symbolLabel = self.rowSymbolLabels[index];
+        NSTextField *titleLabel = self.rowTitleLabels[index];
+        NSTextField *detailLabel = self.rowDetailLabels[index];
+        symbolLabel.stringValue = presentation[0];
+        symbolLabel.textColor = presentation[1];
+        symbolLabel.accessibilityLabel = detail;
+        detailLabel.stringValue = detail;
+        detailLabel.toolTip = detail;
+        detailLabel.accessibilityLabel = [NSString stringWithFormat:@"%@: %@",
+            titleLabel.stringValue, detail];
+    }
+}
+
+@end
+
 @interface TigerSetupView : NSView
 @end
 
@@ -844,14 +1065,21 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     [[NSColor colorWithCalibratedWhite:0.46 alpha:0.35] setFill];
     NSRectFill(NSMakeRect(0, NSMaxY(titleBar) - 1, NSWidth(bounds), 1));
 
-    NSBezierPath *panel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 84, NSWidth(bounds) - 36, 292) xRadius:12 yRadius:12];
+    NSBezierPath *healthPanel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 76, NSWidth(bounds) - 36, 116) xRadius:12 yRadius:12];
+    [[NSColor colorWithCalibratedWhite:1.0 alpha:0.42] setFill];
+    [healthPanel fill];
+    [[NSColor colorWithCalibratedWhite:0.42 alpha:0.20] setStroke];
+    healthPanel.lineWidth = 1;
+    [healthPanel stroke];
+
+    NSBezierPath *panel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 206, NSWidth(bounds) - 36, 292) xRadius:12 yRadius:12];
     [[NSColor colorWithCalibratedWhite:1.0 alpha:0.54] setFill];
     [panel fill];
     [[NSColor colorWithCalibratedWhite:0.42 alpha:0.24] setStroke];
     panel.lineWidth = 1;
     [panel stroke];
 
-    NSBezierPath *schedulePanel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 388, NSWidth(bounds) - 36, 52) xRadius:12 yRadius:12];
+    NSBezierPath *schedulePanel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 508, NSWidth(bounds) - 36, 52) xRadius:12 yRadius:12];
     [[NSColor colorWithCalibratedWhite:1.0 alpha:0.42] setFill];
     [schedulePanel fill];
     [[NSColor colorWithCalibratedWhite:0.42 alpha:0.20] setStroke];
@@ -1154,6 +1382,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, strong) NSTextField *destinationPreviewField;
 @property(nonatomic, strong) NSButton *setupBackupButton;
 @property(nonatomic, strong) NSButton *setupDryRunButton;
+@property(nonatomic, strong) TigerSetupHealthView *setupHealthView;
+@property(nonatomic, strong) GDTSetupHealthChecker *setupHealthChecker;
+@property(nonatomic) BOOL setupHealthCheckInFlight;
+@property(nonatomic) NSUInteger setupHealthGeneration;
 @property(nonatomic) BOOL manualLaunchPending;
 @property(nonatomic, copy) NSString *configuredAPFSVolumePath;
 @property(nonatomic, strong) NSStatusItem *statusItem;
@@ -1699,12 +1931,23 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     }
 }
 
+- (void)installSetupHealthViewInContentView:(NSView *)contentView {
+    self.setupHealthView = [[TigerSetupHealthView alloc] initWithFrame:
+        NSMakeRect(24, 78, MAX(580, NSWidth(contentView.bounds) - 48), 116)];
+    self.setupHealthView.language = self.language ?: @"en";
+    __weak typeof(self) weakSelf = self;
+    self.setupHealthView.checkHandler = ^{
+        [weakSelf runSetupHealthCheck:nil];
+    };
+    [contentView addSubview:self.setupHealthView];
+}
+
 - (void)showSetupWindow {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     [self buildMainMenu];
     [NSApp setApplicationIconImage:CreateApplicationIcon()];
 
-    NSSize size = NSMakeSize(610, 500);
+    NSSize size = NSMakeSize(650, 630);
     NSRect screenFrame = NSScreen.mainScreen ? NSScreen.mainScreen.visibleFrame : NSMakeRect(0, 0, 1200, 800);
     NSPoint origin = NSMakePoint(NSMidX(screenFrame) - size.width / 2, NSMidY(screenFrame) - size.height / 2);
 
@@ -1718,6 +1961,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     TigerSetupView *content = [[TigerSetupView alloc] initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
     content.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.window.contentView = content;
+    [self installSetupHealthViewInContentView:content];
 
     NSMutableDictionary<NSString *, NSString *> *config = GDTReadConfigDictionary();
     NSString *configuredTarget = [config[@"GDRIVE_BACKUP_TARGET"] lowercaseString];
@@ -1736,8 +1980,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     subtitle.textColor = [NSColor colorWithCalibratedWhite:0.36 alpha:1.0];
     [content addSubview:subtitle];
 
-    [content addSubview:[self label:T(self.language, @"targetType") frame:NSMakeRect(34, 100, 124, 22)]];
-    self.targetPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 96, 170, 28)];
+    [content addSubview:[self label:T(self.language, @"targetType") frame:NSMakeRect(34, 222, 124, 22)]];
+    self.targetPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 218, 170, 28)];
     [self.targetPopup addItemWithTitle:T(self.language, @"externalVolume")];
     self.targetPopup.lastItem.representedObject = @"apfs";
     [self.targetPopup addItemWithTitle:T(self.language, @"nas")];
@@ -1747,58 +1991,60 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.targetPopup.action = @selector(targetChanged:);
     [content addSubview:self.targetPopup];
 
-    [content addSubview:[self label:T(self.language, @"destinationPreview") frame:NSMakeRect(34, 134, 124, 22)]];
-    self.destinationPreviewField = [self fieldWithFrame:NSMakeRect(164, 130, 400, 26)];
+    [content addSubview:[self label:T(self.language, @"destinationPreview") frame:NSMakeRect(34, 256, 124, 22)]];
+    self.destinationPreviewField = [self fieldWithFrame:NSMakeRect(164, 252, 440, 26)];
     self.destinationPreviewField.editable = NO;
     self.destinationPreviewField.selectable = YES;
     self.destinationPreviewField.lineBreakMode = NSLineBreakByTruncatingMiddle;
     self.destinationPreviewField.accessibilityRole = NSAccessibilityStaticTextRole;
     [content addSubview:self.destinationPreviewField];
 
-    self.encryptionCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(164, 164, 400, 24)];
+    self.encryptionCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(164, 286, 440, 24)];
     self.encryptionCheckbox.buttonType = NSButtonTypeSwitch;
     self.encryptionCheckbox.title = T(self.language, @"encryptionAPFS");
     self.encryptionCheckbox.toolTip = T(self.language, @"encryptionAPFSTip");
     self.encryptionCheckbox.accessibilityHelp = self.encryptionCheckbox.toolTip;
     self.encryptionCheckbox.state = [encryption isEqualToString:@"apfs"] ? NSControlStateValueOn : NSControlStateValueOff;
     self.encryptionCheckbox.font = [NSFont fontWithName:@"Lucida Grande" size:12] ?: [NSFont systemFontOfSize:12];
+    self.encryptionCheckbox.target = self;
+    self.encryptionCheckbox.action = @selector(setupControlChanged:);
     [content addSubview:self.encryptionCheckbox];
 
-    [content addSubview:[self label:T(self.language, @"mountedNas") frame:NSMakeRect(34, 200, 124, 22)]];
-    self.mountedNasPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 196, 270, 28)];
+    [content addSubview:[self label:T(self.language, @"mountedNas") frame:NSMakeRect(34, 322, 124, 22)]];
+    self.mountedNasPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 318, 300, 28)];
     self.mountedNasPopup.target = self;
     self.mountedNasPopup.action = @selector(selectMountedNAS:);
     [content addSubview:self.mountedNasPopup];
-    [content addSubview:[self button:T(self.language, @"refresh") frame:NSMakeRect(444, 196, 120, 28) action:@selector(refreshMountedNAS:)]];
+    [content addSubview:[self button:T(self.language, @"refresh") frame:NSMakeRect(474, 318, 130, 28) action:@selector(refreshMountedNAS:)]];
 
-    [content addSubview:[self label:T(self.language, @"nasUrl") frame:NSMakeRect(34, 238, 124, 22)]];
-    self.nasURLField = [self fieldWithFrame:NSMakeRect(164, 234, 270, 26)];
+    [content addSubview:[self label:T(self.language, @"nasUrl") frame:NSMakeRect(34, 360, 124, 22)]];
+    self.nasURLField = [self fieldWithFrame:NSMakeRect(164, 356, 300, 26)];
     self.nasURLField.stringValue = config[@"GDRIVE_BACKUP_NAS_URL"] ?: @"";
     self.nasURLField.delegate = self;
     [content addSubview:self.nasURLField];
-    [content addSubview:[self button:T(self.language, @"openFinder") frame:NSMakeRect(444, 233, 120, 28) action:@selector(openNASInFinder:)]];
+    [content addSubview:[self button:T(self.language, @"openFinder") frame:NSMakeRect(474, 355, 130, 28) action:@selector(openNASInFinder:)]];
 
-    [content addSubview:[self label:T(self.language, @"nasMount") frame:NSMakeRect(34, 274, 124, 22)]];
-    self.nasMountField = [self fieldWithFrame:NSMakeRect(164, 270, 270, 26)];
+    [content addSubview:[self label:T(self.language, @"nasMount") frame:NSMakeRect(34, 396, 124, 22)]];
+    self.nasMountField = [self fieldWithFrame:NSMakeRect(164, 392, 300, 26)];
     self.nasMountField.stringValue = config[@"GDRIVE_BACKUP_NAS_MOUNT"] ?: @"";
     self.nasMountField.delegate = self;
     [content addSubview:self.nasMountField];
 
-    [content addSubview:[self label:T(self.language, @"nasSubdir") frame:NSMakeRect(34, 310, 124, 22)]];
-    self.nasSubdirField = [self fieldWithFrame:NSMakeRect(164, 306, 270, 26)];
+    [content addSubview:[self label:T(self.language, @"nasSubdir") frame:NSMakeRect(34, 432, 124, 22)]];
+    self.nasSubdirField = [self fieldWithFrame:NSMakeRect(164, 428, 300, 26)];
     self.nasSubdirField.stringValue = config[@"GDRIVE_BACKUP_NAS_SUBDIR"] ?: @"GoogleDrive-Backup";
     self.nasSubdirField.delegate = self;
     [content addSubview:self.nasSubdirField];
 
-    self.discoveredNasPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 342, 270, 28)];
+    self.discoveredNasPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 464, 300, 28)];
     [self.discoveredNasPopup addItemWithTitle:@"Bonjour"];
     self.discoveredNasPopup.target = self;
     self.discoveredNasPopup.action = @selector(selectDiscoveredNAS:);
     [content addSubview:self.discoveredNasPopup];
-    [content addSubview:[self button:T(self.language, @"discover") frame:NSMakeRect(444, 342, 120, 28) action:@selector(discoverNAS:)]];
+    [content addSubview:[self button:T(self.language, @"discover") frame:NSMakeRect(474, 464, 130, 28) action:@selector(discoverNAS:)]];
 
-    [content addSubview:[self label:T(self.language, @"schedule") frame:NSMakeRect(34, 404, 124, 22)]];
-    self.schedulePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 400, 270, 28)];
+    [content addSubview:[self label:T(self.language, @"schedule") frame:NSMakeRect(34, 526, 124, 22)]];
+    self.schedulePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 522, 300, 28)];
     NSArray<NSArray<NSString *> *> *scheduleItems = @[
         @[T(self.language, @"scheduleManual"), @"manual"],
         @[T(self.language, @"scheduleLogin"), @"login"],
@@ -1812,16 +2058,18 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
             [self.schedulePopup selectItem:self.schedulePopup.lastItem];
         }
     }
+    self.schedulePopup.target = self;
+    self.schedulePopup.action = @selector(setupControlChanged:);
     [content addSubview:self.schedulePopup];
 
-    self.statusField = [self label:T(self.language, @"statusReady") frame:NSMakeRect(26, 458, 270, 20)];
+    self.statusField = [self label:T(self.language, @"statusReady") frame:NSMakeRect(26, 588, 270, 20)];
     self.statusField.textColor = [NSColor colorWithCalibratedWhite:0.36 alpha:1.0];
     [content addSubview:self.statusField];
 
-    NSButton *saveButton = [self button:T(self.language, @"save") frame:NSMakeRect(282, 453, 88, 30) action:@selector(saveSetup:)];
-    self.setupDryRunButton = [self button:T(self.language, @"dryRun") frame:NSMakeRect(378, 453, 112, 30) action:@selector(startDryRun:)];
+    NSButton *saveButton = [self button:T(self.language, @"save") frame:NSMakeRect(312, 583, 88, 30) action:@selector(saveSetup:)];
+    self.setupDryRunButton = [self button:T(self.language, @"dryRun") frame:NSMakeRect(408, 583, 112, 30) action:@selector(startDryRun:)];
     self.setupDryRunButton.toolTip = T(self.language, @"dryRunTip");
-    self.setupBackupButton = [self button:T(self.language, @"backupNow") frame:NSMakeRect(498, 453, 88, 30) action:@selector(startBackupNow:)];
+    self.setupBackupButton = [self button:T(self.language, @"backupNow") frame:NSMakeRect(528, 583, 96, 30) action:@selector(startBackupNow:)];
     self.setupBackupButton.toolTip = T(self.language, @"backupNowTip");
     [content addSubview:saveButton];
     [content addSubview:self.setupDryRunButton];
@@ -1837,11 +2085,18 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     [self updateTargetControls];
 }
 
+- (void)setupControlChanged:(id)sender {
+    (void)sender;
+    [self updateDestinationPreview];
+    [self invalidateSetupHealth:nil];
+}
+
 - (void)updateTargetControls {
     NSString *target = self.targetPopup.selectedItem.representedObject ?: @"apfs";
     BOOL isAPFSTarget = [target isEqualToString:@"apfs"];
     self.encryptionCheckbox.enabled = isAPFSTarget;
     [self updateDestinationPreview];
+    [self invalidateSetupHealth:nil];
 }
 
 - (void)updateDestinationPreview {
@@ -1861,6 +2116,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 - (void)controlTextDidChange:(NSNotification *)notification {
     (void)notification;
     [self updateDestinationPreview];
+    [self invalidateSetupHealth:nil];
 }
 
 - (void)refreshMountedNAS:(id)sender {
@@ -2081,6 +2337,72 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 
 - (void)saveSetup:(id)sender {
     [self saveSetupValues];
+}
+
+- (NSDictionary<NSString *, id> *)unknownSetupHealthSnapshot {
+    return @{
+        @"dependencies": @{@"status": @"unknown", @"detailKey": @"setupCheckNotRun"},
+        @"remote": @{@"status": @"unknown", @"detailKey": @"setupCheckNotRun"},
+        @"destination": @{@"status": @"unknown", @"detailKey": @"setupCheckNotRun"}
+    };
+}
+
+- (void)invalidateSetupHealth:(id)sender {
+    (void)sender;
+    self.setupHealthGeneration++;
+    if (self.setupHealthCheckInFlight) {
+        return;
+    }
+    [self.setupHealthView applySnapshot:[self unknownSetupHealthSnapshot]];
+    self.statusField.stringValue = T(self.language ?: @"en", @"setupCheckNotRun");
+}
+
+- (void)completeSetupHealthCheck:(NSDictionary<NSString *, id> *)snapshot
+                      generation:(NSUInteger)generation {
+    self.setupHealthCheckInFlight = NO;
+    self.setupHealthView.checking = NO;
+    if (generation == self.setupHealthGeneration) {
+        [self.setupHealthView applySnapshot:snapshot ?: @{}];
+        BOOL ready = [snapshot[@"overall"] isEqualToString:@"ready"];
+        self.statusField.stringValue = T(self.language ?: @"en",
+            ready ? @"setupCheckReady" : @"setupCheckNeedsAttention");
+    } else {
+        [self.setupHealthView applySnapshot:[self unknownSetupHealthSnapshot]];
+        self.statusField.stringValue = T(self.language ?: @"en", @"setupCheckNotRun");
+    }
+    self.setupBackupButton.enabled = !self.manualLaunchPending;
+    self.setupDryRunButton.enabled = !self.manualLaunchPending;
+}
+
+- (void)completeSetupHealthCheck:(NSDictionary<NSString *, id> *)snapshot {
+    [self completeSetupHealthCheck:snapshot generation:self.setupHealthGeneration];
+}
+
+- (void)runSetupHealthCheck:(id)sender {
+    (void)sender;
+    if (self.setupHealthCheckInFlight) {
+        return;
+    }
+    self.setupHealthCheckInFlight = YES;
+    self.setupHealthView.checking = YES;
+    self.setupBackupButton.enabled = NO;
+    self.setupDryRunButton.enabled = NO;
+
+    if (!self.setupHealthChecker) {
+        self.setupHealthChecker = [GDTSetupHealthChecker productionChecker];
+    }
+    GDTSetupHealthChecker *checker = self.setupHealthChecker;
+    NSMutableDictionary<NSString *, NSString *> *config = [[self savedSetupConfig] mutableCopy];
+    [config addEntriesFromDictionary:[self currentSetupUpdates]];
+    NSUInteger generation = self.setupHealthGeneration;
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSDictionary<NSString *, id> *snapshot = [checker snapshotForConfig:config];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf completeSetupHealthCheck:snapshot generation:generation];
+        });
+    });
 }
 
 - (void)startBackupNow:(id)sender {
@@ -2573,13 +2895,19 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
                                                      error:nil];
     NSDictionary<NSString *, NSString *> *values = [self parseProgressContent:content ?: @""];
     NSString *reason = values[@"reason"] ?: @"";
-    NSSet<NSString *> *safeReasons = [NSSet setWithArray:@[@"destination_permission_denied"]];
+    NSSet<NSString *> *safeReasons = [NSSet setWithArray:@[
+        @"destination_permission_denied",
+        @"nas_connection_lost"
+    ]];
     return [safeReasons containsObject:reason] ? reason : @"";
 }
 
 - (NSString *)localizedTerminalDetailForReason:(NSString *)reason {
     if ([reason isEqualToString:@"destination_permission_denied"]) {
         return T(self.language ?: @"en", @"failedPermissionHint");
+    }
+    if ([reason isEqualToString:@"nas_connection_lost"]) {
+        return T(self.language ?: @"en", @"failedNASConnectionHint");
     }
     return T(self.language ?: @"en", @"failedHint");
 }

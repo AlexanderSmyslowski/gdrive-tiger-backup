@@ -133,6 +133,34 @@ int main(void) {
                                    resultingItemURL:nil
                                               error:nil];
 
+        NSString *nasLostPath = [NSTemporaryDirectory()
+            stringByAppendingPathComponent:[NSString stringWithFormat:@"gdrive-nas-lost-%@", NSUUID.UUID.UUIDString]];
+        [@"protocol=1\nstatus=failure\npid=123\nexit_code=1\nreason=nas_connection_lost\n"
+            writeToFile:nasLostPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        AssertEqual(RunReason(delegate, nasLostPath),
+                    @"nas_connection_lost",
+                    @"safe lost-NAS reason is exposed to the UI");
+        NSString *nasLostDetail = nil;
+        if ([delegate respondsToSelector:detailSelector]) {
+            typedef NSString *(*DetailMethod)(id, SEL, NSString *);
+            DetailMethod detailMethod = (DetailMethod)[delegate methodForSelector:detailSelector];
+            nasLostDetail = detailMethod(delegate, detailSelector, @"nas_connection_lost");
+        }
+        AssertEqual(nasLostDetail,
+                    T(@"en", @"failedNASConnectionHint"),
+                    @"lost NAS connection has a specific explanation");
+        BOOL nasLostTranslated = YES;
+        for (NSString *language in SupportedLanguageCodes()) {
+            NSString *detail = T(language, @"failedNASConnectionHint");
+            nasLostTranslated = nasLostTranslated && detail.length > 0 &&
+                ![detail isEqualToString:@"failedNASConnectionHint"];
+        }
+        AssertEqual(nasLostTranslated ? @"yes" : @"no", @"yes",
+                    @"lost NAS explanation is localized in every supported language");
+        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:nasLostPath]
+                                   resultingItemURL:nil
+                                              error:nil];
+
         for (NSString *exitCode in @[@"129", @"130", @"143"]) {
             NSString *cancelledPath = [NSTemporaryDirectory()
                 stringByAppendingPathComponent:[NSString stringWithFormat:@"gdrive-cancelled-%@", NSUUID.UUID.UUIDString]];

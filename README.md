@@ -4,7 +4,7 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window. “Tiger” describes the visual style; the app requires macOS 13 Ventura or later and does not run on Mac OS X 10.4 Tiger.
 
-Current release: `v1.6.1` with a downloadable macOS installer package, a persistent backup overview, a menu bar status, settings, and language selection.
+Current release: `v1.7.0` with a downloadable macOS installer package, a guided system check, a persistent backup overview, a menu bar status, settings, and language selection.
 
 It backs up:
 
@@ -22,7 +22,7 @@ The backup is read-only from Google Drive's perspective. It uses `rclone copy`, 
 - The overview shows the last verified run, configured schedule, exact local destination, and available destination capacity.
 - On first use, if the backup volume does not exist yet, the helper can ask to create a dedicated APFS volume on the newly attached external APFS disk.
 - In parallel, the setup window can configure a mounted NAS share, for example SMB, AFP, or NFS under `/Volumes`.
-- The setup window can select already mounted NAS shares, run a small Bonjour search, show the exact resolved destination, save a schedule, and start a backup manually. Backup actions never save edited form values implicitly.
+- The setup window can select already mounted NAS shares, run a small Bonjour search, show the exact resolved destination, save a schedule, and start a backup manually. Its system check verifies the required tools, Google Drive access, and destination before a run. Backup actions never save edited form values implicitly.
 - A `flock` lock prevents two backup jobs from running at the same time.
 - Before a real backup starts, the Tiger helper asks whether this volume or NAS destination should be used.
 - External disks and NAS targets are independent: plugging in the configured external disk still opens the confirmation dialog even when NAS backups are configured.
@@ -72,7 +72,7 @@ rclone lsd gdrive:
 For most users, download the latest installer from the GitHub releases page:
 
 1. Open <https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/latest>
-2. Download `GDrive-Backup-Tiger-1.6.1.pkg` from `Assets`.
+2. Download `GDrive-Backup-Tiger-1.7.0.pkg` from `Assets`.
 3. Double-click the package and follow the macOS Installer.
 4. Open `/Applications/GDrive Backup Tiger.app` to choose language, external disk, NAS, and schedule settings.
 
@@ -86,13 +86,13 @@ The package is currently unsigned because the project does not yet have an Apple
 
 1. Click `Done`, not `Move to Trash`.
 2. Open `System Settings > Privacy & Security`.
-3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-1.6.1.pkg`.
+3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-1.7.0.pkg`.
 4. Confirm with `Open Anyway`, then install the package.
 
 Advanced users can also remove the download quarantine flag before opening:
 
 ```bash
-xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-1.6.1.pkg"
+xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-1.7.0.pkg"
 ```
 
 ### Install from source
