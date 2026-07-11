@@ -1,6 +1,8 @@
 # gdrive-tiger-backup
 
-macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window.
+[![CI](https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/actions/workflows/ci.yml/badge.svg)](https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/actions/workflows/ci.yml)
+
+macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window. “Tiger” describes the visual style; the app requires macOS 13 Ventura or later and does not run on Mac OS X 10.4 Tiger.
 
 Current release: `v1.5.0` with a downloadable macOS installer package, a normal macOS menu bar, settings, and language selection.
 
@@ -31,6 +33,7 @@ The backup is read-only from Google Drive's perspective. It uses `rclone copy`, 
 
 ## Requirements
 
+- macOS 13 Ventura or later
 - macOS with Command Line Tools
 - Homebrew
 - `rclone`
@@ -143,7 +146,7 @@ NAS_SUBDIR="GoogleDrive-Backup" \
 ./install.sh
 ```
 
-The tool does not store NAS usernames or passwords. Use Finder or Keychain for credentials.
+The tool does not ask for or store NAS usernames or passwords; use Finder or Keychain for credentials and do not embed them in `NAS_URL`. The config file is kept at owner-only mode `0600` because mount URLs and paths may still be private.
 
 After installation, open the setup UI from `/Applications/GDrive Backup Tiger.app` or run:
 
@@ -174,6 +177,8 @@ GDRIVE_BACKUP_TARGET=apfs
 GDRIVE_BACKUP_LANG=en
 GDRIVE_BACKUP_CONFIRM=1
 GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+GDRIVE_BACKUP_VERSIONING=1
+GDRIVE_BACKUP_VERSIONS_SUBDIR=.gdrive-versions
 ```
 
 For NAS backups, the config looks like this:
@@ -191,6 +196,9 @@ Supported values for `GDRIVE_BACKUP_TARGET` are `apfs` and `nas`.
 Supported values for `GDRIVE_BACKUP_SCHEDULE` are `manual`, `login`, `hourly`, and `daily`.
 Set `GDRIVE_BACKUP_CONFIRM=0` only if you deliberately want fully automatic backups whenever the configured volume is mounted.
 Set `GDRIVE_BACKUP_AUTO_CREATE_VOLUME=0` if you want to create the backup volume yourself.
+Set `GDRIVE_BACKUP_NAS_START_ON_MOUNT=1` only if mount events should also start the configured NAS backup; the default `0` reserves mount-triggered runs for the external APFS target.
+Set `GDRIVE_BACKUP_VERSIONING=0` only if overwritten destination files should not be preserved. Versioning is enabled by default and moves the previous content into `.gdrive-versions/<timestamp>/<backup area>` through rclone's `--backup-dir` support.
+`GDRIVE_BACKUP_VERSIONS_SUBDIR` must remain a safe relative path outside `My Drive`, `Shared with me`, and `Shared Drives`. Old versions are never deleted automatically; review and archive them according to your own storage policy.
 
 The app includes setup UI translations for Deutsch, English, Français, Español, 日本語, 粵語, and 한국어. Open `/Applications/GDrive Backup Tiger.app`, then use `GDrive Backup Tiger > Settings` to change the language.
 
@@ -246,6 +254,12 @@ This project is intended as a small companion helper for rclone, not as a replac
 
 ## Maintainer Packaging
 
+Run the complete local test suite:
+
+```bash
+make test
+```
+
 Build a local installer package:
 
 ```bash
@@ -253,6 +267,17 @@ make pkg
 ```
 
 The package is written to `dist/GDrive-Backup-Tiger-<version>.pkg`.
+
+Verify its payload, permissions, metadata, and ad-hoc app signature:
+
+```bash
+./packaging/verify-pkg.sh --expect-unsigned dist/GDrive-Backup-Tiger-*.pkg
+```
+
+Developer ID signing and Apple notarization are supported through environment
+variables without storing credentials in the repository. See
+[`docs/signing-and-release.md`](docs/signing-and-release.md) for the secure
+release checklist.
 
 ## License
 

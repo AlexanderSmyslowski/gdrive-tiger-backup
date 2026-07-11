@@ -157,48 +157,55 @@ fi
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
   {
-    printf 'GDRIVE_BACKUP_TARGET=%q\n' "$BACKUP_TARGET"
+    LC_ALL=C printf 'GDRIVE_BACKUP_TARGET=%q\n' "$BACKUP_TARGET"
     if [[ "$BACKUP_TARGET" == "nas" ]]; then
-      [[ -n "$NAS_MOUNT" ]] && printf 'GDRIVE_BACKUP_NAS_MOUNT=%q\n' "$NAS_MOUNT"
-      [[ -n "$NAS_URL" ]] && printf 'GDRIVE_BACKUP_NAS_URL=%q\n' "$NAS_URL"
-      printf 'GDRIVE_BACKUP_NAS_SUBDIR=%q\n' "$NAS_SUBDIR"
+      [[ -n "$NAS_MOUNT" ]] && LC_ALL=C printf 'GDRIVE_BACKUP_NAS_MOUNT=%q\n' "$NAS_MOUNT"
+      [[ -n "$NAS_URL" ]] && LC_ALL=C printf 'GDRIVE_BACKUP_NAS_URL=%q\n' "$NAS_URL"
+      LC_ALL=C printf 'GDRIVE_BACKUP_NAS_SUBDIR=%q\n' "$NAS_SUBDIR"
     else
-      printf 'GDRIVE_BACKUP_VOLUME=%q\n' "$BACKUP_VOLUME"
-      printf 'GDRIVE_BACKUP_VOLUME_NAME=%q\n' "$BACKUP_VOLUME_NAME"
+      LC_ALL=C printf 'GDRIVE_BACKUP_VOLUME=%q\n' "$BACKUP_VOLUME"
+      LC_ALL=C printf 'GDRIVE_BACKUP_VOLUME_NAME=%q\n' "$BACKUP_VOLUME_NAME"
     fi
-    printf 'RCLONE_REMOTE=%q\n' "$RCLONE_REMOTE"
-    printf 'GDRIVE_BACKUP_LANG=%q\n' "$CONFIG_LANG"
+    LC_ALL=C printf 'RCLONE_REMOTE=%q\n' "$RCLONE_REMOTE"
+    LC_ALL=C printf 'GDRIVE_BACKUP_LANG=%q\n' "$CONFIG_LANG"
     printf 'GDRIVE_BACKUP_CONFIRM=1\n'
     printf 'GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1\n'
+    printf 'GDRIVE_BACKUP_VERSIONING=1\n'
+    LC_ALL=C printf 'GDRIVE_BACKUP_VERSIONS_SUBDIR=%q\n' '.gdrive-versions'
   } >"$CONFIG_FILE"
 elif ! grep -q '^GDRIVE_BACKUP_LANG=' "$CONFIG_FILE"; then
-  printf 'GDRIVE_BACKUP_LANG=%q\n' "$CONFIG_LANG" >>"$CONFIG_FILE"
+  LC_ALL=C printf 'GDRIVE_BACKUP_LANG=%q\n' "$CONFIG_LANG" >>"$CONFIG_FILE"
 fi
 if [[ -f "$CONFIG_FILE" ]] && ! grep -q '^GDRIVE_BACKUP_TARGET=' "$CONFIG_FILE"; then
-  printf 'GDRIVE_BACKUP_TARGET=%q\n' "$BACKUP_TARGET" >>"$CONFIG_FILE"
+  LC_ALL=C printf 'GDRIVE_BACKUP_TARGET=%q\n' "$BACKUP_TARGET" >>"$CONFIG_FILE"
 fi
 if [[ -f "$CONFIG_FILE" && "$BACKUP_TARGET" == "nas" ]]; then
   if [[ -n "$NAS_MOUNT" ]] && ! grep -q '^GDRIVE_BACKUP_NAS_MOUNT=' "$CONFIG_FILE"; then
-    printf 'GDRIVE_BACKUP_NAS_MOUNT=%q\n' "$NAS_MOUNT" >>"$CONFIG_FILE"
+    LC_ALL=C printf 'GDRIVE_BACKUP_NAS_MOUNT=%q\n' "$NAS_MOUNT" >>"$CONFIG_FILE"
   fi
   if [[ -n "$NAS_URL" ]] && ! grep -q '^GDRIVE_BACKUP_NAS_URL=' "$CONFIG_FILE"; then
-    printf 'GDRIVE_BACKUP_NAS_URL=%q\n' "$NAS_URL" >>"$CONFIG_FILE"
+    LC_ALL=C printf 'GDRIVE_BACKUP_NAS_URL=%q\n' "$NAS_URL" >>"$CONFIG_FILE"
   fi
   if ! grep -q '^GDRIVE_BACKUP_NAS_SUBDIR=' "$CONFIG_FILE"; then
-    printf 'GDRIVE_BACKUP_NAS_SUBDIR=%q\n' "$NAS_SUBDIR" >>"$CONFIG_FILE"
+    LC_ALL=C printf 'GDRIVE_BACKUP_NAS_SUBDIR=%q\n' "$NAS_SUBDIR" >>"$CONFIG_FILE"
   fi
 fi
+/bin/chmod 600 "$CONFIG_FILE"
 
 install -m 644 "$ROOT/macos/GDriveBackupTiger/Info.plist" "$APP_CONTENTS/Info.plist"
-clang -fobjc-arc -framework Cocoa "$ROOT/macos/GDriveBackupTiger/main.m" \
+clang -fobjc-arc -Wall -Wextra -mmacosx-version-min=13.0 \
+  -arch arm64 -arch x86_64 -framework Cocoa \
+  "$ROOT/macos/GDriveBackupTiger/main.m" \
+  "$ROOT/macos/GDriveBackupTiger/ConfigSupport.m" \
+  "$ROOT/macos/GDriveBackupTiger/Localization.m" \
   -o "$APP_CONTENTS/MacOS/GDriveBackupTiger"
 
 ICON_WORK="$(mktemp -d "${TMPDIR:-/tmp}/gdrive-tiger-icon.XXXXXX")"
-clang -fobjc-arc -framework Cocoa "$ROOT/macos/GDriveBackupTiger/IconGenerator.m" \
+clang -fobjc-arc -Wall -Wextra -framework Cocoa "$ROOT/macos/GDriveBackupTiger/IconGenerator.m" \
   -o "$ICON_WORK/IconGenerator"
 "$ICON_WORK/IconGenerator" "$ICON_WORK/AppIcon.iconset"
 iconutil -c icns "$ICON_WORK/AppIcon.iconset" -o "$APP_CONTENTS/Resources/AppIcon.icns"
-rm -rf "$ICON_WORK"
+"$ROOT/scripts/trash-path.sh" "$ICON_WORK"
 
 codesign --force --deep --sign - "$APP_DIR" >/dev/null
 

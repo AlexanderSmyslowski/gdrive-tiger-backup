@@ -1,7 +1,7 @@
 #!/bin/bash
 set -uo pipefail
 
-PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+PATH="${GDRIVE_BACKUP_PATH:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
 export PATH
 
 if [[ -z "${HOME:-}" ]]; then
@@ -73,7 +73,8 @@ if [[ -f "$CONFIG_FILE" ]]; then
 fi
 
 BACKUP_TRIGGER="${GDRIVE_BACKUP_TRIGGER:-manual}"
-if [[ "$BACKUP_TRIGGER" == "mount" ]]; then
+NAS_START_ON_MOUNT="${GDRIVE_BACKUP_NAS_START_ON_MOUNT:-0}"
+if [[ "$BACKUP_TRIGGER" == "mount" && "$NAS_START_ON_MOUNT" != "1" ]]; then
   REQUESTED_BACKUP_TARGET="apfs"
 else
   REQUESTED_BACKUP_TARGET="${GDRIVE_BACKUP_TARGET:-apfs}"
@@ -121,7 +122,9 @@ PROGRESS_FILE=""
 CONFIRM_BACKUP="${GDRIVE_BACKUP_CONFIRM:-1}"
 AUTO_CREATE_VOLUME="${GDRIVE_BACKUP_AUTO_CREATE_VOLUME:-1}"
 BACKUP_LANG="${GDRIVE_BACKUP_LANG:-auto}"
-NAS_START_ON_MOUNT="${GDRIVE_BACKUP_NAS_START_ON_MOUNT:-0}"
+VERSIONING="${GDRIVE_BACKUP_VERSIONING-1}"
+VERSIONS_SUBDIR="${GDRIVE_BACKUP_VERSIONS_SUBDIR-.gdrive-versions}"
+VERSION_RUN_ID=""
 TARGET_APPROVED=0
 COPY_INDEX=0
 COPY_TOTAL=0
@@ -131,6 +134,64 @@ exec >>"$LOG" 2>&1
 
 log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S%z')" "$*"
+}
+
+cleanup_temp_file() {
+  local path
+  for path in "$@"; do
+    [[ -n "$path" && -e "$path" ]] || continue
+    # Cleanup stays recoverable; older systems without trash intentionally keep the temp file.
+    if [[ ! -x /usr/bin/trash ]]; then
+      log "WARNUNG: Temporaere Datei bleibt erhalten, weil /usr/bin/trash fehlt: $path"
+      continue
+    fi
+    if ! /usr/bin/trash "$path" >/dev/null 2>&1; then
+      log "WARNUNG: Temporaere Datei konnte nicht in den Papierkorb verschoben werden: $path"
+    fi
+  done
+}
+
+validate_versioning_config() {
+  case "$VERSIONING" in
+    0|1) ;;
+    *)
+      log "FEHLER: GDRIVE_BACKUP_VERSIONING muss 0 oder 1 sein."
+      return 1
+      ;;
+  esac
+
+  [[ "$VERSIONING" == "1" ]] || return 0
+
+  if [[ -z "$VERSIONS_SUBDIR" || "$VERSIONS_SUBDIR" == /* ||
+        "$VERSIONS_SUBDIR" =~ [[:cntrl:]] ]]; then
+    log "FEHLER: GDRIVE_BACKUP_VERSIONS_SUBDIR muss ein sicherer relativer Pfad sein."
+    return 1
+  fi
+
+  case "/$VERSIONS_SUBDIR/" in
+    *"//"*|*"/./"*|*"/../"*)
+      log "FEHLER: GDRIVE_BACKUP_VERSIONS_SUBDIR darf keine leeren, Punkt- oder Elternsegmente enthalten."
+      return 1
+      ;;
+  esac
+
+  case "$(lowercase "${VERSIONS_SUBDIR%%/*}")" in
+    "my drive"|"shared with me"|"shared drives")
+      log "FEHLER: GDRIVE_BACKUP_VERSIONS_SUBDIR darf keinen aktiven Zielordner ueberlappen."
+      return 1
+      ;;
+  esac
+}
+
+version_backup_dir_for() {
+  local destination="$1"
+  local relative_destination="${destination#"$DEST_ROOT"/}"
+
+  if [[ -z "$relative_destination" || "$relative_destination" == "$destination" ]]; then
+    return 1
+  fi
+
+  printf '%s/%s/%s/%s' "${DEST_ROOT%/}" "$VERSIONS_SUBDIR" "$VERSION_RUN_ID" "$relative_destination"
 }
 
 safe_name() {
@@ -343,20 +404,20 @@ start_animation() {
     log "Backup-Animation gestartet."
   else
     log "WARNUNG: Backup-Animation konnte nicht gestartet werden."
-    rm -f "$ANIMATION_SENTINEL"
+    cleanup_temp_file "$ANIMATION_SENTINEL"
     ANIMATION_SENTINEL=""
-    rm -f "$PROGRESS_FILE"
+    cleanup_temp_file "$PROGRESS_FILE"
     PROGRESS_FILE=""
   fi
 }
 
 stop_animation() {
   if [[ -n "${ANIMATION_SENTINEL:-}" ]]; then
-    rm -f "$ANIMATION_SENTINEL"
+    cleanup_temp_file "$ANIMATION_SENTINEL"
     ANIMATION_SENTINEL=""
   fi
   if [[ -n "${PROGRESS_FILE:-}" ]]; then
-    rm -f "$PROGRESS_FILE"
+    cleanup_temp_file "$PROGRESS_FILE"
     PROGRESS_FILE=""
   fi
 }
@@ -417,7 +478,7 @@ confirm_prompt() {
     if /usr/bin/open -W -n "$ANIMATION_APP" --args --confirm "$title" "$detail" "$primary_button" "$secondary_button" "$response" >/dev/null 2>&1; then
       decision="$(tr -d '\r\n' <"$response" 2>/dev/null || true)"
     fi
-    rm -f "$response"
+    cleanup_temp_file "$response"
 
     if [[ "$decision" == "yes" ]]; then
       return 0
@@ -489,7 +550,7 @@ find_setup_candidate() {
 
     plist="$(mktemp "${TMPDIR:-/tmp}/gdrive-volume-info.XXXXXX")" || continue
     if ! run_with_timeout 6 /usr/sbin/diskutil info -plist "$mount" >"$plist"; then
-      rm -f "$plist"
+      cleanup_temp_file "$plist"
       continue
     fi
 
@@ -499,7 +560,7 @@ find_setup_candidate() {
     name="$(plist_value "$plist" VolumeName)"
     system_image="$(plist_value "$plist" SystemImage)"
     writable_media="$(plist_value "$plist" WritableMedia)"
-    rm -f "$plist"
+    cleanup_temp_file "$plist"
 
     [[ "$fs" == "apfs" ]] || continue
     [[ "$external" == "true" ]] || continue
@@ -523,15 +584,16 @@ find_setup_candidate() {
 persist_volume_config() {
   mkdir -p "$(dirname "$CONFIG_FILE")"
   touch "$CONFIG_FILE"
+  /bin/chmod 600 "$CONFIG_FILE"
 
   if ! grep -q '^GDRIVE_BACKUP_TARGET=' "$CONFIG_FILE"; then
     printf 'GDRIVE_BACKUP_TARGET=apfs\n' >>"$CONFIG_FILE"
   fi
   if ! grep -q '^GDRIVE_BACKUP_VOLUME=' "$CONFIG_FILE"; then
-    printf 'GDRIVE_BACKUP_VOLUME=%q\n' "$VOLUME" >>"$CONFIG_FILE"
+    LC_ALL=C printf 'GDRIVE_BACKUP_VOLUME=%q\n' "$VOLUME" >>"$CONFIG_FILE"
   fi
   if ! grep -q '^GDRIVE_BACKUP_VOLUME_NAME=' "$CONFIG_FILE"; then
-    printf 'GDRIVE_BACKUP_VOLUME_NAME=%q\n' "$BACKUP_VOLUME_NAME" >>"$CONFIG_FILE"
+    LC_ALL=C printf 'GDRIVE_BACKUP_VOLUME_NAME=%q\n' "$BACKUP_VOLUME_NAME" >>"$CONFIG_FILE"
   fi
   if ! grep -q '^GDRIVE_BACKUP_AUTO_CREATE_VOLUME=' "$CONFIG_FILE"; then
     printf 'GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1\n' >>"$CONFIG_FILE"
@@ -691,6 +753,10 @@ for arg in "$@"; do
   esac
 done
 
+if ! validate_versioning_config; then
+  exit 64
+fi
+
 if [[ "$SETUP_UI" == "1" ]]; then
   if [[ -d "$ANIMATION_APP" ]]; then
     /usr/bin/open -n "$ANIMATION_APP" --args --setup >/dev/null 2>&1
@@ -721,7 +787,11 @@ if ! flock -n 9; then
 fi
 
 if ! ensure_backup_target; then
-  exit 0
+  if [[ "$BACKUP_TRIGGER" == "mount" ]]; then
+    exit 0
+  fi
+  log "FEHLER: Das konfigurierte Backup-Ziel ist nicht verfuegbar."
+  exit 69
 fi
 
 if ! rclone config show "$REMOTE" >/dev/null 2>&1; then
@@ -740,6 +810,20 @@ if [[ "$DRY_RUN" == "0" ]]; then
   fi
 fi
 
+if [[ "$VERSIONING" == "1" ]]; then
+  # The UUID prevents two Macs writing to the same NAS—or a repeated local
+  # run in one second—from overwriting one another's archived copy.
+  VERSION_RUN_UUID="$(/usr/bin/uuidgen 2>/dev/null | /usr/bin/tr '[:upper:]' '[:lower:]')"
+  VERSION_RUN_ID="$(date '+%Y-%m-%dT%H-%M-%S%z')-$VERSION_RUN_UUID"
+  if [[ ! "$VERSION_RUN_ID" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}[+-][0-9]{4}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+    log "FEHLER: Zeitstempel fuer den Versionsordner konnte nicht sicher erzeugt werden."
+    exit 70
+  fi
+  log "Dateiversionierung aktiv: ${DEST_ROOT%/}/$VERSIONS_SUBDIR/$VERSION_RUN_ID"
+else
+  log "Dateiversionierung ist deaktiviert."
+fi
+
 start_animation
 trap cleanup EXIT
 trap 'cleanup; exit 129' HUP
@@ -747,7 +831,7 @@ trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
 RCLONE_OPTS=(
-  --drive-export-formats docx,xlsx,pptx
+  --drive-export-formats "docx,xlsx,pptx"
   --create-empty-src-dirs
   --stats 10s
   --log-level INFO
@@ -768,6 +852,8 @@ copy_one() {
   local dest="$3"
   shift 3
   local phase=""
+  local backup_dir=""
+  local copy_status=0
 
   COPY_INDEX=$((COPY_INDEX + 1))
   if (( COPY_TOTAL > 0 )); then
@@ -782,9 +868,25 @@ copy_one() {
     }
   fi
 
+  if [[ "$VERSIONING" == "1" ]]; then
+    if ! backup_dir="$(version_backup_dir_for "$dest")"; then
+      log "FEHLER: Versionsziel konnte fuer '$dest' nicht sicher bestimmt werden."
+      errors=$((errors + 1))
+      return
+    fi
+  fi
+
   log "Kopiere $label -> $dest"
   write_progress "$label" "0" "$(t progress_preparing)" "$phase"
-  if run_rclone_with_progress "$label" "$phase" rclone copy "$source" "$dest" "$@" "${RCLONE_OPTS[@]}"; then
+  if [[ "$VERSIONING" == "1" ]]; then
+    run_rclone_with_progress "$label" "$phase" rclone copy "$source" "$dest" \
+      --backup-dir "$backup_dir" "$@" "${RCLONE_OPTS[@]}" || copy_status=$?
+  else
+    run_rclone_with_progress "$label" "$phase" rclone copy "$source" "$dest" \
+      "$@" "${RCLONE_OPTS[@]}" || copy_status=$?
+  fi
+
+  if [[ "$copy_status" == "0" ]]; then
     write_progress "$label" "100" "$(t progress_done)" "$phase"
     log "OK: $label"
   else
@@ -818,7 +920,7 @@ else
   copy_one "My Drive" "${REMOTE}:" "$DEST_ROOT/My Drive"
   copy_one "Shared with me" "${REMOTE}:" "$DEST_ROOT/Shared with me" --drive-shared-with-me
 fi
-rm -f "$drives_json"
+cleanup_temp_file "$drives_json"
 
 if (( errors > 0 )); then
   log "Fertig mit $errors Fehler(n)."

@@ -1,6 +1,9 @@
 #import <Cocoa/Cocoa.h>
 #include <unistd.h>
 
+#import "ConfigSupport.h"
+#import "Localization.h"
+
 static NSImage *CreateApplicationIcon(void) {
     NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(128, 128)];
     [image lockFocus];
@@ -50,476 +53,8 @@ static NSImage *CreateApplicationIcon(void) {
     return image;
 }
 
-static NSString *TrimConfigValue(NSString *value) {
-    NSString *trimmed = [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    if (trimmed.length >= 2) {
-        unichar first = [trimmed characterAtIndex:0];
-        unichar last = [trimmed characterAtIndex:trimmed.length - 1];
-        if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
-            trimmed = [trimmed substringWithRange:NSMakeRange(1, trimmed.length - 2)];
-        }
-    }
-    return trimmed;
-}
-
-static NSString *ConfiguredLanguage(void) {
-    NSString *configPath = [NSHomeDirectory() stringByAppendingPathComponent:@".config/gdrive-tiger-backup/config"];
-    NSString *config = [NSString stringWithContentsOfFile:configPath encoding:NSUTF8StringEncoding error:nil];
-    for (NSString *line in [config componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
-        if ([line hasPrefix:@"GDRIVE_BACKUP_LANG="]) {
-            NSString *value = TrimConfigValue([line substringFromIndex:[@"GDRIVE_BACKUP_LANG=" length]]).lowercaseString;
-            NSArray<NSString *> *supported = @[@"de", @"en", @"fr", @"es", @"ja", @"yue", @"ko"];
-            for (NSString *code in supported) {
-                if ([value isEqualToString:code] || [value hasPrefix:[code stringByAppendingString:@"-"]] || [value hasPrefix:[code stringByAppendingString:@"_"]]) {
-                    return code;
-                }
-            }
-            if ([value hasPrefix:@"zh-hk"] || [value hasPrefix:@"zh_hk"] || [value hasPrefix:@"zh-hant-hk"] || [value hasPrefix:@"zh_hant_hk"] || [value hasPrefix:@"zh-mo"] || [value hasPrefix:@"zh_mo"]) {
-                return @"yue";
-            }
-        }
-    }
-
-    NSString *preferred = NSLocale.preferredLanguages.firstObject.lowercaseString;
-    if ([preferred hasPrefix:@"de"]) return @"de";
-    if ([preferred hasPrefix:@"fr"]) return @"fr";
-    if ([preferred hasPrefix:@"es"]) return @"es";
-    if ([preferred hasPrefix:@"ja"]) return @"ja";
-    if ([preferred hasPrefix:@"ko"]) return @"ko";
-    if ([preferred hasPrefix:@"yue"] || [preferred hasPrefix:@"zh-hk"] || [preferred hasPrefix:@"zh_hk"] || [preferred hasPrefix:@"zh-hant-hk"] || [preferred hasPrefix:@"zh_hant_hk"] || [preferred hasPrefix:@"zh-mo"] || [preferred hasPrefix:@"zh_mo"]) return @"yue";
-    return @"en";
-}
-
-static NSString *T(NSString *language, NSString *key) {
-    NSDictionary<NSString *, NSString *> *de = @{
-        @"confirmTarget": @"Dieses Volume verwenden?",
-        @"startBackup": @"Backup starten",
-        @"notNow": @"Nicht jetzt",
-        @"running": @"Sicherung wird erstellt ...",
-        @"completed": @"Sicherung abgeschlossen.",
-        @"runningHint": @"Bitte Festplatte nicht auswerfen.",
-        @"completedHint": @"Backup ist fertig.",
-        @"setupTitle": @"Backup-Ziel und Startmodus",
-        @"targetType": @"App-/Zeitplan-Ziel",
-        @"externalVolume": @"Externe Platte",
-        @"nas": @"NAS / Netzwerk",
-        @"mountedNas": @"Gemountete NAS",
-        @"refresh": @"Aktualisieren",
-        @"discover": @"Suchen",
-        @"openFinder": @"Im Finder öffnen",
-        @"nasUrl": @"NAS-URL",
-        @"nasMount": @"Mountpunkt",
-        @"nasSubdir": @"Zielordner",
-        @"schedule": @"Starten",
-        @"scheduleManual": @"Nur manuell",
-        @"scheduleLogin": @"Beim Login",
-        @"scheduleHourly": @"Stündlich",
-        @"scheduleDaily": @"Täglich 20:00",
-        @"save": @"Speichern",
-        @"dryRun": @"Backup prüfen",
-        @"backupNow": @"Backup jetzt",
-        @"dryRunTip": @"Prüft Quelle und Ziel, ohne Dateien zu kopieren.",
-        @"backupNowTip": @"Startet das echte Backup und schreibt auf das gewählte Ziel.",
-        @"statusReady": @"Bereit.",
-        @"statusSaved": @"Gespeichert.",
-        @"statusSearching": @"Suche im Netzwerk ...",
-        @"statusDiscoveryDone": @"Netzwerksuche abgeschlossen.",
-        @"statusBackupStarted": @"Backup gestartet.",
-        @"statusDryRunStarted": @"Prüflauf gestartet. Es wird nichts kopiert.",
-        @"selectMountedVolume": @"Volume auswählen",
-        @"aboutMenu": @"Über GDrive Backup Tiger",
-        @"settingsMenu": @"Einstellungen ...",
-        @"hideMenu": @"GDrive Backup Tiger ausblenden",
-        @"quitMenu": @"GDrive Backup Tiger beenden",
-        @"settingsTitle": @"Einstellungen",
-        @"languageSetting": @"Sprache",
-        @"cancel": @"Abbrechen",
-        @"done": @"Fertig",
-        @"languageSaved": @"Sprache gespeichert."
-    };
-    NSDictionary<NSString *, NSString *> *en = @{
-        @"confirmTarget": @"Use this volume?",
-        @"startBackup": @"Start backup",
-        @"notNow": @"Not now",
-        @"running": @"Backup is running ...",
-        @"completed": @"Backup completed.",
-        @"runningHint": @"Please do not eject the disk.",
-        @"completedHint": @"Backup is done.",
-        @"setupTitle": @"Backup target and trigger",
-        @"targetType": @"App/schedule target",
-        @"externalVolume": @"External disk",
-        @"nas": @"NAS / Network",
-        @"mountedNas": @"Mounted NAS",
-        @"refresh": @"Refresh",
-        @"discover": @"Search",
-        @"openFinder": @"Open in Finder",
-        @"nasUrl": @"NAS URL",
-        @"nasMount": @"Mount point",
-        @"nasSubdir": @"Destination folder",
-        @"schedule": @"Start",
-        @"scheduleManual": @"Manual only",
-        @"scheduleLogin": @"At login",
-        @"scheduleHourly": @"Hourly",
-        @"scheduleDaily": @"Daily 20:00",
-        @"save": @"Save",
-        @"dryRun": @"Check backup",
-        @"backupNow": @"Back up now",
-        @"dryRunTip": @"Checks source and destination without copying files.",
-        @"backupNowTip": @"Starts the real backup and writes to the selected destination.",
-        @"statusReady": @"Ready.",
-        @"statusSaved": @"Saved.",
-        @"statusSearching": @"Searching network ...",
-        @"statusDiscoveryDone": @"Network search completed.",
-        @"statusBackupStarted": @"Backup started.",
-        @"statusDryRunStarted": @"Check started. No files will be copied.",
-        @"selectMountedVolume": @"Select volume",
-        @"aboutMenu": @"About GDrive Backup Tiger",
-        @"settingsMenu": @"Settings ...",
-        @"hideMenu": @"Hide GDrive Backup Tiger",
-        @"quitMenu": @"Quit GDrive Backup Tiger",
-        @"settingsTitle": @"Settings",
-        @"languageSetting": @"Language",
-        @"cancel": @"Cancel",
-        @"done": @"Done",
-        @"languageSaved": @"Language saved."
-    };
-    NSDictionary<NSString *, NSString *> *fr = @{
-        @"confirmTarget": @"Utiliser ce volume ?",
-        @"startBackup": @"Sauvegarder",
-        @"notNow": @"Pas maintenant",
-        @"running": @"Sauvegarde en cours ...",
-        @"completed": @"Sauvegarde terminée.",
-        @"runningHint": @"Veuillez ne pas éjecter le disque.",
-        @"completedHint": @"Sauvegarde terminée.",
-        @"setupTitle": @"Destination et mode de démarrage",
-        @"targetType": @"Destination app/planifiée",
-        @"externalVolume": @"Disque externe",
-        @"nas": @"NAS / Réseau",
-        @"mountedNas": @"NAS monté",
-        @"refresh": @"Actualiser",
-        @"discover": @"Rechercher",
-        @"openFinder": @"Ouvrir dans le Finder",
-        @"nasUrl": @"URL du NAS",
-        @"nasMount": @"Point de montage",
-        @"nasSubdir": @"Dossier cible",
-        @"schedule": @"Démarrage",
-        @"scheduleManual": @"Manuel uniquement",
-        @"scheduleLogin": @"À la connexion",
-        @"scheduleHourly": @"Toutes les heures",
-        @"scheduleDaily": @"Tous les jours 20:00",
-        @"save": @"Enregistrer",
-        @"dryRun": @"Vérifier la sauvegarde",
-        @"backupNow": @"Sauvegarder",
-        @"dryRunTip": @"Vérifie la source et la destination sans copier de fichiers.",
-        @"backupNowTip": @"Lance la vraie sauvegarde vers la destination choisie.",
-        @"statusReady": @"Prêt.",
-        @"statusSaved": @"Enregistré.",
-        @"statusSearching": @"Recherche sur le réseau ...",
-        @"statusDiscoveryDone": @"Recherche réseau terminée.",
-        @"statusBackupStarted": @"Sauvegarde lancée.",
-        @"statusDryRunStarted": @"Vérification lancée. Aucun fichier ne sera copié.",
-        @"selectMountedVolume": @"Choisir un volume",
-        @"aboutMenu": @"À propos de GDrive Backup Tiger",
-        @"settingsMenu": @"Réglages ...",
-        @"hideMenu": @"Masquer GDrive Backup Tiger",
-        @"quitMenu": @"Quitter GDrive Backup Tiger",
-        @"settingsTitle": @"Réglages",
-        @"languageSetting": @"Langue",
-        @"cancel": @"Annuler",
-        @"done": @"Terminé",
-        @"languageSaved": @"Langue enregistrée."
-    };
-    NSDictionary<NSString *, NSString *> *es = @{
-        @"confirmTarget": @"¿Usar este volumen?",
-        @"startBackup": @"Iniciar copia",
-        @"notNow": @"Ahora no",
-        @"running": @"Copia en curso ...",
-        @"completed": @"Copia completada.",
-        @"runningHint": @"No expulses el disco.",
-        @"completedHint": @"La copia esta lista.",
-        @"setupTitle": @"Destino y modo de inicio",
-        @"targetType": @"Destino app/programado",
-        @"externalVolume": @"Disco externo",
-        @"nas": @"NAS / Red",
-        @"mountedNas": @"NAS montado",
-        @"refresh": @"Actualizar",
-        @"discover": @"Buscar",
-        @"openFinder": @"Abrir en Finder",
-        @"nasUrl": @"URL del NAS",
-        @"nasMount": @"Punto de montaje",
-        @"nasSubdir": @"Carpeta destino",
-        @"schedule": @"Inicio",
-        @"scheduleManual": @"Solo manual",
-        @"scheduleLogin": @"Al iniciar sesión",
-        @"scheduleHourly": @"Cada hora",
-        @"scheduleDaily": @"Diario 20:00",
-        @"save": @"Guardar",
-        @"dryRun": @"Comprobar copia",
-        @"backupNow": @"Copiar ahora",
-        @"dryRunTip": @"Comprueba origen y destino sin copiar archivos.",
-        @"backupNowTip": @"Inicia la copia real hacia el destino elegido.",
-        @"statusReady": @"Listo.",
-        @"statusSaved": @"Guardado.",
-        @"statusSearching": @"Buscando en la red ...",
-        @"statusDiscoveryDone": @"Búsqueda de red completada.",
-        @"statusBackupStarted": @"Copia iniciada.",
-        @"statusDryRunStarted": @"Comprobación iniciada. No se copiarán archivos.",
-        @"selectMountedVolume": @"Seleccionar volumen",
-        @"aboutMenu": @"Acerca de GDrive Backup Tiger",
-        @"settingsMenu": @"Configuración ...",
-        @"hideMenu": @"Ocultar GDrive Backup Tiger",
-        @"quitMenu": @"Salir de GDrive Backup Tiger",
-        @"settingsTitle": @"Configuración",
-        @"languageSetting": @"Idioma",
-        @"cancel": @"Cancelar",
-        @"done": @"Listo",
-        @"languageSaved": @"Idioma guardado."
-    };
-    NSDictionary<NSString *, NSString *> *ja = @{
-        @"confirmTarget": @"このボリュームを使いますか？",
-        @"startBackup": @"バックアップ開始",
-        @"notNow": @"今はしない",
-        @"running": @"バックアップ中...",
-        @"completed": @"バックアップ完了。",
-        @"runningHint": @"ディスクを取り出さないでください。",
-        @"completedHint": @"完了しました。",
-        @"setupTitle": @"バックアップ先と開始方法",
-        @"targetType": @"アプリ/スケジュール先",
-        @"externalVolume": @"外部ディスク",
-        @"nas": @"NAS / ネットワーク",
-        @"mountedNas": @"マウント済みNAS",
-        @"refresh": @"更新",
-        @"discover": @"検索",
-        @"openFinder": @"Finderで開く",
-        @"nasUrl": @"NAS URL",
-        @"nasMount": @"マウント先",
-        @"nasSubdir": @"保存先フォルダ",
-        @"schedule": @"開始",
-        @"scheduleManual": @"手動のみ",
-        @"scheduleLogin": @"ログイン時",
-        @"scheduleHourly": @"毎時",
-        @"scheduleDaily": @"毎日 20:00",
-        @"save": @"保存",
-        @"dryRun": @"バックアップ確認",
-        @"backupNow": @"今すぐバックアップ",
-        @"dryRunTip": @"ファイルをコピーせず、元と保存先を確認します。",
-        @"backupNowTip": @"選択した保存先へ実際のバックアップを開始します。",
-        @"statusReady": @"準備完了。",
-        @"statusSaved": @"保存しました。",
-        @"statusSearching": @"ネットワーク検索中...",
-        @"statusDiscoveryDone": @"ネットワーク検索完了。",
-        @"statusBackupStarted": @"バックアップを開始しました。",
-        @"statusDryRunStarted": @"確認を開始しました。ファイルはコピーされません。",
-        @"selectMountedVolume": @"ボリュームを選択",
-        @"aboutMenu": @"GDrive Backup Tigerについて",
-        @"settingsMenu": @"設定...",
-        @"hideMenu": @"GDrive Backup Tigerを隠す",
-        @"quitMenu": @"GDrive Backup Tigerを終了",
-        @"settingsTitle": @"設定",
-        @"languageSetting": @"言語",
-        @"cancel": @"キャンセル",
-        @"done": @"完了",
-        @"languageSaved": @"言語を保存しました。"
-    };
-    NSDictionary<NSString *, NSString *> *yue = @{
-        @"confirmTarget": @"使用呢個卷宗？",
-        @"startBackup": @"開始備份",
-        @"notNow": @"暫時唔好",
-        @"running": @"正在備份...",
-        @"completed": @"備份完成。",
-        @"runningHint": @"請勿退出磁碟。",
-        @"completedHint": @"備份已完成。",
-        @"setupTitle": @"備份目的地同啟動方式",
-        @"targetType": @"App/排程目的地",
-        @"externalVolume": @"外置磁碟",
-        @"nas": @"NAS / 網絡",
-        @"mountedNas": @"已掛載 NAS",
-        @"refresh": @"重新整理",
-        @"discover": @"搜尋",
-        @"openFinder": @"喺 Finder 開啟",
-        @"nasUrl": @"NAS URL",
-        @"nasMount": @"掛載點",
-        @"nasSubdir": @"目的地資料夾",
-        @"schedule": @"啟動",
-        @"scheduleManual": @"只限手動",
-        @"scheduleLogin": @"登入時",
-        @"scheduleHourly": @"每小時",
-        @"scheduleDaily": @"每日 20:00",
-        @"save": @"儲存",
-        @"dryRun": @"檢查備份",
-        @"backupNow": @"即刻備份",
-        @"dryRunTip": @"只檢查來源同目的地，唔會複製檔案。",
-        @"backupNowTip": @"開始真正備份到已選目的地。",
-        @"statusReady": @"準備好。",
-        @"statusSaved": @"已儲存。",
-        @"statusSearching": @"搜尋網絡中...",
-        @"statusDiscoveryDone": @"網絡搜尋完成。",
-        @"statusBackupStarted": @"備份已開始。",
-        @"statusDryRunStarted": @"檢查已開始。唔會複製檔案。",
-        @"selectMountedVolume": @"選擇卷宗",
-        @"aboutMenu": @"關於 GDrive Backup Tiger",
-        @"settingsMenu": @"設定...",
-        @"hideMenu": @"隱藏 GDrive Backup Tiger",
-        @"quitMenu": @"結束 GDrive Backup Tiger",
-        @"settingsTitle": @"設定",
-        @"languageSetting": @"語言",
-        @"cancel": @"取消",
-        @"done": @"完成",
-        @"languageSaved": @"語言已儲存。"
-    };
-    NSDictionary<NSString *, NSString *> *ko = @{
-        @"confirmTarget": @"이 볼륨을 사용할까요?",
-        @"startBackup": @"백업 시작",
-        @"notNow": @"지금 안 함",
-        @"running": @"백업 중...",
-        @"completed": @"백업 완료.",
-        @"runningHint": @"디스크를 꺼내지 마세요.",
-        @"completedHint": @"백업이 완료되었습니다.",
-        @"setupTitle": @"백업 대상 및 시작 방식",
-        @"targetType": @"앱/예약 대상",
-        @"externalVolume": @"외장 디스크",
-        @"nas": @"NAS / 네트워크",
-        @"mountedNas": @"마운트된 NAS",
-        @"refresh": @"새로 고침",
-        @"discover": @"검색",
-        @"openFinder": @"Finder에서 열기",
-        @"nasUrl": @"NAS URL",
-        @"nasMount": @"마운트 지점",
-        @"nasSubdir": @"대상 폴더",
-        @"schedule": @"시작",
-        @"scheduleManual": @"수동만",
-        @"scheduleLogin": @"로그인 시",
-        @"scheduleHourly": @"매시간",
-        @"scheduleDaily": @"매일 20:00",
-        @"save": @"저장",
-        @"dryRun": @"백업 확인",
-        @"backupNow": @"지금 백업",
-        @"dryRunTip": @"파일을 복사하지 않고 원본과 대상을 확인합니다.",
-        @"backupNowTip": @"선택한 대상에 실제 백업을 시작합니다.",
-        @"statusReady": @"준비됨.",
-        @"statusSaved": @"저장됨.",
-        @"statusSearching": @"네트워크 검색 중...",
-        @"statusDiscoveryDone": @"네트워크 검색 완료.",
-        @"statusBackupStarted": @"백업 시작됨.",
-        @"statusDryRunStarted": @"확인이 시작되었습니다. 파일은 복사되지 않습니다.",
-        @"selectMountedVolume": @"볼륨 선택",
-        @"aboutMenu": @"GDrive Backup Tiger 정보",
-        @"settingsMenu": @"설정...",
-        @"hideMenu": @"GDrive Backup Tiger 가리기",
-        @"quitMenu": @"GDrive Backup Tiger 종료",
-        @"settingsTitle": @"설정",
-        @"languageSetting": @"언어",
-        @"cancel": @"취소",
-        @"done": @"완료",
-        @"languageSaved": @"언어가 저장되었습니다."
-    };
-
-    NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *tables = @{
-        @"de": de,
-        @"en": en,
-        @"fr": fr,
-        @"es": es,
-        @"ja": ja,
-        @"yue": yue,
-        @"ko": ko
-    };
-    return (tables[language][key] ?: en[key]) ?: key;
-}
-
-static NSString *ConfigPath(void) {
-    return [NSHomeDirectory() stringByAppendingPathComponent:@".config/gdrive-tiger-backup/config"];
-}
-
 static NSString *ScheduleAgentPath(void) {
     return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/LaunchAgents/com.commcats.gdrivebackup.schedule.plist"];
-}
-
-static NSArray<NSString *> *SupportedLanguageCodes(void) {
-    return @[@"de", @"en", @"fr", @"es", @"ja", @"yue", @"ko"];
-}
-
-static NSString *LanguageDisplayName(NSString *code) {
-    NSDictionary<NSString *, NSString *> *names = @{
-        @"de": @"Deutsch",
-        @"en": @"English",
-        @"fr": @"Français",
-        @"es": @"Español",
-        @"ja": @"日本語",
-        @"yue": @"粵語",
-        @"ko": @"한국어"
-    };
-    return names[code] ?: @"English";
-}
-
-static NSMutableDictionary<NSString *, NSString *> *ReadConfigDictionary(void) {
-    NSMutableDictionary<NSString *, NSString *> *values = [NSMutableDictionary dictionary];
-    NSString *config = [NSString stringWithContentsOfFile:ConfigPath() encoding:NSUTF8StringEncoding error:nil];
-    for (NSString *line in [config componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
-        NSRange range = [line rangeOfString:@"="];
-        if (range.location == NSNotFound || [line hasPrefix:@"#"]) {
-            continue;
-        }
-        NSString *key = [[line substringToIndex:range.location] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
-        NSString *value = TrimConfigValue([line substringFromIndex:range.location + 1]);
-        if (key.length) {
-            values[key] = value;
-        }
-    }
-    return values;
-}
-
-static NSString *ShellQuote(NSString *value) {
-    NSString *escaped = [value ?: @"" stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
-    return [NSString stringWithFormat:@"'%@'", escaped];
-}
-
-static BOOL WriteConfigUpdates(NSDictionary<NSString *, NSString *> *updates, NSError **error) {
-    NSString *path = ConfigPath();
-    NSString *dir = [path stringByDeletingLastPathComponent];
-    [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
-
-    NSString *config = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] ?: @"";
-    NSMutableArray<NSString *> *lines = [[config componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet] mutableCopy];
-    NSMutableSet<NSString *> *remaining = [NSMutableSet setWithArray:updates.allKeys];
-
-    for (NSUInteger index = 0; index < lines.count; index++) {
-        NSString *line = lines[index];
-        NSRange range = [line rangeOfString:@"="];
-        if (range.location == NSNotFound || [line hasPrefix:@"#"]) {
-            continue;
-        }
-        NSString *key = [[line substringToIndex:range.location] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
-        NSString *value = updates[key];
-        if (value) {
-            lines[index] = [NSString stringWithFormat:@"%@=%@", key, ShellQuote(value)];
-            [remaining removeObject:key];
-        }
-    }
-
-    if (lines.count && lines.lastObject.length == 0) {
-        [lines removeLastObject];
-    }
-
-    NSArray<NSString *> *orderedKeys = @[
-        @"GDRIVE_BACKUP_TARGET",
-        @"GDRIVE_BACKUP_NAS_MOUNT",
-        @"GDRIVE_BACKUP_NAS_URL",
-        @"GDRIVE_BACKUP_NAS_SUBDIR",
-        @"GDRIVE_BACKUP_NAS_START_ON_MOUNT",
-        @"GDRIVE_BACKUP_SCHEDULE"
-    ];
-    for (NSString *key in orderedKeys) {
-        if ([remaining containsObject:key]) {
-            [lines addObject:[NSString stringWithFormat:@"%@=%@", key, ShellQuote(updates[key])]];
-            [remaining removeObject:key];
-        }
-    }
-    for (NSString *key in remaining.allObjects) {
-        [lines addObject:[NSString stringWithFormat:@"%@=%@", key, ShellQuote(updates[key])]];
-    }
-
-    NSString *newConfig = [[lines arrayByAddingObject:@""] componentsJoinedByString:@"\n"];
-    return [newConfig writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:error];
 }
 
 static NSString *RunCommand(NSString *launchPath, NSArray<NSString *> *arguments, NSDictionary<NSString *, NSString *> *environment, int *statusOut) {
@@ -720,6 +255,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
         self.timer = [NSTimer scheduledTimerWithTimeInterval:(1.0 / 30.0)
                                                      repeats:YES
                                                        block:^(NSTimer *timer) {
+            (void)timer;
             self.phase = fmod(self.phase + 1.3, 360.0);
             self.needsDisplay = YES;
         }];
@@ -1212,7 +748,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 
     NSString *selectedLanguage = languagePopup.selectedItem.representedObject ?: @"en";
     NSError *error = nil;
-    if (!WriteConfigUpdates(@{@"GDRIVE_BACKUP_LANG": selectedLanguage}, &error)) {
+    if (!GDTWriteConfigUpdates(@{@"GDRIVE_BACKUP_LANG": selectedLanguage}, &error)) {
         self.statusField.stringValue = error.localizedDescription ?: @"Save failed.";
         return;
     }
@@ -1246,7 +782,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     content.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.window.contentView = content;
 
-    NSMutableDictionary<NSString *, NSString *> *config = ReadConfigDictionary();
+    NSMutableDictionary<NSString *, NSString *> *config = GDTReadConfigDictionary();
     NSString *target = [config[@"GDRIVE_BACKUP_TARGET"] ?: @"apfs" lowercaseString];
     NSString *schedule = [config[@"GDRIVE_BACKUP_SCHEDULE"] ?: @"manual" lowercaseString];
 
@@ -1456,9 +992,11 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     if (url) {
         [NSWorkspace.sharedWorkspace openURL:url];
         [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:NO block:^(NSTimer *timer) {
+            (void)timer;
             [self refreshMountedNAS:nil];
         }];
         [NSTimer scheduledTimerWithTimeInterval:6.0 repeats:NO block:^(NSTimer *timer) {
+            (void)timer;
             [self refreshMountedNAS:nil];
         }];
     }
@@ -1482,11 +1020,14 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 
 - (BOOL)saveSetupValues {
     NSError *error = nil;
-    if (!WriteConfigUpdates([self currentSetupUpdates], &error)) {
+    if (!GDTWriteConfigUpdates([self currentSetupUpdates], &error)) {
         self.statusField.stringValue = error.localizedDescription ?: @"Save failed.";
         return NO;
     }
-    [self applySchedule:self.schedulePopup.selectedItem.representedObject ?: @"manual"];
+    if (![self applySchedule:self.schedulePopup.selectedItem.representedObject ?: @"manual" error:&error]) {
+        self.statusField.stringValue = error.localizedDescription ?: @"Schedule update failed.";
+        return NO;
+    }
     self.statusField.stringValue = T(self.language, @"statusSaved");
     return YES;
 }
@@ -1530,42 +1071,101 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     }
 }
 
-- (NSString *)schedulePlistForMode:(NSString *)mode {
-    NSString *home = NSHomeDirectory();
-    NSMutableString *plist = [NSMutableString string];
-    [plist appendString:@"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"];
-    [plist appendString:@"<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"];
-    [plist appendString:@"<plist version=\"1.0\"><dict>\n"];
-    [plist appendString:@"  <key>Label</key><string>com.commcats.gdrivebackup.schedule</string>\n"];
-    [plist appendString:@"  <key>ProgramArguments</key><array><string>/bin/bash</string><string>/usr/local/bin/backup-google-drive.sh</string><string>--run</string></array>\n"];
-    [plist appendFormat:@"  <key>EnvironmentVariables</key><dict><key>HOME</key><string>%@</string><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string><key>GDRIVE_BACKUP_TRIGGER</key><string>schedule</string></dict>\n", home];
+- (NSData *)schedulePlistDataForMode:(NSString *)mode error:(NSError **)error {
+    NSMutableDictionary<NSString *, id> *plist = [@{
+        @"Label": @"com.commcats.gdrivebackup.schedule",
+        @"ProgramArguments": @[@"/bin/bash", @"/usr/local/bin/backup-google-drive.sh", @"--run"],
+        @"EnvironmentVariables": @{
+            @"HOME": NSHomeDirectory(),
+            @"PATH": @"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            @"GDRIVE_BACKUP_TRIGGER": @"schedule"
+        }
+    } mutableCopy];
     if ([mode isEqualToString:@"login"]) {
-        [plist appendString:@"  <key>RunAtLoad</key><true/>\n"];
+        plist[@"RunAtLoad"] = @YES;
     } else if ([mode isEqualToString:@"hourly"]) {
-        [plist appendString:@"  <key>StartInterval</key><integer>3600</integer>\n"];
+        plist[@"StartInterval"] = @3600;
     } else if ([mode isEqualToString:@"daily"]) {
-        [plist appendString:@"  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>0</integer></dict>\n"];
+        plist[@"StartCalendarInterval"] = @{@"Hour": @20, @"Minute": @0};
     }
-    [plist appendString:@"</dict></plist>\n"];
-    return plist;
+    return [NSPropertyListSerialization dataWithPropertyList:plist
+                                                       format:NSPropertyListXMLFormat_v1_0
+                                                      options:0
+                                                        error:error];
 }
 
-- (void)applySchedule:(NSString *)mode {
+- (BOOL)applySchedule:(NSString *)mode error:(NSError **)error {
     NSString *path = ScheduleAgentPath();
     NSString *domain = [NSString stringWithFormat:@"gui/%d", getuid()];
     NSString *service = [domain stringByAppendingString:@"/com.commcats.gdrivebackup.schedule"];
-    RunCommand(@"/bin/launchctl", @[@"bootout", domain, path], nil, NULL);
+    int status = 0;
+    NSString *output = RunCommand(@"/bin/launchctl", @[@"print", service], nil, &status);
+    if (status == 0) {
+        output = RunCommand(@"/bin/launchctl", @[@"bootout", domain, path], nil, &status);
+        if (status != 0) {
+            if (error) {
+                NSString *message = output.length ? output : @"launchctl bootout failed.";
+                *error = [NSError errorWithDomain:@"com.commcats.gdrivebackup.schedule"
+                                              code:status
+                                          userInfo:@{NSLocalizedDescriptionKey: message}];
+            }
+            return NO;
+        }
+        RunCommand(@"/bin/launchctl", @[@"print", service], nil, &status);
+        if (status == 0) {
+            if (error) {
+                *error = [NSError errorWithDomain:@"com.commcats.gdrivebackup.schedule"
+                                              code:1
+                                          userInfo:@{NSLocalizedDescriptionKey: @"The previous backup schedule is still loaded."}];
+            }
+            return NO;
+        }
+    }
 
     if (![mode isEqualToString:@"login"] && ![mode isEqualToString:@"hourly"] && ![mode isEqualToString:@"daily"]) {
-        [NSFileManager.defaultManager removeItemAtPath:path error:nil];
-        return;
+        if ([NSFileManager.defaultManager fileExistsAtPath:path]) {
+            if (![NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:path]
+                                             resultingItemURL:nil
+                                                        error:error]) {
+                return NO;
+            }
+        }
+        return YES;
     }
 
     NSString *dir = [path stringByDeletingLastPathComponent];
-    [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
-    [[self schedulePlistForMode:mode] writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    RunCommand(@"/bin/launchctl", @[@"bootstrap", domain, path], nil, NULL);
-    RunCommand(@"/bin/launchctl", @[@"enable", service], nil, NULL);
+    if (![NSFileManager.defaultManager createDirectoryAtPath:dir
+                                 withIntermediateDirectories:YES
+                                                  attributes:nil
+                                                       error:error]) {
+        return NO;
+    }
+    NSData *plistData = [self schedulePlistDataForMode:mode error:error];
+    if (!plistData || ![plistData writeToFile:path options:NSDataWritingAtomic error:error]) {
+        return NO;
+    }
+
+    output = RunCommand(@"/bin/launchctl", @[@"bootstrap", domain, path], nil, &status);
+    if (status != 0) {
+        if (error) {
+            NSString *message = output.length ? output : @"launchctl bootstrap failed.";
+            *error = [NSError errorWithDomain:@"com.commcats.gdrivebackup.schedule"
+                                          code:status
+                                      userInfo:@{NSLocalizedDescriptionKey: message}];
+        }
+        return NO;
+    }
+    output = RunCommand(@"/bin/launchctl", @[@"enable", service], nil, &status);
+    if (status != 0) {
+        if (error) {
+            NSString *message = output.length ? output : @"launchctl enable failed.";
+            *error = [NSError errorWithDomain:@"com.commcats.gdrivebackup.schedule"
+                                          code:status
+                                      userInfo:@{NSLocalizedDescriptionKey: message}];
+        }
+        return NO;
+    }
+    return YES;
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
@@ -1651,17 +1251,20 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
         self.confirmTimeoutTimer = [NSTimer scheduledTimerWithTimeInterval:120.0
                                                                    repeats:NO
                                                                      block:^(NSTimer *timer) {
+            (void)timer;
             [self finishConfirmation:NO];
         }];
     } else {
         self.sentinelTimer = [NSTimer scheduledTimerWithTimeInterval:1.5
                                                              repeats:YES
                                                                block:^(NSTimer *timer) {
+            (void)timer;
             [self checkSentinel];
         }];
         self.progressTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
                                                              repeats:YES
                                                                block:^(NSTimer *timer) {
+            (void)timer;
             [self readProgressFile];
         }];
         [self readProgressFile];
@@ -1858,6 +1461,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     [NSTimer scheduledTimerWithTimeInterval:8.0
                                     repeats:NO
                                       block:^(NSTimer *timer) {
+        (void)timer;
         [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
             context.duration = 0.18;
             self.window.animator.alphaValue = 0;
@@ -1870,6 +1474,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @end
 
 int main(int argc, const char *argv[]) {
+    (void)argc;
+    (void)argv;
     @autoreleasepool {
         NSApplication *app = NSApplication.sharedApplication;
         AppDelegate *delegate = [[AppDelegate alloc] init];

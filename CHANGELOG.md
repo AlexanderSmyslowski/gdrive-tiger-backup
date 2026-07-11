@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Preserve overwritten destination files in timestamped `.gdrive-versions` trees by default, with an explicit opt-out and no automatic retention deletion.
+- Make the NAS mount-trigger opt-in effective and return a failure status when manual or scheduled backups have no available target.
+- Add hermetic backup-control, rclone command, NAS parsing, config roundtrip, release metadata, and package payload tests.
+- Split configuration and localization responsibilities out of the AppKit entry point.
+- Harden config roundtrips for Unicode and shell quoting, preserve unreadable files, and enforce owner-only permissions.
+- Surface schedule serialization and launchctl failures instead of reporting a false successful save.
+- Add macOS GitHub Actions for tests, app linking, package construction, payload verification, and unsigned artifact upload.
+- Add optional Developer ID application/installer signing and Apple notarization support without storing credentials in the repository.
+- Build and verify Universal 2 app binaries with an explicit macOS 13 deployment target.
+- Clarify that the Tiger name describes the visual style and that the app requires macOS 13 or later.
+
 ## v1.5.0 - 2026-05-24
 
 - Add a reproducible macOS `.pkg` build for GitHub releases.
