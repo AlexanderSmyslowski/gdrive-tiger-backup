@@ -1,7 +1,10 @@
 #import <Cocoa/Cocoa.h>
+#include <errno.h>
+#include <signal.h>
 #include <unistd.h>
 
 #import "ConfigSupport.h"
+#import "BackupStatusSupport.h"
 #import "Localization.h"
 
 static NSImage *CreateApplicationIcon(void) {
@@ -220,6 +223,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @interface TigerBackupView : NSView
 @property(nonatomic) CGFloat phase;
 @property(nonatomic) BOOL completed;
+@property(nonatomic, copy) NSString *terminalStatus;
+@property(nonatomic, copy) NSString *terminalDetail;
 @property(nonatomic) BOOL confirmMode;
 @property(nonatomic, copy) NSString *language;
 @property(nonatomic, copy) NSString *confirmTitle;
@@ -229,12 +234,15 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic) CGFloat progressPercent;
 @property(nonatomic, copy) NSString *progressTitle;
 @property(nonatomic, copy) NSString *progressDetail;
-@property(nonatomic, copy) void (^minimizeHandler)(void);
 @property(nonatomic, copy) void (^confirmHandler)(BOOL approved);
+@property(nonatomic, strong) NSButton *primaryButton;
+@property(nonatomic, strong) NSButton *secondaryButton;
+@property(nonatomic, strong) NSTextField *titleLabel;
+@property(nonatomic, strong) NSTextField *statusLabel;
+@property(nonatomic, strong) NSTextField *detailLabel;
+@property(nonatomic, strong) NSProgressIndicator *progressIndicator;
 @property(nonatomic, strong) NSTimer *timer;
-@property(nonatomic) BOOL draggingWindow;
-@property(nonatomic) NSPoint dragStartMouse;
-@property(nonatomic) NSPoint dragStartOrigin;
+@property(nonatomic) BOOL reduceMotion;
 @end
 
 @implementation TigerBackupView
@@ -252,19 +260,230 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     if (self) {
         self.wantsLayer = YES;
         self.progressPercent = -1;
-        self.timer = [NSTimer scheduledTimerWithTimeInterval:(1.0 / 30.0)
-                                                     repeats:YES
-                                                       block:^(NSTimer *timer) {
-            (void)timer;
-            self.phase = fmod(self.phase + 1.3, 360.0);
-            self.needsDisplay = YES;
-        }];
+        self.titleLabel = [self nativeLabelWithFrame:NSMakeRect(76, 16, 300, 20)
+                                                font:[NSFont fontWithName:@"Lucida Grande Bold" size:15] ?: [NSFont boldSystemFontOfSize:15]
+                                               color:[NSColor colorWithCalibratedWhite:0.10 alpha:1.0]];
+        self.titleLabel.stringValue = @"Google Drive Backup";
+        self.titleLabel.accessibilityLabel = self.titleLabel.stringValue;
+        [self addSubview:self.titleLabel];
+
+        self.statusLabel = [self nativeLabelWithFrame:NSMakeRect(112, 76, 250, 18)
+                                                 font:[NSFont fontWithName:@"Lucida Grande" size:12] ?: [NSFont systemFontOfSize:12]
+                                                color:[NSColor colorWithCalibratedWhite:0.22 alpha:1.0]];
+        [self addSubview:self.statusLabel];
+
+        self.detailLabel = [self nativeLabelWithFrame:NSMakeRect(112, 133, 250, 16)
+                                                 font:[NSFont fontWithName:@"Lucida Grande" size:10] ?: [NSFont systemFontOfSize:10]
+                                                color:[NSColor colorWithCalibratedWhite:0.35 alpha:1.0]];
+        [self addSubview:self.detailLabel];
+
+        self.progressIndicator = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(112, 106, 250, 19)];
+        self.progressIndicator.style = NSProgressIndicatorStyleBar;
+        self.progressIndicator.indeterminate = YES;
+        self.progressIndicator.minValue = 0;
+        self.progressIndicator.maxValue = 100;
+        self.progressIndicator.accessibilityRole = NSAccessibilityProgressIndicatorRole;
+        self.progressIndicator.accessibilityLabel = @"Backup progress";
+        [self addSubview:self.progressIndicator];
+        self.secondaryButton = [[NSButton alloc] initWithFrame:[self secondaryButtonRect]];
+        self.secondaryButton.bezelStyle = NSBezelStyleRounded;
+        self.secondaryButton.font = [NSFont fontWithName:@"Lucida Grande Bold" size:11] ?: [NSFont boldSystemFontOfSize:11];
+        self.secondaryButton.keyEquivalent = @"\e";
+        self.secondaryButton.accessibilityRole = NSAccessibilityButtonRole;
+        self.secondaryButton.target = self;
+        self.secondaryButton.action = @selector(confirmSecondary:);
+        self.secondaryButton.hidden = YES;
+        [self addSubview:self.secondaryButton];
+
+        self.primaryButton = [[NSButton alloc] initWithFrame:[self primaryButtonRect]];
+        self.primaryButton.bezelStyle = NSBezelStyleRounded;
+        self.primaryButton.font = [NSFont fontWithName:@"Lucida Grande Bold" size:11] ?: [NSFont boldSystemFontOfSize:11];
+        self.primaryButton.keyEquivalent = @"\r";
+        self.primaryButton.accessibilityRole = NSAccessibilityButtonRole;
+        self.primaryButton.target = self;
+        self.primaryButton.action = @selector(confirmPrimary:);
+        self.primaryButton.hidden = YES;
+        [self addSubview:self.primaryButton];
+
+        self.secondaryButton.nextKeyView = self.primaryButton;
+        self.primaryButton.nextKeyView = self.secondaryButton;
+        _reduceMotion = NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+        [self startAnimationTimerIfNeeded];
+        [self updateNativeLabels];
     }
     return self;
 }
 
+- (void)startAnimationTimerIfNeeded {
+    if (self.reduceMotion || self.terminalStatus.length || self.timer) {
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    self.timer = [NSTimer scheduledTimerWithTimeInterval:(1.0 / 30.0)
+                                                 repeats:YES
+                                                   block:^(NSTimer *timer) {
+        (void)timer;
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) {
+            return;
+        }
+        strongSelf.phase = fmod(strongSelf.phase + 1.3, 360.0);
+        strongSelf.needsDisplay = YES;
+    }];
+}
+
+- (void)setReduceMotion:(BOOL)reduceMotion {
+    _reduceMotion = reduceMotion;
+    if (reduceMotion) {
+        [self.timer invalidate];
+        self.timer = nil;
+        [self.progressIndicator stopAnimation:nil];
+    } else {
+        [self startAnimationTimerIfNeeded];
+        if (self.progressIndicator.indeterminate) {
+            [self.progressIndicator startAnimation:nil];
+        }
+    }
+    self.needsDisplay = YES;
+}
+
+- (NSTextField *)nativeLabelWithFrame:(NSRect)frame font:(NSFont *)font color:(NSColor *)color {
+    NSTextField *label = [[NSTextField alloc] initWithFrame:frame];
+    label.bezeled = NO;
+    label.drawsBackground = NO;
+    label.editable = NO;
+    label.selectable = NO;
+    label.font = font;
+    label.textColor = color;
+    label.lineBreakMode = NSLineBreakByTruncatingTail;
+    label.accessibilityRole = NSAccessibilityStaticTextRole;
+    return label;
+}
+
+- (void)updateNativeLabels {
+    NSString *language = self.language ?: @"en";
+    NSString *status = self.progressTitle ?: T(language, @"running");
+    NSString *detail = self.progressDetail ?: T(language, @"runningHint");
+    if (self.confirmMode) {
+        status = self.confirmTitle ?: T(language, @"confirmTarget");
+        detail = self.confirmDetail ?: @"";
+        self.detailLabel.frame = NSMakeRect(112, 98, 250, 16);
+        // Confirmation details are usually filesystem paths. Middle truncation
+        // preserves both the volume and final destination folder in the compact UI.
+        self.detailLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    } else {
+        self.detailLabel.frame = NSMakeRect(112, 133, 250, 16);
+        self.detailLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+        if ([self.terminalStatus isEqualToString:@"success"]) {
+            status = T(language, @"completed");
+            detail = T(language, @"completedHint");
+        } else if ([self.terminalStatus isEqualToString:@"failure"]) {
+            status = T(language, @"failed");
+            detail = self.terminalDetail ?: T(language, @"failedHint");
+        } else if ([self.terminalStatus isEqualToString:@"cancelled"]) {
+            status = T(language, @"cancelled");
+            detail = T(language, @"cancelledHint");
+        } else if ([self.terminalStatus isEqualToString:@"skipped"]) {
+            status = T(language, @"skipped");
+            detail = T(language, @"skippedHint");
+        }
+    }
+    self.statusLabel.stringValue = status ?: @"";
+    self.detailLabel.stringValue = detail ?: @"";
+    self.detailLabel.toolTip = self.detailLabel.stringValue;
+    self.statusLabel.accessibilityLabel = self.statusLabel.stringValue;
+    self.detailLabel.accessibilityLabel = self.detailLabel.stringValue;
+    self.progressIndicator.accessibilityLabel = T(language, @"backupProgress");
+}
+
+- (void)setConfirmMode:(BOOL)confirmMode {
+    _confirmMode = confirmMode;
+    self.primaryButton.hidden = !confirmMode;
+    self.secondaryButton.hidden = !confirmMode;
+    self.progressIndicator.hidden = confirmMode;
+    [self updateNativeLabels];
+    self.needsDisplay = YES;
+}
+
+- (void)setLanguage:(NSString *)language {
+    _language = [language copy];
+    [self updateNativeLabels];
+}
+
+- (void)setConfirmTitle:(NSString *)confirmTitle {
+    _confirmTitle = [confirmTitle copy];
+    [self updateNativeLabels];
+}
+
+- (void)setConfirmDetail:(NSString *)confirmDetail {
+    _confirmDetail = [confirmDetail copy];
+    [self updateNativeLabels];
+}
+
+- (void)setProgressTitle:(NSString *)progressTitle {
+    _progressTitle = [progressTitle copy];
+    [self updateNativeLabels];
+}
+
+- (void)setProgressDetail:(NSString *)progressDetail {
+    _progressDetail = [progressDetail copy];
+    [self updateNativeLabels];
+}
+
+- (void)setTerminalDetail:(NSString *)terminalDetail {
+    _terminalDetail = [terminalDetail copy];
+    [self updateNativeLabels];
+    self.needsDisplay = YES;
+}
+
+- (void)setProgressPercent:(CGFloat)progressPercent {
+    _progressPercent = progressPercent;
+    BOOL indeterminate = progressPercent < 0;
+    self.progressIndicator.indeterminate = indeterminate;
+    if (!indeterminate) {
+        self.progressIndicator.doubleValue = MAX(0.0, MIN(100.0, progressPercent));
+    }
+}
+
+- (void)setPrimaryActionTitle:(NSString *)primaryActionTitle {
+    _primaryActionTitle = [primaryActionTitle copy];
+    self.primaryButton.title = _primaryActionTitle ?: @"";
+    self.primaryButton.accessibilityLabel = self.primaryButton.title;
+}
+
+- (void)setSecondaryActionTitle:(NSString *)secondaryActionTitle {
+    _secondaryActionTitle = [secondaryActionTitle copy];
+    self.secondaryButton.title = _secondaryActionTitle ?: @"";
+    self.secondaryButton.accessibilityLabel = self.secondaryButton.title;
+}
+
+- (void)confirmPrimary:(id)sender {
+    (void)sender;
+    if (self.confirmHandler) {
+        self.confirmHandler(YES);
+    }
+}
+
+- (void)confirmSecondary:(id)sender {
+    (void)sender;
+    if (self.confirmHandler) {
+        self.confirmHandler(NO);
+    }
+}
+
 - (void)dealloc {
     [self.timer invalidate];
+}
+
+- (void)setTerminalStatus:(NSString *)terminalStatus {
+    _terminalStatus = [terminalStatus copy];
+    self.completed = [_terminalStatus isEqualToString:@"success"];
+    if (_terminalStatus.length) {
+        [self.timer invalidate];
+        self.timer = nil;
+    }
+    [self updateNativeLabels];
+    self.needsDisplay = YES;
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
@@ -295,87 +514,23 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     [[NSColor colorWithCalibratedWhite:0.48 alpha:0.38] setFill];
     NSRectFill(NSMakeRect(0, NSMaxY(titleBar) - 1, NSWidth(bounds), 1));
 
-    [self drawTrafficLights];
-    if (self.completed) {
+    if ([self.terminalStatus isEqualToString:@"success"]) {
         [self drawCheckmarkAt:NSMakePoint(58, 94)];
+    } else if ([self.terminalStatus isEqualToString:@"failure"]) {
+        [self drawFailureAt:NSMakePoint(58, 94)];
+    } else if ([self.terminalStatus isEqualToString:@"cancelled"]) {
+        [self drawCancelledAt:NSMakePoint(58, 94)];
+    } else if ([self.terminalStatus isEqualToString:@"skipped"]) {
+        [self drawSkippedAt:NSMakePoint(58, 94)];
     } else {
         [self drawSpinnerAt:NSMakePoint(58, 94)];
     }
-    [self drawLabels];
-    [self drawProgressBarInRect:NSMakeRect(112, 106, 250, 19)];
 
     [NSGraphicsContext restoreGraphicsState];
 
     [[NSColor colorWithCalibratedWhite:0.36 alpha:0.42] setStroke];
     panel.lineWidth = 1.5;
     [panel stroke];
-}
-
-- (void)drawTrafficLights {
-    NSArray<NSColor *> *colors = @[
-        [NSColor colorWithCalibratedRed:0.95 green:0.27 blue:0.22 alpha:1.0],
-        [NSColor colorWithCalibratedRed:0.99 green:0.75 blue:0.18 alpha:1.0],
-        [NSColor colorWithCalibratedRed:0.35 green:0.78 blue:0.25 alpha:1.0]
-    ];
-
-    for (NSUInteger index = 0; index < colors.count; index++) {
-        NSRect rect = NSMakeRect(18 + index * 18, 17, 11, 11);
-        NSBezierPath *dot = [NSBezierPath bezierPathWithOvalInRect:rect];
-        NSGradient *gradient = [[NSGradient alloc] initWithColors:@[
-            [[NSColor whiteColor] colorWithAlphaComponent:0.75],
-            colors[index]
-        ]];
-        [gradient drawInBezierPath:dot angle:-90];
-        [[NSColor colorWithCalibratedWhite:0.25 alpha:0.35] setStroke];
-        [dot stroke];
-    }
-}
-
-- (void)mouseDown:(NSEvent *)event {
-    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
-    NSRect redButton = NSMakeRect(18, 17, 11, 11);
-    NSRect yellowButton = NSMakeRect(36, 17, 11, 11);
-
-    if (self.confirmMode) {
-        if (NSPointInRect(point, NSInsetRect(redButton, -7, -7)) && self.confirmHandler) {
-            self.confirmHandler(NO);
-            return;
-        }
-        if (NSPointInRect(point, [self primaryButtonRect]) && self.confirmHandler) {
-            self.confirmHandler(YES);
-            return;
-        }
-        if (NSPointInRect(point, [self secondaryButtonRect]) && self.confirmHandler) {
-            self.confirmHandler(NO);
-            return;
-        }
-    }
-
-    if (NSPointInRect(point, NSInsetRect(yellowButton, -7, -7)) && self.minimizeHandler) {
-        self.minimizeHandler();
-        return;
-    }
-
-    self.draggingWindow = YES;
-    self.dragStartMouse = NSEvent.mouseLocation;
-    self.dragStartOrigin = self.window.frame.origin;
-    [self.window makeKeyWindow];
-}
-
-- (void)mouseDragged:(NSEvent *)event {
-    if (!self.draggingWindow || !self.window) {
-        [super mouseDragged:event];
-        return;
-    }
-
-    NSPoint currentMouse = NSEvent.mouseLocation;
-    NSPoint newOrigin = NSMakePoint(self.dragStartOrigin.x + currentMouse.x - self.dragStartMouse.x,
-                                    self.dragStartOrigin.y + currentMouse.y - self.dragStartMouse.y);
-    [self.window setFrameOrigin:newOrigin];
-}
-
-- (void)mouseUp:(NSEvent *)event {
-    self.draggingWindow = NO;
 }
 
 - (void)drawSpinnerAt:(NSPoint)center {
@@ -428,6 +583,62 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     [check stroke];
 }
 
+- (void)drawFailureAt:(NSPoint)center {
+    NSBezierPath *badge = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(center.x - 28, center.y - 28, 56, 56)];
+    NSGradient *gradient = [[NSGradient alloc] initWithColors:@[
+        [NSColor colorWithCalibratedRed:1.0 green:0.48 blue:0.42 alpha:1.0],
+        [NSColor colorWithCalibratedRed:0.72 green:0.08 blue:0.06 alpha:1.0]
+    ]];
+    [gradient drawInBezierPath:badge angle:-90];
+    [[NSColor colorWithCalibratedWhite:0.22 alpha:0.55] setStroke];
+    badge.lineWidth = 1.5;
+    [badge stroke];
+
+    NSBezierPath *cross = [NSBezierPath bezierPath];
+    [cross moveToPoint:NSMakePoint(center.x - 14, center.y - 14)];
+    [cross lineToPoint:NSMakePoint(center.x + 14, center.y + 14)];
+    [cross moveToPoint:NSMakePoint(center.x + 14, center.y - 14)];
+    [cross lineToPoint:NSMakePoint(center.x - 14, center.y + 14)];
+    [[NSColor whiteColor] setStroke];
+    cross.lineWidth = 6;
+    cross.lineCapStyle = NSLineCapStyleRound;
+    [cross stroke];
+}
+
+- (void)drawCancelledAt:(NSPoint)center {
+    NSBezierPath *badge = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(center.x - 28, center.y - 28, 56, 56)];
+    NSGradient *gradient = [[NSGradient alloc] initWithColors:@[
+        [NSColor colorWithCalibratedRed:1.0 green:0.82 blue:0.34 alpha:1.0],
+        [NSColor colorWithCalibratedRed:0.83 green:0.43 blue:0.04 alpha:1.0]
+    ]];
+    [gradient drawInBezierPath:badge angle:-90];
+    [[NSColor colorWithCalibratedWhite:0.22 alpha:0.55] setStroke];
+    badge.lineWidth = 1.5;
+    [badge stroke];
+
+    NSBezierPath *stop = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(center.x - 12, center.y - 12, 24, 24)
+                                                          xRadius:4
+                                                          yRadius:4];
+    [[NSColor whiteColor] setFill];
+    [stop fill];
+}
+
+- (void)drawSkippedAt:(NSPoint)center {
+    NSBezierPath *badge = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(center.x - 28, center.y - 28, 56, 56)];
+    NSGradient *gradient = [[NSGradient alloc] initWithColors:@[
+        [NSColor colorWithCalibratedWhite:0.82 alpha:1.0],
+        [NSColor colorWithCalibratedWhite:0.42 alpha:1.0]
+    ]];
+    [gradient drawInBezierPath:badge angle:-90];
+    [[NSColor colorWithCalibratedWhite:0.22 alpha:0.55] setStroke];
+    badge.lineWidth = 1.5;
+    [badge stroke];
+
+    [[NSColor whiteColor] setFill];
+    NSRectFill(NSMakeRect(center.x - 11, center.y - 14, 8, 28));
+    NSRectFill(NSMakeRect(center.x + 3, center.y - 14, 8, 28));
+}
+
 - (void)drawLabels {
     NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
     style.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -456,6 +667,16 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     NSString *language = self.language ?: @"en";
     NSString *subtitle = self.confirmMode ? (self.confirmTitle ?: T(language, @"confirmTarget")) : (self.completed ? T(language, @"completed") : (self.progressTitle ?: T(language, @"running")));
     NSString *hint = self.confirmMode ? (self.confirmDetail ?: @"") : (self.completed ? T(language, @"completedHint") : (self.progressDetail ?: T(language, @"runningHint")));
+    if ([self.terminalStatus isEqualToString:@"failure"]) {
+        subtitle = T(language, @"failed");
+        hint = self.terminalDetail ?: T(language, @"failedHint");
+    } else if ([self.terminalStatus isEqualToString:@"cancelled"]) {
+        subtitle = T(language, @"cancelled");
+        hint = T(language, @"cancelledHint");
+    } else if ([self.terminalStatus isEqualToString:@"skipped"]) {
+        subtitle = T(language, @"skipped");
+        hint = T(language, @"skippedHint");
+    }
     [subtitle drawInRect:NSMakeRect(112, 76, 250, 18) withAttributes:subtitleAttributes];
 
     if (self.confirmMode) {
@@ -467,9 +688,6 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 
 - (void)drawProgressBarInRect:(NSRect)rect {
     if (self.confirmMode) {
-        NSString *language = self.language ?: @"en";
-        [self drawButtonWithTitle:(self.secondaryActionTitle ?: T(language, @"notNow")) inRect:[self secondaryButtonRect] primary:NO];
-        [self drawButtonWithTitle:(self.primaryActionTitle ?: T(language, @"startBackup")) inRect:[self primaryButtonRect] primary:YES];
         return;
     }
 
@@ -485,6 +703,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     CGFloat fraction = 1.0;
     if (!self.completed && self.progressPercent >= 0) {
         fraction = MAX(0.0, MIN(1.0, self.progressPercent / 100.0));
+    } else if (self.terminalStatus.length && !self.completed) {
+        fraction = 0.0;
     }
     NSRect fillRect = inner;
     fillRect.size.width = floor(NSWidth(inner) * fraction);
@@ -492,6 +712,15 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     NSArray<NSColor *> *colors = self.completed ? @[
         [NSColor colorWithCalibratedRed:0.43 green:0.90 blue:0.35 alpha:1.0],
         [NSColor colorWithCalibratedRed:0.08 green:0.55 blue:0.18 alpha:1.0]
+    ] : [self.terminalStatus isEqualToString:@"failure"] ? @[
+        [NSColor colorWithCalibratedRed:1.0 green:0.48 blue:0.42 alpha:1.0],
+        [NSColor colorWithCalibratedRed:0.72 green:0.08 blue:0.06 alpha:1.0]
+    ] : [self.terminalStatus isEqualToString:@"cancelled"] ? @[
+        [NSColor colorWithCalibratedRed:1.0 green:0.82 blue:0.34 alpha:1.0],
+        [NSColor colorWithCalibratedRed:0.83 green:0.43 blue:0.04 alpha:1.0]
+    ] : [self.terminalStatus isEqualToString:@"skipped"] ? @[
+        [NSColor colorWithCalibratedWhite:0.72 alpha:1.0],
+        [NSColor colorWithCalibratedWhite:0.42 alpha:1.0]
     ] : @[
         [NSColor colorWithCalibratedRed:0.18 green:0.70 blue:1.0 alpha:1.0],
         [NSColor colorWithCalibratedRed:0.03 green:0.33 blue:0.90 alpha:1.0]
@@ -615,14 +844,14 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     [[NSColor colorWithCalibratedWhite:0.46 alpha:0.35] setFill];
     NSRectFill(NSMakeRect(0, NSMaxY(titleBar) - 1, NSWidth(bounds), 1));
 
-    NSBezierPath *panel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 84, NSWidth(bounds) - 36, 254) xRadius:12 yRadius:12];
+    NSBezierPath *panel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 84, NSWidth(bounds) - 36, 292) xRadius:12 yRadius:12];
     [[NSColor colorWithCalibratedWhite:1.0 alpha:0.54] setFill];
     [panel fill];
     [[NSColor colorWithCalibratedWhite:0.42 alpha:0.24] setStroke];
     panel.lineWidth = 1;
     [panel stroke];
 
-    NSBezierPath *schedulePanel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 350, NSWidth(bounds) - 36, 52) xRadius:12 yRadius:12];
+    NSBezierPath *schedulePanel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 388, NSWidth(bounds) - 36, 52) xRadius:12 yRadius:12];
     [[NSColor colorWithCalibratedWhite:1.0 alpha:0.42] setFill];
     [schedulePanel fill];
     [[NSColor colorWithCalibratedWhite:0.42 alpha:0.20] setStroke];
@@ -631,12 +860,274 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 
 @end
 
-@interface AppDelegate : NSObject <NSApplicationDelegate>
+@interface TigerOverviewView : NSView
+@property(nonatomic, copy) NSString *language;
+@property(nonatomic, copy) NSString *status;
+@property(nonatomic, copy) NSString *lastRunText;
+@property(nonatomic, copy) NSString *lastRunDetail;
+@property(nonatomic, copy) NSString *nextRunText;
+@property(nonatomic, copy) NSString *targetText;
+@property(nonatomic, copy) NSString *storageText;
+@property(nonatomic, copy) void (^backupHandler)(void);
+@property(nonatomic, copy) void (^settingsHandler)(void);
+@property(nonatomic, strong) NSTextField *statusSymbolLabel;
+@property(nonatomic, strong) NSTextField *subtitleLabel;
+@property(nonatomic, strong) NSTextField *lastRunCaptionLabel;
+@property(nonatomic, strong) NSTextField *lastRunValueLabel;
+@property(nonatomic, strong) NSTextField *lastRunDetailLabel;
+@property(nonatomic, strong) NSTextField *nextRunCaptionLabel;
+@property(nonatomic, strong) NSTextField *nextRunValueLabel;
+@property(nonatomic, strong) NSTextField *targetCaptionLabel;
+@property(nonatomic, strong) NSTextField *targetValueLabel;
+@property(nonatomic, strong) NSTextField *storageCaptionLabel;
+@property(nonatomic, strong) NSTextField *storageValueLabel;
+@property(nonatomic, strong) NSButton *backupButton;
+@property(nonatomic, strong) NSButton *settingsButton;
+@end
+
+@implementation TigerOverviewView
+
+- (BOOL)isFlipped {
+    return YES;
+}
+
+- (NSTextField *)overviewLabelWithFrame:(NSRect)frame
+                                   font:(NSFont *)font
+                                  color:(NSColor *)color {
+    NSTextField *label = [[NSTextField alloc] initWithFrame:frame];
+    label.bezeled = NO;
+    label.drawsBackground = NO;
+    label.editable = NO;
+    label.selectable = NO;
+    label.font = font;
+    label.textColor = color;
+    label.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    label.accessibilityRole = NSAccessibilityStaticTextRole;
+    return label;
+}
+
+- (instancetype)initWithFrame:(NSRect)frameRect {
+    self = [super initWithFrame:frameRect];
+    if (!self) {
+        return nil;
+    }
+
+    self.wantsLayer = YES;
+    NSColor *ink = [NSColor colorWithCalibratedWhite:0.13 alpha:1.0];
+    NSColor *muted = [NSColor colorWithCalibratedWhite:0.38 alpha:1.0];
+    NSFont *captionFont = [NSFont fontWithName:@"Lucida Grande Bold" size:11] ?: [NSFont boldSystemFontOfSize:11];
+    NSFont *valueFont = [NSFont fontWithName:@"Lucida Grande" size:13] ?: [NSFont systemFontOfSize:13];
+
+    NSTextField *title = [self overviewLabelWithFrame:NSMakeRect(28, 18, 420, 28)
+                                                 font:[NSFont fontWithName:@"Lucida Grande Bold" size:21] ?: [NSFont boldSystemFontOfSize:21]
+                                                color:ink];
+    title.stringValue = @"Google Drive Backup";
+    title.accessibilityLabel = title.stringValue;
+    [self addSubview:title];
+
+    self.subtitleLabel = [self overviewLabelWithFrame:NSMakeRect(29, 48, 500, 20)
+                                                  font:[NSFont fontWithName:@"Lucida Grande" size:12] ?: [NSFont systemFontOfSize:12]
+                                                 color:muted];
+    [self addSubview:self.subtitleLabel];
+
+    self.statusSymbolLabel = [self overviewLabelWithFrame:NSMakeRect(48, 108, 48, 48)
+                                                      font:[NSFont fontWithName:@"Lucida Grande Bold" size:31] ?: [NSFont boldSystemFontOfSize:31]
+                                                     color:ink];
+    self.statusSymbolLabel.alignment = NSTextAlignmentCenter;
+    [self addSubview:self.statusSymbolLabel];
+
+    self.lastRunCaptionLabel = [self overviewLabelWithFrame:NSMakeRect(116, 94, 180, 18)
+                                                        font:captionFont color:muted];
+    [self addSubview:self.lastRunCaptionLabel];
+    self.lastRunValueLabel = [self overviewLabelWithFrame:NSMakeRect(116, 118, 440, 26)
+                                                      font:[NSFont fontWithName:@"Lucida Grande Bold" size:18] ?: [NSFont boldSystemFontOfSize:18]
+                                                     color:ink];
+    [self addSubview:self.lastRunValueLabel];
+    self.lastRunDetailLabel = [self overviewLabelWithFrame:NSMakeRect(116, 151, 440, 20)
+                                                       font:valueFont color:muted];
+    [self addSubview:self.lastRunDetailLabel];
+
+    self.nextRunCaptionLabel = [self overviewLabelWithFrame:NSMakeRect(48, 232, 132, 19)
+                                                        font:captionFont color:muted];
+    [self addSubview:self.nextRunCaptionLabel];
+    self.nextRunValueLabel = [self overviewLabelWithFrame:NSMakeRect(190, 230, 374, 22)
+                                                      font:valueFont color:ink];
+    [self addSubview:self.nextRunValueLabel];
+
+    self.targetCaptionLabel = [self overviewLabelWithFrame:NSMakeRect(48, 273, 132, 19)
+                                                       font:captionFont color:muted];
+    [self addSubview:self.targetCaptionLabel];
+    self.targetValueLabel = [self overviewLabelWithFrame:NSMakeRect(190, 271, 374, 22)
+                                                     font:valueFont color:ink];
+    [self addSubview:self.targetValueLabel];
+
+    self.storageCaptionLabel = [self overviewLabelWithFrame:NSMakeRect(48, 314, 132, 19)
+                                                        font:captionFont color:muted];
+    [self addSubview:self.storageCaptionLabel];
+    self.storageValueLabel = [self overviewLabelWithFrame:NSMakeRect(190, 312, 374, 22)
+                                                      font:valueFont color:ink];
+    [self addSubview:self.storageValueLabel];
+
+    self.settingsButton = [[NSButton alloc] initWithFrame:NSMakeRect(342, 368, 118, 30)];
+    self.settingsButton.bezelStyle = NSBezelStyleRounded;
+    self.settingsButton.target = self;
+    self.settingsButton.action = @selector(openSettings:);
+    self.settingsButton.accessibilityRole = NSAccessibilityButtonRole;
+    [self addSubview:self.settingsButton];
+
+    self.backupButton = [[NSButton alloc] initWithFrame:NSMakeRect(470, 368, 124, 30)];
+    self.backupButton.bezelStyle = NSBezelStyleRounded;
+    self.backupButton.keyEquivalent = @"\r";
+    self.backupButton.target = self;
+    self.backupButton.action = @selector(startBackup:);
+    self.backupButton.accessibilityRole = NSAccessibilityButtonRole;
+    [self addSubview:self.backupButton];
+    self.settingsButton.nextKeyView = self.backupButton;
+    self.backupButton.nextKeyView = self.settingsButton;
+
+    self.language = @"en";
+    self.status = @"unknown";
+    return self;
+}
+
+- (void)setLanguage:(NSString *)language {
+    _language = [language copy] ?: @"en";
+    self.lastRunCaptionLabel.stringValue = T(_language, @"overviewLastRun");
+    self.subtitleLabel.stringValue = T(_language, @"overviewSubtitle");
+    self.subtitleLabel.accessibilityLabel = self.subtitleLabel.stringValue;
+    self.nextRunCaptionLabel.stringValue = T(_language, @"overviewNextRun");
+    self.targetCaptionLabel.stringValue = T(_language, @"overviewTarget");
+    self.storageCaptionLabel.stringValue = T(_language, @"overviewStorage");
+    self.settingsButton.title = T(_language, @"overviewSettings");
+    self.backupButton.title = T(_language, @"backupNow");
+    self.settingsButton.accessibilityLabel = self.settingsButton.title;
+    self.backupButton.accessibilityLabel = self.backupButton.title;
+    [self layoutActionButtons];
+    [self updateValueAccessibilityLabels];
+    [self setStatus:self.status ?: @"unknown"];
+}
+
+- (void)layoutActionButtons {
+    CGFloat backupWidth = MAX(124.0, ceil(self.backupButton.cell.cellSize.width + 18.0));
+    CGFloat settingsWidth = MAX(140.0, ceil(self.settingsButton.cell.cellSize.width + 18.0));
+    CGFloat rightEdge = NSWidth(self.bounds) - 26.0;
+    self.backupButton.frame = NSMakeRect(rightEdge - backupWidth, 368, backupWidth, 30);
+    self.settingsButton.frame = NSMakeRect(NSMinX(self.backupButton.frame) - 10.0 - settingsWidth,
+                                           368,
+                                           settingsWidth,
+                                           30);
+}
+
+- (void)setStatus:(NSString *)status {
+    _status = [status copy] ?: @"unknown";
+    NSDictionary<NSString *, NSArray *> *presentations = @{
+        @"success": @[@"✓", [NSColor colorWithCalibratedRed:0.12 green:0.48 blue:0.17 alpha:1.0], @"completed"],
+        @"failure": @[@"×", [NSColor colorWithCalibratedRed:0.70 green:0.10 blue:0.08 alpha:1.0], @"failed"],
+        @"cancelled": @[@"■", [NSColor colorWithCalibratedRed:0.70 green:0.37 blue:0.03 alpha:1.0], @"cancelled"],
+        @"running": @[@"↻", [NSColor colorWithCalibratedRed:0.05 green:0.32 blue:0.72 alpha:1.0], @"running"],
+        @"interrupted": @[@"!", [NSColor colorWithCalibratedRed:0.68 green:0.28 blue:0.02 alpha:1.0], @"overviewStatusInterrupted"],
+        @"unknown": @[@"?", [NSColor colorWithCalibratedWhite:0.38 alpha:1.0], @"overviewStatusUnknown"]
+    };
+    NSArray *presentation = presentations[_status] ?: presentations[@"unknown"];
+    self.statusSymbolLabel.stringValue = presentation[0];
+    self.statusSymbolLabel.textColor = presentation[1];
+    self.statusSymbolLabel.accessibilityLabel = T(self.language ?: @"en", presentation[2]);
+}
+
+- (void)setLastRunText:(NSString *)lastRunText {
+    _lastRunText = [lastRunText copy] ?: @"";
+    self.lastRunValueLabel.stringValue = _lastRunText;
+    [self updateValueAccessibilityLabels];
+}
+
+- (void)setLastRunDetail:(NSString *)lastRunDetail {
+    _lastRunDetail = [lastRunDetail copy] ?: @"";
+    self.lastRunDetailLabel.stringValue = _lastRunDetail;
+    [self updateValueAccessibilityLabels];
+}
+
+- (void)setNextRunText:(NSString *)nextRunText {
+    _nextRunText = [nextRunText copy] ?: @"";
+    self.nextRunValueLabel.stringValue = _nextRunText;
+    [self updateValueAccessibilityLabels];
+}
+
+- (void)setTargetText:(NSString *)targetText {
+    _targetText = [targetText copy] ?: @"";
+    self.targetValueLabel.stringValue = _targetText;
+    [self updateValueAccessibilityLabels];
+}
+
+- (void)setStorageText:(NSString *)storageText {
+    _storageText = [storageText copy] ?: @"";
+    self.storageValueLabel.stringValue = _storageText;
+    [self updateValueAccessibilityLabels];
+}
+
+- (void)updateValueAccessibilityLabels {
+    NSString *language = self.language ?: @"en";
+    self.lastRunValueLabel.accessibilityLabel = [NSString stringWithFormat:@"%@: %@",
+        T(language, @"overviewLastRun"), self.lastRunValueLabel.stringValue ?: @""];
+    self.lastRunDetailLabel.accessibilityLabel = self.lastRunDetailLabel.stringValue ?: @"";
+    self.nextRunValueLabel.accessibilityLabel = [NSString stringWithFormat:@"%@: %@",
+        T(language, @"overviewNextRun"), self.nextRunValueLabel.stringValue ?: @""];
+    self.targetValueLabel.accessibilityLabel = [NSString stringWithFormat:@"%@: %@",
+        T(language, @"overviewTarget"), self.targetValueLabel.stringValue ?: @""];
+    self.storageValueLabel.accessibilityLabel = [NSString stringWithFormat:@"%@: %@",
+        T(language, @"overviewStorage"), self.storageValueLabel.stringValue ?: @""];
+}
+
+- (void)startBackup:(id)sender {
+    (void)sender;
+    if (self.backupHandler) {
+        self.backupHandler();
+    }
+}
+
+- (void)openSettings:(id)sender {
+    (void)sender;
+    if (self.settingsHandler) {
+        self.settingsHandler();
+    }
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    [super drawRect:dirtyRect];
+    NSRect bounds = self.bounds;
+    NSGradient *background = [[NSGradient alloc] initWithColors:@[
+        [NSColor colorWithCalibratedWhite:0.98 alpha:1.0],
+        [NSColor colorWithCalibratedWhite:0.86 alpha:1.0]
+    ]];
+    [background drawInRect:bounds angle:-90];
+    [[NSColor colorWithCalibratedWhite:1.0 alpha:0.38] setFill];
+    for (CGFloat y = 72; y < NSHeight(bounds); y += 5) {
+        NSRectFill(NSMakeRect(0, y, NSWidth(bounds), 1));
+    }
+
+    for (NSValue *value in @[
+        [NSValue valueWithRect:NSMakeRect(24, 82, NSWidth(bounds) - 48, 108)],
+        [NSValue valueWithRect:NSMakeRect(24, 214, NSWidth(bounds) - 48, 132)]
+    ]) {
+        NSBezierPath *panel = [NSBezierPath bezierPathWithRoundedRect:value.rectValue xRadius:14 yRadius:14];
+        [[NSColor colorWithCalibratedWhite:1.0 alpha:0.68] setFill];
+        [panel fill];
+        [[NSColor colorWithCalibratedWhite:0.42 alpha:0.30] setStroke];
+        panel.lineWidth = 1;
+        [panel stroke];
+    }
+}
+
+@end
+
+@interface AppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, NSTextFieldDelegate>
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, copy) NSString *sentinelPath;
 @property(nonatomic, copy) NSString *progressPath;
+@property(nonatomic, copy) NSString *runStatePath;
 @property(nonatomic) BOOL confirmMode;
 @property(nonatomic) BOOL setupMode;
+@property(nonatomic) BOOL overviewMode;
+@property(nonatomic) BOOL menubarOnlyMode;
 @property(nonatomic, copy) NSString *language;
 @property(nonatomic, copy) NSString *confirmTitle;
 @property(nonatomic, copy) NSString *confirmDetail;
@@ -649,6 +1140,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic) BOOL hiddenByUser;
 @property(nonatomic) BOOL completing;
 @property(nonatomic) BOOL confirmationAnswered;
+@property(nonatomic) BOOL reduceMotion;
+@property(nonatomic) BOOL voiceOverEnabled;
 @property(nonatomic, strong) NSPopUpButton *targetPopup;
 @property(nonatomic, strong) NSButton *encryptionCheckbox;
 @property(nonatomic, strong) NSPopUpButton *mountedNasPopup;
@@ -658,9 +1151,452 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, strong) NSTextField *nasMountField;
 @property(nonatomic, strong) NSTextField *nasSubdirField;
 @property(nonatomic, strong) NSTextField *statusField;
+@property(nonatomic, strong) NSTextField *destinationPreviewField;
+@property(nonatomic, strong) NSButton *setupBackupButton;
+@property(nonatomic, strong) NSButton *setupDryRunButton;
+@property(nonatomic) BOOL manualLaunchPending;
+@property(nonatomic, copy) NSString *configuredAPFSVolumePath;
+@property(nonatomic, strong) NSStatusItem *statusItem;
+@property(nonatomic, strong) NSTimer *overviewRefreshTimer;
+@property(nonatomic, copy) NSDictionary<NSString *, NSString *> *lastOverviewSnapshot;
+@property(nonatomic) NSTimeInterval overviewRefreshInterval;
+@property(nonatomic) BOOL overviewRefreshInFlight;
+@property(nonatomic) BOOL overviewLaunchPending;
+@property(nonatomic, copy) NSString *lastMountTriggerPath;
+@property(nonatomic, strong) NSDate *lastMountTriggerDate;
+@property(nonatomic, copy) NSString *terminalFailureReason;
 @end
 
 @implementation AppDelegate
+
+- (NSString *)applicationModeForArguments:(NSArray<NSString *> *)arguments {
+    if (arguments.count <= 1) {
+        return @"overview";
+    }
+    NSString *argument = arguments[1];
+    if ([argument isEqualToString:@"--setup"]) {
+        return @"setup";
+    }
+    if ([argument isEqualToString:@"--confirm"]) {
+        return @"confirm";
+    }
+    if ([argument isEqualToString:@"--menubar"]) {
+        return @"menubar";
+    }
+    return @"progress";
+}
+
+- (BOOL)shouldInstallStatusItemForMode:(NSString *)mode {
+    return [mode isEqualToString:@"overview"] || [mode isEqualToString:@"menubar"];
+}
+
+- (NSDateFormatter *)overviewDateFormatterWithCalendar:(NSCalendar *)calendar {
+    NSDictionary<NSString *, NSString *> *localeIdentifiers = @{
+        @"de": @"de_DE", @"en": @"en_US", @"fr": @"fr_FR", @"es": @"es_ES",
+        @"ja": @"ja_JP", @"yue": @"zh_HK", @"ko": @"ko_KR"
+    };
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:localeIdentifiers[self.language ?: @"en"] ?: @"en_US"];
+    formatter.calendar = calendar;
+    formatter.timeZone = calendar.timeZone;
+    formatter.dateStyle = NSDateFormatterMediumStyle;
+    formatter.timeStyle = NSDateFormatterShortStyle;
+    return formatter;
+}
+
+- (NSDictionary<NSString *, NSString *> *)overviewSnapshotForConfig:(NSDictionary<NSString *, NSString *> *)config
+                                                          summaryPath:(NSString *)summaryPath
+                                                                  now:(NSDate *)now
+                                                             calendar:(NSCalendar *)calendar {
+    NSString *language = self.language ?: @"en";
+    NSDictionary<NSString *, NSString *> *summary = GDTReadBackupSummaryAtPath(summaryPath);
+    NSString *status = GDTBackupSummaryStatusAtPath(summaryPath);
+    NSDictionary<NSString *, NSString *> *statusKeys = @{
+        @"success": @"completed",
+        @"failure": @"failed",
+        @"cancelled": @"cancelled",
+        @"running": @"running",
+        @"interrupted": @"overviewStatusInterrupted"
+    };
+    NSString *lastRun = nil;
+    if ([status isEqualToString:@"unknown"]) {
+        lastRun = summary.count ? T(language, @"overviewStatusUnknown") : T(language, @"overviewNeverRun");
+    } else {
+        lastRun = T(language, statusKeys[status] ?: @"overviewStatusUnknown");
+    }
+
+    NSString *timestamp = [status isEqualToString:@"running"] || [status isEqualToString:@"interrupted"]
+        ? summary[@"started_at"] : summary[@"finished_at"];
+    NSString *lastRunDetail = @"";
+    if (timestamp.longLongValue > 0) {
+        NSDate *date = [NSDate dateWithTimeIntervalSince1970:timestamp.longLongValue];
+        lastRunDetail = [[self overviewDateFormatterWithCalendar:calendar] stringFromDate:date] ?: @"";
+    }
+
+    NSString *schedule = [config[@"GDRIVE_BACKUP_SCHEDULE"] ?: @"manual" lowercaseString];
+    NSString *nextRun = nil;
+    if ([schedule isEqualToString:@"daily"]) {
+        NSDate *nextDate = GDTNextDailyRunAfterDate(now, calendar);
+        nextRun = [[self overviewDateFormatterWithCalendar:calendar] stringFromDate:nextDate];
+    } else if ([schedule isEqualToString:@"login"]) {
+        nextRun = T(language, @"scheduleLogin");
+    } else if ([schedule isEqualToString:@"hourly"]) {
+        // StartInterval does not expose a reliable wall-clock fire time, so the
+        // overview states the cadence instead of inventing a precise timestamp.
+        nextRun = T(language, @"scheduleHourly");
+    } else {
+        nextRun = T(language, @"scheduleManual");
+    }
+
+    NSString *destination = GDTBackupDestinationForConfig(config);
+    NSString *target = destination.length
+        ? [NSString stringWithFormat:@"%@ — %@", destination.lastPathComponent, destination]
+        : T(language, @"overviewUnavailable");
+
+    NSDictionary<NSString *, NSNumber *> *capacity =
+        GDTStorageCapacityForPath(GDTBackupCapacityPathForConfig(config));
+    NSString *storage = T(language, @"overviewUnavailable");
+    if (capacity) {
+        NSByteCountFormatter *formatter = [[NSByteCountFormatter alloc] init];
+        formatter.countStyle = NSByteCountFormatterCountStyleDecimal;
+        NSString *free = [formatter stringFromByteCount:capacity[@"freeBytes"].longLongValue];
+        NSString *total = [formatter stringFromByteCount:capacity[@"totalBytes"].longLongValue];
+        storage = [NSString stringWithFormat:T(language, @"overviewFreeOf"), free, total];
+    }
+
+    return @{
+        @"status": status,
+        @"lastRun": lastRun ?: @"",
+        @"lastRunDetail": lastRunDetail,
+        @"nextRun": nextRun ?: T(language, @"overviewUnavailable"),
+        @"target": target,
+        @"storage": storage
+    };
+}
+
+- (void)applyOverviewSnapshot:(NSDictionary<NSString *, NSString *> *)snapshot
+                       toView:(TigerOverviewView *)view {
+    NSString *status = snapshot[@"status"] ?: @"unknown";
+    if (![status isEqualToString:@"running"]) {
+        self.overviewLaunchPending = NO;
+    }
+    view.language = self.language ?: @"en";
+    view.lastRunText = snapshot[@"lastRun"] ?: @"";
+    view.lastRunDetail = snapshot[@"lastRunDetail"] ?: @"";
+    view.nextRunText = snapshot[@"nextRun"] ?: @"";
+    view.targetText = snapshot[@"target"] ?: @"";
+    view.storageText = snapshot[@"storage"] ?: @"";
+    view.status = status;
+    view.backupButton.enabled = !self.overviewLaunchPending && ![status isEqualToString:@"running"];
+}
+
+- (NSMenuItem *)statusValueItemWithTitle:(NSString *)title value:(NSString *)value {
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:
+        [NSString stringWithFormat:@"%@: %@", title, value ?: @""] action:nil keyEquivalent:@""];
+    item.enabled = NO;
+    return item;
+}
+
+- (NSMenu *)statusMenuForSnapshot:(NSDictionary<NSString *, NSString *> *)snapshot {
+    NSString *language = self.language ?: @"en";
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"GDrive Backup Tiger"];
+
+    NSMenuItem *open = [[NSMenuItem alloc] initWithTitle:T(language, @"overviewOpen")
+                                                   action:@selector(showOverviewFromStatus:)
+                                            keyEquivalent:@""];
+    open.target = self;
+    [menu addItem:open];
+    [menu addItem:[NSMenuItem separatorItem]];
+
+    NSString *lastRun = snapshot[@"lastRun"] ?: T(language, @"overviewNeverRun");
+    NSString *detail = snapshot[@"lastRunDetail"] ?: @"";
+    if (detail.length) {
+        lastRun = [NSString stringWithFormat:@"%@ · %@", lastRun, detail];
+    }
+    [menu addItem:[self statusValueItemWithTitle:T(language, @"overviewLastRun") value:lastRun]];
+    [menu addItem:[self statusValueItemWithTitle:T(language, @"overviewNextRun") value:snapshot[@"nextRun"]]];
+    [menu addItem:[self statusValueItemWithTitle:T(language, @"overviewTarget") value:snapshot[@"target"]]];
+    [menu addItem:[self statusValueItemWithTitle:T(language, @"overviewStorage") value:snapshot[@"storage"]]];
+    [menu addItem:[NSMenuItem separatorItem]];
+
+    NSMenuItem *backup = [[NSMenuItem alloc] initWithTitle:T(language, @"backupNow")
+                                                     action:@selector(startOverviewBackup:)
+                                              keyEquivalent:@""];
+    backup.target = self;
+    backup.enabled = !self.overviewLaunchPending &&
+        ![snapshot[@"status"] isEqualToString:@"running"];
+    [menu addItem:backup];
+    NSMenuItem *settings = [[NSMenuItem alloc] initWithTitle:T(language, @"overviewSettings")
+                                                       action:@selector(showBackupSetup:)
+                                                keyEquivalent:@""];
+    settings.target = self;
+    [menu addItem:settings];
+    [menu addItem:[NSMenuItem separatorItem]];
+    [menu addItemWithTitle:T(language, @"quitMenu") action:@selector(terminate:) keyEquivalent:@"q"];
+    return menu;
+}
+
+- (void)updateStatusItemPresentationForSnapshot:(NSDictionary<NSString *, NSString *> *)snapshot {
+    NSDictionary<NSString *, NSString *> *symbols = @{
+        @"success": @"externaldrive.fill.badge.checkmark",
+        @"failure": @"exclamationmark.triangle.fill",
+        @"cancelled": @"stop.circle.fill",
+        @"running": @"arrow.triangle.2.circlepath",
+        @"interrupted": @"exclamationmark.circle.fill",
+        @"unknown": @"externaldrive.fill"
+    };
+    NSString *status = snapshot[@"status"] ?: @"unknown";
+    NSString *symbolName = symbols[status] ?: symbols[@"unknown"];
+    NSImage *image = [NSImage imageWithSystemSymbolName:symbolName
+                               accessibilityDescription:@"GDrive Backup Tiger"];
+    image.template = YES;
+    self.statusItem.button.image = image;
+    self.statusItem.button.accessibilityLabel = [NSString stringWithFormat:@"GDrive Backup Tiger — %@",
+        snapshot[@"lastRun"] ?: T(self.language ?: @"en", @"overviewStatusUnknown")];
+}
+
+- (void)updateOverviewRefreshTimerForStatus:(NSString *)status {
+    NSTimeInterval interval = [status isEqualToString:@"running"] ? 2.0 : 30.0;
+    if (self.overviewRefreshTimer && fabs(self.overviewRefreshInterval - interval) < 0.01) {
+        return;
+    }
+    [self.overviewRefreshTimer invalidate];
+    self.overviewRefreshInterval = interval;
+    __weak typeof(self) weakSelf = self;
+    self.overviewRefreshTimer = [NSTimer timerWithTimeInterval:interval
+                                                       repeats:YES
+                                                         block:^(NSTimer *timer) {
+        (void)timer;
+        [weakSelf refreshOverviewStatus:nil];
+    }];
+    [NSRunLoop.mainRunLoop addTimer:self.overviewRefreshTimer forMode:NSRunLoopCommonModes];
+}
+
+- (void)installStatusItemIfNeeded {
+    if (self.statusItem) return;
+    self.statusItem = [NSStatusBar.systemStatusBar statusItemWithLength:NSSquareStatusItemLength];
+    NSDictionary<NSString *, NSString *> *placeholder = @{
+        @"status": @"unknown",
+        @"lastRun": T(self.language ?: @"en", @"overviewNeverRun"),
+        @"lastRunDetail": @"",
+        @"nextRun": T(self.language ?: @"en", @"overviewUnavailable"),
+        @"target": T(self.language ?: @"en", @"overviewUnavailable"),
+        @"storage": T(self.language ?: @"en", @"overviewUnavailable")
+    };
+    self.statusItem.menu = [self statusMenuForSnapshot:placeholder];
+    self.statusItem.menu.delegate = self;
+    [self updateStatusItemPresentationForSnapshot:placeholder];
+    [self refreshOverviewStatus:nil];
+}
+
+- (void)refreshOverviewStatus:(id)sender {
+    (void)sender;
+    if (self.overviewRefreshInFlight) return;
+    self.overviewRefreshInFlight = YES;
+    NSDictionary<NSString *, NSString *> *config = GDTReadConfigDictionary();
+    NSString *summaryPath = GDTBackupSummaryPath();
+    NSCalendar *calendar = NSCalendar.autoupdatingCurrentCalendar;
+    NSDate *now = [NSDate date];
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) {
+            return;
+        }
+        NSDictionary<NSString *, NSString *> *snapshot =
+            [strongSelf overviewSnapshotForConfig:config summaryPath:summaryPath now:now calendar:calendar];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) innerSelf = weakSelf;
+            if (!innerSelf) {
+                return;
+            }
+            innerSelf.overviewRefreshInFlight = NO;
+            innerSelf.lastOverviewSnapshot = snapshot;
+            if ([innerSelf.window.contentView isKindOfClass:TigerOverviewView.class]) {
+                [innerSelf applyOverviewSnapshot:snapshot toView:(TigerOverviewView *)innerSelf.window.contentView];
+            }
+            if (innerSelf.statusItem) {
+                innerSelf.statusItem.menu = [innerSelf statusMenuForSnapshot:snapshot];
+                innerSelf.statusItem.menu.delegate = innerSelf;
+                [innerSelf updateStatusItemPresentationForSnapshot:snapshot];
+            }
+            [innerSelf updateOverviewRefreshTimerForStatus:snapshot[@"status"]];
+        });
+    });
+}
+
+- (void)menuWillOpen:(NSMenu *)menu {
+    (void)menu;
+    [self refreshOverviewStatus:nil];
+}
+
+- (BOOL)mountedVolumePath:(NSString *)mountedPath
+             matchesConfig:(NSDictionary<NSString *, NSString *> *)config {
+    NSString *target = [config[@"GDRIVE_BACKUP_TARGET"] ?: @"apfs" lowercaseString];
+    BOOL activeAPFSTarget = [target isEqualToString:@"apfs"] ||
+        [target isEqualToString:@"volume"] || [target isEqualToString:@"disk"];
+    // NAS schedules and external-disk mount backups are independent. When NAS
+    // is active, only an explicitly retained APFS path may trigger this path.
+    NSString *configuredPath = activeAPFSTarget
+        ? GDTBackupCapacityPathForConfig(config)
+        : config[@"GDRIVE_BACKUP_VOLUME"];
+    if (!mountedPath.length || !configuredPath.length) {
+        return NO;
+    }
+    NSString *mounted = mountedPath.stringByStandardizingPath;
+    NSString *configured = configuredPath.stringByStandardizingPath;
+    if ([NSFileManager.defaultManager fileExistsAtPath:mounted]) {
+        mounted = mounted.stringByResolvingSymlinksInPath;
+    }
+    if ([NSFileManager.defaultManager fileExistsAtPath:configured]) {
+        configured = configured.stringByResolvingSymlinksInPath;
+    }
+    return [mounted isEqualToString:configured];
+}
+
+- (void)workspaceVolumeDidMount:(NSNotification *)notification {
+    [self refreshOverviewStatus:notification];
+    NSURL *volumeURL = notification.userInfo[NSWorkspaceVolumeURLKey];
+    if (![volumeURL isKindOfClass:NSURL.class] || !volumeURL.isFileURL) {
+        return;
+    }
+    NSDictionary<NSString *, NSString *> *config = [self savedSetupConfig];
+    NSString *mountedPath = volumeURL.path.stringByStandardizingPath;
+    if (![self mountedVolumePath:mountedPath matchesConfig:config]) {
+        return;
+    }
+
+    NSDate *now = [NSDate date];
+    if ([self.lastMountTriggerPath isEqualToString:mountedPath] &&
+        self.lastMountTriggerDate &&
+        [now timeIntervalSinceDate:self.lastMountTriggerDate] < 15.0) {
+        return;
+    }
+    self.lastMountTriggerPath = mountedPath;
+    self.lastMountTriggerDate = now;
+    [self launchBackupWithArgument:@"--run" trigger:@"mount" assumeYes:NO];
+}
+
+- (void)showOverviewWindow {
+    self.overviewMode = YES;
+    self.menubarOnlyMode = NO;
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    [self buildMainMenu];
+    [NSApp setApplicationIconImage:CreateApplicationIcon()];
+    [self installStatusItemIfNeeded];
+
+    if ([self.window.contentView isKindOfClass:TigerOverviewView.class]) {
+        [self.window makeKeyAndOrderFront:nil];
+        [NSApp activateIgnoringOtherApps:YES];
+        [self refreshOverviewStatus:nil];
+        return;
+    }
+
+    NSSize size = NSMakeSize(620, 420);
+    NSRect screenFrame = NSScreen.mainScreen ? NSScreen.mainScreen.visibleFrame : NSMakeRect(0, 0, 1200, 800);
+    NSPoint origin = NSMakePoint(NSMidX(screenFrame) - size.width / 2, NSMidY(screenFrame) - size.height / 2);
+    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(origin.x, origin.y, size.width, size.height)
+                                             styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
+                                               backing:NSBackingStoreBuffered
+                                                 defer:NO];
+    self.window.title = @"GDrive Backup Tiger";
+    self.window.releasedWhenClosed = NO;
+    self.window.delegate = self;
+
+    TigerOverviewView *content = [[TigerOverviewView alloc] initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
+    __weak typeof(self) weakSelf = self;
+    content.backupHandler = ^{ [weakSelf startOverviewBackup:nil]; };
+    content.settingsHandler = ^{ [weakSelf showBackupSetup:nil]; };
+    self.window.contentView = content;
+    NSDictionary<NSString *, NSString *> *placeholder = self.lastOverviewSnapshot ?: @{
+        @"status": @"unknown",
+        @"lastRun": T(self.language ?: @"en", @"overviewNeverRun"),
+        @"lastRunDetail": @"",
+        @"nextRun": T(self.language ?: @"en", @"overviewUnavailable"),
+        @"target": T(self.language ?: @"en", @"overviewUnavailable"),
+        @"storage": T(self.language ?: @"en", @"overviewUnavailable")
+    };
+    [self applyOverviewSnapshot:placeholder toView:content];
+    [self.window makeFirstResponder:content.backupButton];
+    [self.window makeKeyAndOrderFront:nil];
+    [NSApp activateIgnoringOtherApps:YES];
+    [self refreshOverviewStatus:nil];
+}
+
+- (void)showOverviewFromStatus:(id)sender {
+    (void)sender;
+    [self showOverviewWindow];
+}
+
+- (void)showBackupSetup:(id)sender {
+    (void)sender;
+    NSString *bundlePath = NSBundle.mainBundle.bundlePath;
+    if (![bundlePath.pathExtension.lowercaseString isEqualToString:@"app"]) {
+        return;
+    }
+    NSTask *task = [[NSTask alloc] init];
+    task.launchPath = @"/usr/bin/open";
+    task.arguments = @[@"-n", bundlePath, @"--args", @"--setup"];
+    @try {
+        [task launch];
+    } @catch (NSException *exception) {
+        (void)exception;
+    }
+}
+
+- (void)startOverviewBackup:(id)sender {
+    (void)sender;
+    if (self.overviewLaunchPending) {
+        return;
+    }
+    self.overviewLaunchPending = YES;
+    if (![self launchBackupWithArgument:@"--run" assumeYes:YES]) {
+        self.overviewLaunchPending = NO;
+        return;
+    }
+    NSMutableDictionary<NSString *, NSString *> *snapshot =
+        [self.lastOverviewSnapshot mutableCopy] ?: [NSMutableDictionary dictionary];
+    snapshot[@"status"] = @"running";
+    snapshot[@"lastRun"] = T(self.language ?: @"en", @"statusBackupStarted");
+    snapshot[@"lastRunDetail"] = @"";
+    self.lastOverviewSnapshot = snapshot;
+    if ([self.window.contentView isKindOfClass:TigerOverviewView.class]) {
+        [self applyOverviewSnapshot:snapshot toView:(TigerOverviewView *)self.window.contentView];
+    }
+    [self updateOverviewRefreshTimerForStatus:@"running"];
+}
+
+- (CGFloat)animationDuration:(CGFloat)duration {
+    return self.reduceMotion ? 0 : duration;
+}
+
+- (NSWindowStyleMask)statusWindowStyleMask {
+    return NSWindowStyleMaskTitled |
+        NSWindowStyleMaskClosable |
+        NSWindowStyleMaskMiniaturizable |
+        NSWindowStyleMaskFullSizeContentView;
+}
+
+- (NSTimeInterval)confirmationTimeout {
+    return self.voiceOverEnabled ? 0 : 120.0;
+}
+
+- (NSTimeInterval)terminalDisplayDuration {
+    return self.voiceOverEnabled ? 0 : 8.0;
+}
+
+- (void)setReduceMotion:(BOOL)reduceMotion {
+    _reduceMotion = reduceMotion;
+    if ([self.window.contentView isKindOfClass:TigerBackupView.class]) {
+        ((TigerBackupView *)self.window.contentView).reduceMotion = reduceMotion;
+    }
+}
+
+- (void)accessibilityDisplayOptionsChanged:(NSNotification *)notification {
+    (void)notification;
+    self.reduceMotion = NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+    self.voiceOverEnabled = NSWorkspace.sharedWorkspace.isVoiceOverEnabled;
+}
 
 - (NSTextField *)label:(NSString *)text frame:(NSRect)frame {
     NSTextField *label = [[NSTextField alloc] initWithFrame:frame];
@@ -768,7 +1704,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     [self buildMainMenu];
     [NSApp setApplicationIconImage:CreateApplicationIcon()];
 
-    NSSize size = NSMakeSize(610, 462);
+    NSSize size = NSMakeSize(610, 500);
     NSRect screenFrame = NSScreen.mainScreen ? NSScreen.mainScreen.visibleFrame : NSMakeRect(0, 0, 1200, 800);
     NSPoint origin = NSMakePoint(NSMidX(screenFrame) - size.width / 2, NSMidY(screenFrame) - size.height / 2);
 
@@ -789,6 +1725,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     BOOL preserveConfiguredAPFSTarget = [configuredTarget isEqualToString:@"apfs"];
     NSString *encryption = [config[@"GDRIVE_BACKUP_ENCRYPTION"] ?: @"none" lowercaseString];
     NSString *schedule = [config[@"GDRIVE_BACKUP_SCHEDULE"] ?: @"manual" lowercaseString];
+    NSString *configuredVolumeName = config[@"GDRIVE_BACKUP_VOLUME_NAME"] ?: @"GoogleDrive-Backup";
+    self.configuredAPFSVolumePath = config[@"GDRIVE_BACKUP_VOLUME"] ?: [@"/Volumes" stringByAppendingPathComponent:configuredVolumeName];
 
     NSTextField *title = [self label:@"Google Drive Backup" frame:NSMakeRect(26, 16, 300, 22)];
     title.font = [NSFont fontWithName:@"Lucida Grande Bold" size:17] ?: [NSFont boldSystemFontOfSize:17];
@@ -809,7 +1747,15 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.targetPopup.action = @selector(targetChanged:);
     [content addSubview:self.targetPopup];
 
-    self.encryptionCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(164, 132, 400, 24)];
+    [content addSubview:[self label:T(self.language, @"destinationPreview") frame:NSMakeRect(34, 134, 124, 22)]];
+    self.destinationPreviewField = [self fieldWithFrame:NSMakeRect(164, 130, 400, 26)];
+    self.destinationPreviewField.editable = NO;
+    self.destinationPreviewField.selectable = YES;
+    self.destinationPreviewField.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    self.destinationPreviewField.accessibilityRole = NSAccessibilityStaticTextRole;
+    [content addSubview:self.destinationPreviewField];
+
+    self.encryptionCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(164, 164, 400, 24)];
     self.encryptionCheckbox.buttonType = NSButtonTypeSwitch;
     self.encryptionCheckbox.title = T(self.language, @"encryptionAPFS");
     self.encryptionCheckbox.toolTip = T(self.language, @"encryptionAPFSTip");
@@ -818,38 +1764,41 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.encryptionCheckbox.font = [NSFont fontWithName:@"Lucida Grande" size:12] ?: [NSFont systemFontOfSize:12];
     [content addSubview:self.encryptionCheckbox];
 
-    [content addSubview:[self label:T(self.language, @"mountedNas") frame:NSMakeRect(34, 168, 124, 22)]];
-    self.mountedNasPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 164, 270, 28)];
+    [content addSubview:[self label:T(self.language, @"mountedNas") frame:NSMakeRect(34, 200, 124, 22)]];
+    self.mountedNasPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 196, 270, 28)];
     self.mountedNasPopup.target = self;
     self.mountedNasPopup.action = @selector(selectMountedNAS:);
     [content addSubview:self.mountedNasPopup];
-    [content addSubview:[self button:T(self.language, @"refresh") frame:NSMakeRect(444, 164, 120, 28) action:@selector(refreshMountedNAS:)]];
+    [content addSubview:[self button:T(self.language, @"refresh") frame:NSMakeRect(444, 196, 120, 28) action:@selector(refreshMountedNAS:)]];
 
-    [content addSubview:[self label:T(self.language, @"nasUrl") frame:NSMakeRect(34, 206, 124, 22)]];
-    self.nasURLField = [self fieldWithFrame:NSMakeRect(164, 202, 270, 26)];
+    [content addSubview:[self label:T(self.language, @"nasUrl") frame:NSMakeRect(34, 238, 124, 22)]];
+    self.nasURLField = [self fieldWithFrame:NSMakeRect(164, 234, 270, 26)];
     self.nasURLField.stringValue = config[@"GDRIVE_BACKUP_NAS_URL"] ?: @"";
+    self.nasURLField.delegate = self;
     [content addSubview:self.nasURLField];
-    [content addSubview:[self button:T(self.language, @"openFinder") frame:NSMakeRect(444, 201, 120, 28) action:@selector(openNASInFinder:)]];
+    [content addSubview:[self button:T(self.language, @"openFinder") frame:NSMakeRect(444, 233, 120, 28) action:@selector(openNASInFinder:)]];
 
-    [content addSubview:[self label:T(self.language, @"nasMount") frame:NSMakeRect(34, 242, 124, 22)]];
-    self.nasMountField = [self fieldWithFrame:NSMakeRect(164, 238, 270, 26)];
+    [content addSubview:[self label:T(self.language, @"nasMount") frame:NSMakeRect(34, 274, 124, 22)]];
+    self.nasMountField = [self fieldWithFrame:NSMakeRect(164, 270, 270, 26)];
     self.nasMountField.stringValue = config[@"GDRIVE_BACKUP_NAS_MOUNT"] ?: @"";
+    self.nasMountField.delegate = self;
     [content addSubview:self.nasMountField];
 
-    [content addSubview:[self label:T(self.language, @"nasSubdir") frame:NSMakeRect(34, 278, 124, 22)]];
-    self.nasSubdirField = [self fieldWithFrame:NSMakeRect(164, 274, 270, 26)];
+    [content addSubview:[self label:T(self.language, @"nasSubdir") frame:NSMakeRect(34, 310, 124, 22)]];
+    self.nasSubdirField = [self fieldWithFrame:NSMakeRect(164, 306, 270, 26)];
     self.nasSubdirField.stringValue = config[@"GDRIVE_BACKUP_NAS_SUBDIR"] ?: @"GoogleDrive-Backup";
+    self.nasSubdirField.delegate = self;
     [content addSubview:self.nasSubdirField];
 
-    self.discoveredNasPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 310, 270, 28)];
+    self.discoveredNasPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 342, 270, 28)];
     [self.discoveredNasPopup addItemWithTitle:@"Bonjour"];
     self.discoveredNasPopup.target = self;
     self.discoveredNasPopup.action = @selector(selectDiscoveredNAS:);
     [content addSubview:self.discoveredNasPopup];
-    [content addSubview:[self button:T(self.language, @"discover") frame:NSMakeRect(444, 310, 120, 28) action:@selector(discoverNAS:)]];
+    [content addSubview:[self button:T(self.language, @"discover") frame:NSMakeRect(444, 342, 120, 28) action:@selector(discoverNAS:)]];
 
-    [content addSubview:[self label:T(self.language, @"schedule") frame:NSMakeRect(34, 366, 124, 22)]];
-    self.schedulePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 362, 270, 28)];
+    [content addSubview:[self label:T(self.language, @"schedule") frame:NSMakeRect(34, 404, 124, 22)]];
+    self.schedulePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 400, 270, 28)];
     NSArray<NSArray<NSString *> *> *scheduleItems = @[
         @[T(self.language, @"scheduleManual"), @"manual"],
         @[T(self.language, @"scheduleLogin"), @"login"],
@@ -865,18 +1814,18 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     }
     [content addSubview:self.schedulePopup];
 
-    self.statusField = [self label:T(self.language, @"statusReady") frame:NSMakeRect(26, 420, 270, 20)];
+    self.statusField = [self label:T(self.language, @"statusReady") frame:NSMakeRect(26, 458, 270, 20)];
     self.statusField.textColor = [NSColor colorWithCalibratedWhite:0.36 alpha:1.0];
     [content addSubview:self.statusField];
 
-    NSButton *saveButton = [self button:T(self.language, @"save") frame:NSMakeRect(282, 415, 88, 30) action:@selector(saveSetup:)];
-    NSButton *dryRunButton = [self button:T(self.language, @"dryRun") frame:NSMakeRect(378, 415, 112, 30) action:@selector(startDryRun:)];
-    dryRunButton.toolTip = T(self.language, @"dryRunTip");
-    NSButton *backupButton = [self button:T(self.language, @"backupNow") frame:NSMakeRect(498, 415, 88, 30) action:@selector(startBackupNow:)];
-    backupButton.toolTip = T(self.language, @"backupNowTip");
+    NSButton *saveButton = [self button:T(self.language, @"save") frame:NSMakeRect(282, 453, 88, 30) action:@selector(saveSetup:)];
+    self.setupDryRunButton = [self button:T(self.language, @"dryRun") frame:NSMakeRect(378, 453, 112, 30) action:@selector(startDryRun:)];
+    self.setupDryRunButton.toolTip = T(self.language, @"dryRunTip");
+    self.setupBackupButton = [self button:T(self.language, @"backupNow") frame:NSMakeRect(498, 453, 88, 30) action:@selector(startBackupNow:)];
+    self.setupBackupButton.toolTip = T(self.language, @"backupNowTip");
     [content addSubview:saveButton];
-    [content addSubview:dryRunButton];
-    [content addSubview:backupButton];
+    [content addSubview:self.setupDryRunButton];
+    [content addSubview:self.setupBackupButton];
 
     [self refreshMountedNASAllowingTargetAutoSelection:!preserveConfiguredAPFSTarget];
     [self.window makeKeyAndOrderFront:nil];
@@ -892,6 +1841,26 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     NSString *target = self.targetPopup.selectedItem.representedObject ?: @"apfs";
     BOOL isAPFSTarget = [target isEqualToString:@"apfs"];
     self.encryptionCheckbox.enabled = isAPFSTarget;
+    [self updateDestinationPreview];
+}
+
+- (void)updateDestinationPreview {
+    if (!self.destinationPreviewField) {
+        return;
+    }
+    NSString *destination = GDTBackupDestinationForConfig([self currentSetupUpdates]);
+    if (!destination.length) {
+        destination = T(self.language ?: @"en", @"overviewUnavailable");
+    }
+    self.destinationPreviewField.stringValue = destination;
+    self.destinationPreviewField.toolTip = destination;
+    self.destinationPreviewField.accessibilityLabel = [NSString stringWithFormat:@"%@: %@",
+        T(self.language ?: @"en", @"destinationPreview"), destination];
+}
+
+- (void)controlTextDidChange:(NSNotification *)notification {
+    (void)notification;
+    [self updateDestinationPreview];
 }
 
 - (void)refreshMountedNAS:(id)sender {
@@ -1050,8 +2019,50 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
         updates[@"GDRIVE_BACKUP_NAS_URL"] = self.nasURLField.stringValue ?: @"";
         updates[@"GDRIVE_BACKUP_NAS_SUBDIR"] = self.nasSubdirField.stringValue.length ? self.nasSubdirField.stringValue : @"GoogleDrive-Backup";
         updates[@"GDRIVE_BACKUP_NAS_START_ON_MOUNT"] = @"0";
+    } else {
+        updates[@"GDRIVE_BACKUP_VOLUME"] = self.configuredAPFSVolumePath.length
+            ? self.configuredAPFSVolumePath
+            : @"/Volumes/GoogleDrive-Backup";
     }
     return updates;
+}
+
+- (NSDictionary<NSString *, NSString *> *)savedSetupConfig {
+    return GDTReadConfigDictionary();
+}
+
+- (BOOL)setupUpdatesMatchSavedConfig:(NSDictionary<NSString *, NSString *> *)updates
+                         savedConfig:(NSDictionary<NSString *, NSString *> *)savedConfig {
+    NSDictionary<NSString *, NSString *> *defaults = @{
+        @"GDRIVE_BACKUP_TARGET": @"apfs",
+        @"GDRIVE_BACKUP_SCHEDULE": @"manual",
+        @"GDRIVE_BACKUP_ENCRYPTION": @"none",
+        @"GDRIVE_BACKUP_NAS_MOUNT": @"",
+        @"GDRIVE_BACKUP_NAS_URL": @"",
+        @"GDRIVE_BACKUP_NAS_SUBDIR": @"GoogleDrive-Backup",
+        @"GDRIVE_BACKUP_NAS_START_ON_MOUNT": @"0",
+        @"GDRIVE_BACKUP_VOLUME": @"/Volumes/GoogleDrive-Backup"
+    };
+    NSSet<NSString *> *caseInsensitiveKeys = [NSSet setWithArray:@[
+        @"GDRIVE_BACKUP_TARGET", @"GDRIVE_BACKUP_SCHEDULE", @"GDRIVE_BACKUP_ENCRYPTION"
+    ]];
+    for (NSString *key in updates) {
+        NSString *current = updates[key] ?: @"";
+        NSString *saved = savedConfig[key] ?: defaults[key] ?: @"";
+        if ([caseInsensitiveKeys containsObject:key]) {
+            current = current.lowercaseString;
+            saved = saved.lowercaseString;
+        }
+        if (![current isEqualToString:saved]) {
+            return NO;
+        }
+    }
+    return YES;
+}
+
+- (BOOL)hasUnsavedSetupChanges {
+    return ![self setupUpdatesMatchSavedConfig:[self currentSetupUpdates]
+                                   savedConfig:[self savedSetupConfig]];
 }
 
 - (BOOL)saveSetupValues {
@@ -1073,37 +2084,67 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 }
 
 - (void)startBackupNow:(id)sender {
-    if (![self saveSetupValues]) {
+    (void)sender;
+    if (self.manualLaunchPending) {
         return;
     }
-    [self launchBackupWithArgument:@"--run" assumeYes:YES];
-    self.statusField.stringValue = T(self.language, @"statusBackupStarted");
+    if ([self hasUnsavedSetupChanges]) {
+        self.statusField.stringValue = T(self.language, @"statusUnsavedChanges");
+        return;
+    }
+    self.manualLaunchPending = YES;
+    self.setupBackupButton.enabled = NO;
+    self.setupDryRunButton.enabled = NO;
+    self.statusField.stringValue = T(self.language, @"statusBackupPreparing");
+    if (![self launchBackupWithArgument:@"--run" assumeYes:YES]) {
+        self.manualLaunchPending = NO;
+        self.setupBackupButton.enabled = YES;
+        self.setupDryRunButton.enabled = YES;
+        return;
+    }
+    [self dismissSetupAfterBackupLaunch];
+}
+
+- (void)dismissSetupAfterBackupLaunch {
+    [self.window orderOut:nil];
+    [NSApp terminate:nil];
 }
 
 - (void)startDryRun:(id)sender {
-    if (![self saveSetupValues]) {
+    (void)sender;
+    if ([self hasUnsavedSetupChanges]) {
+        self.statusField.stringValue = T(self.language, @"statusUnsavedChanges");
         return;
     }
-    [self launchBackupWithArgument:@"--dry-run" assumeYes:YES];
-    self.statusField.stringValue = T(self.language, @"statusDryRunStarted");
+    if ([self launchBackupWithArgument:@"--dry-run" assumeYes:YES]) {
+        self.statusField.stringValue = T(self.language, @"statusDryRunStarted");
+    }
 }
 
-- (void)launchBackupWithArgument:(NSString *)argument assumeYes:(BOOL)assumeYes {
+- (BOOL)launchBackupWithArgument:(NSString *)argument assumeYes:(BOOL)assumeYes {
+    return [self launchBackupWithArgument:argument trigger:@"manual" assumeYes:assumeYes];
+}
+
+- (BOOL)launchBackupWithArgument:(NSString *)argument
+                         trigger:(NSString *)trigger
+                       assumeYes:(BOOL)assumeYes {
     NSTask *task = [[NSTask alloc] init];
     task.launchPath = @"/bin/bash";
     task.arguments = @[@"/usr/local/bin/backup-google-drive.sh", argument];
     NSMutableDictionary *environment = NSProcessInfo.processInfo.environment.mutableCopy;
     environment[@"HOME"] = NSHomeDirectory();
     environment[@"PATH"] = @"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
-    environment[@"GDRIVE_BACKUP_TRIGGER"] = @"manual";
+    environment[@"GDRIVE_BACKUP_TRIGGER"] = trigger.length ? trigger : @"manual";
     if (assumeYes) {
         environment[@"BACKUP_ASSUME_YES"] = @"1";
     }
     task.environment = environment;
     @try {
         [task launch];
+        return YES;
     } @catch (NSException *exception) {
         self.statusField.stringValue = exception.reason ?: @"Launch failed.";
+        return NO;
     }
 }
 
@@ -1205,15 +2246,48 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
+    self.reduceMotion = NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+    self.voiceOverEnabled = NSWorkspace.sharedWorkspace.isVoiceOverEnabled;
+    [NSWorkspace.sharedWorkspace.notificationCenter
+        addObserver:self
+           selector:@selector(accessibilityDisplayOptionsChanged:)
+               name:NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification
+             object:nil];
     self.language = ConfiguredLanguage();
     NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
-    if (arguments.count == 1 || (arguments.count > 1 && [arguments[1] isEqualToString:@"--setup"])) {
+    NSString *mode = [self applicationModeForArguments:arguments];
+    if ([self shouldInstallStatusItemForMode:mode]) {
+        self.overviewMode = YES;
+        self.menubarOnlyMode = [mode isEqualToString:@"menubar"];
+        [NSWorkspace.sharedWorkspace.notificationCenter
+            addObserver:self
+               selector:@selector(workspaceVolumeDidMount:)
+                   name:NSWorkspaceDidMountNotification
+                 object:nil];
+        [NSWorkspace.sharedWorkspace.notificationCenter
+            addObserver:self
+               selector:@selector(refreshOverviewStatus:)
+                   name:NSWorkspaceDidUnmountNotification
+                 object:nil];
+        [NSApp setApplicationIconImage:CreateApplicationIcon()];
+        [NSApp setActivationPolicy:self.menubarOnlyMode
+            ? NSApplicationActivationPolicyAccessory
+            : NSApplicationActivationPolicyRegular];
+        [self buildMainMenu];
+        [self installStatusItemIfNeeded];
+        if ([mode isEqualToString:@"overview"]) {
+            [self showOverviewWindow];
+        }
+        return;
+    }
+
+    if ([mode isEqualToString:@"setup"]) {
         self.setupMode = YES;
         [self showSetupWindow];
         return;
     }
 
-    if (arguments.count > 1 && [arguments[1] isEqualToString:@"--confirm"]) {
+    if ([mode isEqualToString:@"confirm"]) {
         self.confirmMode = YES;
         if (arguments.count > 6) {
             self.confirmTitle = arguments[2];
@@ -1239,6 +2313,9 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
         if (arguments.count > 2) {
             self.progressPath = arguments[2];
         }
+        if (arguments.count > 3) {
+            self.runStatePath = arguments[3];
+        }
     }
 
     [NSApp setApplicationIconImage:CreateApplicationIcon()];
@@ -1249,9 +2326,14 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     NSPoint origin = NSMakePoint(NSMidX(screenFrame) - size.width / 2, NSMidY(screenFrame) - size.height / 2);
 
     self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(origin.x, origin.y, size.width, size.height)
-                                             styleMask:NSWindowStyleMaskBorderless
+                                             styleMask:[self statusWindowStyleMask]
                                                backing:NSBackingStoreBuffered
                                                  defer:NO];
+    self.window.titleVisibility = NSWindowTitleHidden;
+    self.window.titlebarAppearsTransparent = YES;
+    self.window.movableByWindowBackground = YES;
+    self.window.delegate = self;
+    [self.window standardWindowButton:NSWindowZoomButton].hidden = YES;
     self.window.opaque = NO;
     self.window.backgroundColor = NSColor.clearColor;
     self.window.hasShadow = YES;
@@ -1260,14 +2342,12 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     TigerBackupView *contentView = [[TigerBackupView alloc] initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
     __weak typeof(self) weakSelf = self;
     contentView.confirmMode = self.confirmMode;
+    contentView.reduceMotion = self.reduceMotion;
     contentView.language = self.language;
     contentView.confirmTitle = self.confirmTitle;
     contentView.confirmDetail = self.confirmDetail;
     contentView.primaryActionTitle = self.primaryActionTitle;
     contentView.secondaryActionTitle = self.secondaryActionTitle;
-    contentView.minimizeHandler = ^{
-        [weakSelf minimizeWindow];
-    };
     contentView.confirmHandler = ^(BOOL approved) {
         [weakSelf finishConfirmation:approved];
     };
@@ -1277,7 +2357,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     [self.window orderFrontRegardless];
 
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
-        context.duration = 0.22;
+        context.duration = [self animationDuration:0.22];
         self.window.animator.alphaValue = 1;
     } completionHandler:nil];
 
@@ -1286,12 +2366,15 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     }
 
     if (self.confirmMode) {
-        self.confirmTimeoutTimer = [NSTimer scheduledTimerWithTimeInterval:120.0
-                                                                   repeats:NO
-                                                                     block:^(NSTimer *timer) {
-            (void)timer;
-            [self finishConfirmation:NO];
-        }];
+        NSTimeInterval timeout = [self confirmationTimeout];
+        if (timeout > 0) {
+            self.confirmTimeoutTimer = [NSTimer scheduledTimerWithTimeInterval:timeout
+                                                                       repeats:NO
+                                                                         block:^(NSTimer *timer) {
+                (void)timer;
+                [self finishConfirmation:NO];
+            }];
+        }
     } else {
         self.sentinelTimer = [NSTimer scheduledTimerWithTimeInterval:1.5
                                                              repeats:YES
@@ -1310,9 +2393,15 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
+    [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:self];
     [self.sentinelTimer invalidate];
     [self.confirmTimeoutTimer invalidate];
     [self.progressTimer invalidate];
+    [self.overviewRefreshTimer invalidate];
+    if (self.statusItem) {
+        [NSStatusBar.systemStatusBar removeStatusItem:self.statusItem];
+        self.statusItem = nil;
+    }
     if (self.confirmMode && !self.confirmationAnswered) {
         [self writeConfirmation:NO];
     }
@@ -1320,6 +2409,37 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
     return self.setupMode;
+}
+
+- (BOOL)windowShouldClose:(NSWindow *)sender {
+    (void)sender;
+    if (self.overviewMode) {
+        [self.window orderOut:nil];
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        return NO;
+    }
+    if (self.setupMode) {
+        return YES;
+    }
+    if (self.completing) {
+        [NSApp terminate:nil];
+        return NO;
+    }
+    if (self.confirmMode) {
+        [self finishConfirmation:NO];
+        return NO;
+    }
+    [self minimizeWindow];
+    return NO;
+}
+
+- (BOOL)windowShouldMiniaturize:(NSWindow *)window {
+    (void)window;
+    if (self.setupMode || self.overviewMode) {
+        return YES;
+    }
+    [self minimizeWindow];
+    return NO;
 }
 
 - (void)minimizeWindow {
@@ -1330,7 +2450,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.hiddenByUser = YES;
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
-        context.duration = 0.18;
+        context.duration = [self animationDuration:0.18];
         self.window.animator.alphaValue = 0;
     } completionHandler:^{
         [self.window orderOut:nil];
@@ -1361,7 +2481,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     [NSApp activateIgnoringOtherApps:YES];
 
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
-        context.duration = 0.18;
+        context.duration = [self animationDuration:0.18];
         self.window.animator.alphaValue = 1;
     } completionHandler:^{
         if (!self.completing) {
@@ -1381,7 +2501,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     [self writeConfirmation:approved];
 
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
-        context.duration = 0.14;
+        context.duration = [self animationDuration:0.14];
         self.window.animator.alphaValue = 0;
     } completionHandler:^{
         [NSApp terminate:nil];
@@ -1401,13 +2521,67 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 }
 
 - (void)checkSentinel {
-    if (!self.sentinelPath.length) {
+    if (self.runStatePath.length) {
+        NSString *status = [self runStatusAtPath:self.runStatePath];
+        if ([status isEqualToString:@"running"]) {
+            return;
+        }
+        if ([status isEqualToString:@"pending"]) {
+            if ([self processIdentifierAtPathIsAlive:self.sentinelPath]) {
+                return;
+            }
+            [self showTerminalStateAndQuit:@"failure"];
+            return;
+        }
+        if ([status isEqualToString:@"failure"]) {
+            self.terminalFailureReason = [self runReasonAtPath:self.runStatePath];
+        }
+        if (![status isEqualToString:@"running"]) {
+            [self showTerminalStateAndQuit:status];
+        }
         return;
     }
 
-    if (![NSFileManager.defaultManager fileExistsAtPath:self.sentinelPath]) {
-        [self showCompletionAndQuit];
+    if (self.sentinelPath.length &&
+        ![NSFileManager.defaultManager fileExistsAtPath:self.sentinelPath]) {
+        [self showTerminalStateAndQuit:@"failure"];
     }
+}
+
+- (BOOL)processIdentifierAtPathIsAlive:(NSString *)path {
+    if (!path.length || ![NSFileManager.defaultManager fileExistsAtPath:path]) {
+        return NO;
+    }
+    NSString *content = [NSString stringWithContentsOfFile:path
+                                                  encoding:NSUTF8StringEncoding
+                                                     error:nil];
+    NSString *pid = [content stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSCharacterSet *nonDigits = NSCharacterSet.decimalDigitCharacterSet.invertedSet;
+    if (!pid.length || [pid rangeOfCharacterFromSet:nonDigits].location != NSNotFound || pid.integerValue <= 0) {
+        return NO;
+    }
+    errno = 0;
+    return kill((pid_t)pid.intValue, 0) == 0 || errno == EPERM;
+}
+
+- (NSString *)runReasonAtPath:(NSString *)path {
+    if (!path.length) {
+        return @"";
+    }
+    NSString *content = [NSString stringWithContentsOfFile:path
+                                                  encoding:NSUTF8StringEncoding
+                                                     error:nil];
+    NSDictionary<NSString *, NSString *> *values = [self parseProgressContent:content ?: @""];
+    NSString *reason = values[@"reason"] ?: @"";
+    NSSet<NSString *> *safeReasons = [NSSet setWithArray:@[@"destination_permission_denied"]];
+    return [safeReasons containsObject:reason] ? reason : @"";
+}
+
+- (NSString *)localizedTerminalDetailForReason:(NSString *)reason {
+    if ([reason isEqualToString:@"destination_permission_denied"]) {
+        return T(self.language ?: @"en", @"failedPermissionHint");
+    }
+    return T(self.language ?: @"en", @"failedHint");
 }
 
 - (NSDictionary<NSString *, NSString *> *)parseProgressContent:(NSString *)content {
@@ -1422,6 +2596,57 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
         values[key] = value;
     }
     return values;
+}
+
+- (NSString *)runStatusAtPath:(NSString *)path {
+    if (!path.length || ![NSFileManager.defaultManager fileExistsAtPath:path]) {
+        return @"pending";
+    }
+    NSString *content = [NSString stringWithContentsOfFile:path
+                                                  encoding:NSUTF8StringEncoding
+                                                     error:nil];
+    if (!content.length) {
+        return @"pending";
+    }
+    NSDictionary<NSString *, NSString *> *values = [self parseProgressContent:content ?: @""];
+    if (![values[@"protocol"] isEqualToString:@"1"]) {
+        return @"failure";
+    }
+    NSString *pid = values[@"pid"] ?: @"";
+    NSCharacterSet *nonDigits = NSCharacterSet.decimalDigitCharacterSet.invertedSet;
+    if (!pid.length) {
+        return @"pending";
+    }
+    if ([pid rangeOfCharacterFromSet:nonDigits].location != NSNotFound || pid.integerValue <= 0) {
+        return @"failure";
+    }
+    if ([values[@"status"] isEqualToString:@"success"] &&
+        [values[@"exit_code"] isEqualToString:@"0"]) {
+        return @"success";
+    }
+    NSSet<NSString *> *cancelExitCodes = [NSSet setWithArray:@[@"129", @"130", @"143"]];
+    if ([values[@"status"] isEqualToString:@"cancelled"] &&
+        [cancelExitCodes containsObject:values[@"exit_code"] ?: @""]) {
+        return @"cancelled";
+    }
+    NSSet<NSString *> *skipReasons = [NSSet setWithArray:@[@"already_running", @"user_declined"]];
+    if ([values[@"status"] isEqualToString:@"skipped"] &&
+        [skipReasons containsObject:values[@"reason"] ?: @""] &&
+        [values[@"exit_code"] isEqualToString:@"0"]) {
+        return @"skipped";
+    }
+    if ([values[@"status"] isEqualToString:@"failure"] &&
+        values[@"exit_code"].integerValue != 0) {
+        return @"failure";
+    }
+    if ([values[@"status"] isEqualToString:@"running"] && !values[@"exit_code"]) {
+        errno = 0;
+        if (kill((pid_t)pid.intValue, 0) == 0 || errno == EPERM) {
+            return @"running";
+        }
+        return @"failure";
+    }
+    return @"pending";
 }
 
 - (void)readProgressFile {
@@ -1461,6 +2686,50 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 }
 
 - (void)showCompletionAndQuit {
+    [self showTerminalStateAndQuit:@"success"];
+}
+
+- (NSString *)terminalAnnouncementForStatus:(NSString *)status {
+    if ([status isEqualToString:@"failure"] && self.terminalFailureReason.length) {
+        return [NSString stringWithFormat:@"%@ %@",
+                T(self.language ?: @"en", @"failed"),
+                [self localizedTerminalDetailForReason:self.terminalFailureReason]];
+    }
+    NSDictionary<NSString *, NSArray<NSString *> *> *keys = @{
+        @"success": @[@"completed", @"completedHint"],
+        @"failure": @[@"failed", @"failedHint"],
+        @"cancelled": @[@"cancelled", @"cancelledHint"],
+        @"skipped": @[@"skipped", @"skippedHint"]
+    };
+    NSArray<NSString *> *statusKeys = keys[status] ?: keys[@"failure"];
+    return [NSString stringWithFormat:@"%@ %@",
+            T(self.language ?: @"en", statusKeys[0]),
+            T(self.language ?: @"en", statusKeys[1])];
+}
+
+- (void)applyTerminalStatus:(NSString *)status toView:(TigerBackupView *)contentView {
+    NSSet<NSString *> *knownStatuses = [NSSet setWithArray:@[@"success", @"failure", @"cancelled", @"skipped"]];
+    NSString *resolvedStatus = [knownStatuses containsObject:status ?: @""] ? status : @"failure";
+    if ([resolvedStatus isEqualToString:@"failure"] && self.terminalFailureReason.length) {
+        contentView.terminalDetail = [self localizedTerminalDetailForReason:self.terminalFailureReason];
+    }
+    contentView.terminalStatus = resolvedStatus;
+    if ([resolvedStatus isEqualToString:@"success"]) {
+        contentView.progressPercent = 100;
+    }
+    contentView.needsDisplay = YES;
+    if (self.voiceOverEnabled) {
+        NSAccessibilityPostNotificationWithUserInfo(
+            contentView.statusLabel,
+            NSAccessibilityAnnouncementRequestedNotification,
+            @{
+                NSAccessibilityAnnouncementKey: [self terminalAnnouncementForStatus:resolvedStatus],
+                NSAccessibilityPriorityKey: @(NSAccessibilityPriorityHigh)
+            });
+    }
+}
+
+- (void)showTerminalStateAndQuit:(NSString *)status {
     if (self.completing) {
         return;
     }
@@ -1470,9 +2739,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.sentinelTimer = nil;
 
     TigerBackupView *contentView = (TigerBackupView *)self.window.contentView;
-    contentView.completed = YES;
-    contentView.progressPercent = 100;
-    contentView.needsDisplay = YES;
+    [self applyTerminalStatus:status toView:contentView];
 
     BOOL wasHidden = self.hiddenByUser || !self.window.isVisible;
     self.hiddenByUser = NO;
@@ -1486,23 +2753,26 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     }
 
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
-        context.duration = 0.22;
+        context.duration = [self animationDuration:0.22];
         self.window.animator.alphaValue = 1;
     } completionHandler:^{
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     }];
 
-    [NSTimer scheduledTimerWithTimeInterval:8.0
-                                    repeats:NO
-                                      block:^(NSTimer *timer) {
-        (void)timer;
-        [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
-            context.duration = 0.18;
-            self.window.animator.alphaValue = 0;
-        } completionHandler:^{
-            [NSApp terminate:nil];
+    NSTimeInterval displayDuration = [self terminalDisplayDuration];
+    if (displayDuration > 0) {
+        [NSTimer scheduledTimerWithTimeInterval:displayDuration
+                                        repeats:NO
+                                          block:^(NSTimer *timer) {
+            (void)timer;
+            [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
+                context.duration = [self animationDuration:0.18];
+                self.window.animator.alphaValue = 0;
+            } completionHandler:^{
+                [NSApp terminate:nil];
+            }];
         }];
-    }];
+    }
 }
 
 @end

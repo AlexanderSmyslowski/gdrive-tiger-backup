@@ -1,0 +1,159 @@
+#import <Cocoa/Cocoa.h>
+
+#define main GDTApplicationMain
+#import "../macos/GDriveBackupTiger/main.m"
+#undef main
+
+@interface SetupSafetyDelegate : AppDelegate
+@property(nonatomic, copy) NSDictionary<NSString *, NSString *> *testUpdates;
+@property(nonatomic, copy) NSDictionary<NSString *, NSString *> *testSavedConfig;
+@property(nonatomic) NSInteger saveCalls;
+@property(nonatomic) NSInteger launchCalls;
+@property(nonatomic) NSInteger dismissCalls;
+@property(nonatomic) BOOL launchSucceeds;
+@end
+
+@implementation SetupSafetyDelegate
+
+- (NSDictionary<NSString *, NSString *> *)currentSetupUpdates {
+    return self.testUpdates ?: @{};
+}
+
+- (NSDictionary<NSString *, NSString *> *)savedSetupConfig {
+    return self.testSavedConfig ?: @{};
+}
+
+- (BOOL)saveSetupValues {
+    self.saveCalls++;
+    return YES;
+}
+
+- (BOOL)launchBackupWithArgument:(NSString *)argument assumeYes:(BOOL)assumeYes {
+    (void)argument;
+    (void)assumeYes;
+    self.launchCalls++;
+    return self.launchSucceeds;
+}
+
+- (void)dismissSetupAfterBackupLaunch {
+    self.dismissCalls++;
+}
+
+@end
+
+static int failures = 0;
+
+static void Assert(BOOL condition, NSString *name) {
+    if (condition) {
+        printf("ok - %s\n", name.UTF8String);
+        return;
+    }
+    printf("not ok - %s\n", name.UTF8String);
+    failures++;
+}
+
+static SetupSafetyDelegate *Delegate(NSDictionary *saved, NSDictionary *updates) {
+    SetupSafetyDelegate *delegate = [[SetupSafetyDelegate alloc] init];
+    delegate.language = @"en";
+    delegate.statusField = [[NSTextField alloc] init];
+    delegate.testSavedConfig = saved;
+    delegate.testUpdates = updates;
+    delegate.launchSucceeds = YES;
+    return delegate;
+}
+
+int main(void) {
+    @autoreleasepool {
+        NSDictionary *saved = @{
+            @"GDRIVE_BACKUP_TARGET": @"apfs",
+            @"GDRIVE_BACKUP_SCHEDULE": @"manual",
+            @"GDRIVE_BACKUP_ENCRYPTION": @"none"
+        };
+        SetupSafetyDelegate *unsaved = Delegate(saved, @{
+            @"GDRIVE_BACKUP_TARGET": @"nas",
+            @"GDRIVE_BACKUP_SCHEDULE": @"manual",
+            @"GDRIVE_BACKUP_ENCRYPTION": @"none",
+            @"GDRIVE_BACKUP_NAS_MOUNT": @"/Volumes/Archive",
+            @"GDRIVE_BACKUP_NAS_URL": @"",
+            @"GDRIVE_BACKUP_NAS_SUBDIR": @"GoogleDrive-Backup",
+            @"GDRIVE_BACKUP_NAS_START_ON_MOUNT": @"0"
+        });
+        [unsaved startBackupNow:nil];
+        Assert(unsaved.saveCalls == 0 && unsaved.launchCalls == 0 &&
+               [unsaved.statusField.stringValue isEqualToString:T(@"en", @"statusUnsavedChanges")],
+               @"Backup now neither saves nor launches when setup changes are unsaved");
+
+        [unsaved startDryRun:nil];
+        Assert(unsaved.saveCalls == 0 && unsaved.launchCalls == 0,
+               @"check run also leaves unsaved setup untouched");
+
+        SetupSafetyDelegate *savedDelegate = Delegate(saved, saved);
+        [savedDelegate startBackupNow:nil];
+        [savedDelegate startBackupNow:nil];
+        Assert(savedDelegate.saveCalls == 0 && savedDelegate.launchCalls == 1 &&
+               savedDelegate.dismissCalls == 1 &&
+               [savedDelegate.statusField.stringValue isEqualToString:T(@"en", @"statusBackupPreparing")],
+               @"Backup now launches once, reports preparation, and dismisses setup once");
+
+        SetupSafetyDelegate *failedDelegate = Delegate(saved, saved);
+        failedDelegate.launchSucceeds = NO;
+        [failedDelegate startBackupNow:nil];
+        [failedDelegate startBackupNow:nil];
+        Assert(failedDelegate.launchCalls == 2 && failedDelegate.dismissCalls == 0,
+               @"failed launch keeps setup open and allows an explicit retry");
+
+        BOOL translated = YES;
+        for (NSString *language in SupportedLanguageCodes()) {
+            NSString *value = T(language, @"statusUnsavedChanges");
+            NSString *preparing = T(language, @"statusBackupPreparing");
+            translated = translated && value.length > 0 && ![value isEqualToString:@"statusUnsavedChanges"] &&
+                preparing.length > 0 && ![preparing isEqualToString:@"statusBackupPreparing"];
+        }
+        Assert(translated, @"backup start feedback is localized in all supported languages");
+
+        AppDelegate *previewDelegate = [[AppDelegate alloc] init];
+        previewDelegate.language = @"en";
+        previewDelegate.targetPopup = [[NSPopUpButton alloc] init];
+        [previewDelegate.targetPopup addItemWithTitle:@"External disk"];
+        previewDelegate.targetPopup.lastItem.representedObject = @"apfs";
+        [previewDelegate.targetPopup addItemWithTitle:@"NAS"];
+        previewDelegate.targetPopup.lastItem.representedObject = @"nas";
+        previewDelegate.schedulePopup = [[NSPopUpButton alloc] init];
+        [previewDelegate.schedulePopup addItemWithTitle:@"Manual"];
+        previewDelegate.schedulePopup.lastItem.representedObject = @"manual";
+        previewDelegate.encryptionCheckbox = [[NSButton alloc] init];
+        previewDelegate.nasMountField = [[NSTextField alloc] init];
+        previewDelegate.nasURLField = [[NSTextField alloc] init];
+        previewDelegate.nasSubdirField = [[NSTextField alloc] init];
+        previewDelegate.nasSubdirField.stringValue = @"GoogleDrive-Backup";
+        previewDelegate.destinationPreviewField = [[NSTextField alloc] init];
+        previewDelegate.configuredAPFSVolumePath = @"/Volumes/Exact Backup Disk";
+        [previewDelegate updateDestinationPreview];
+        Assert([previewDelegate.destinationPreviewField.stringValue isEqualToString:@"/Volumes/Exact Backup Disk"] &&
+               [previewDelegate.destinationPreviewField.toolTip isEqualToString:@"/Volumes/Exact Backup Disk"] &&
+               [previewDelegate.destinationPreviewField.accessibilityLabel containsString:@"Exact Backup Disk"],
+               @"setup always shows the exact saved external destination in full semantics");
+
+        [previewDelegate.targetPopup selectItemAtIndex:1];
+        previewDelegate.nasMountField.stringValue = @"/Volumes/Archive";
+        [previewDelegate updateDestinationPreview];
+        Assert([previewDelegate.destinationPreviewField.stringValue isEqualToString:@"/Volumes/Archive/GoogleDrive-Backup"],
+               @"destination preview follows the selected NAS mount and folder");
+
+        BOOL destinationLabelTranslated = YES;
+        for (NSString *language in SupportedLanguageCodes()) {
+            NSString *value = T(language, @"destinationPreview");
+            destinationLabelTranslated = destinationLabelTranslated &&
+                value.length > 0 && ![value isEqualToString:@"destinationPreview"];
+        }
+        Assert(destinationLabelTranslated,
+               @"exact destination label is localized in all supported languages");
+    }
+
+    if (failures > 0) {
+        printf("%d setup safety test(s) failed.\n", failures);
+        return 1;
+    }
+    printf("All setup safety tests passed.\n");
+    return 0;
+}

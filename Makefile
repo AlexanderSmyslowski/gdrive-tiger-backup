@@ -2,6 +2,7 @@ APP_DIR := /Applications/GDrive Backup Tiger.app
 APP_SOURCES := \
 	macos/GDriveBackupTiger/main.m \
 	macos/GDriveBackupTiger/ConfigSupport.m \
+	macos/GDriveBackupTiger/BackupStatusSupport.m \
 	macos/GDriveBackupTiger/Localization.m
 OBJC_FLAGS := -fobjc-arc -Wall -Wextra -Werror
 MACOS_DEPLOYMENT_TARGET ?= 13.0
@@ -19,6 +20,7 @@ build:
 		"$$ICON_WORK/IconGenerator" "$$ICON_WORK/AppIcon.iconset"; \
 		iconutil -c icns "$$ICON_WORK/AppIcon.iconset" -o "$(APP_DIR)/Contents/Resources/AppIcon.icns"; \
 		./scripts/trash-path.sh "$$ICON_WORK"
+	xattr -cr "$(APP_DIR)"
 	codesign --force --deep --sign - "$(APP_DIR)"
 
 install:
@@ -31,12 +33,56 @@ pkg:
 	./packaging/build-pkg.sh
 
 test:
+	bash tests/app-launch-status-test.sh
 	bash tests/app-trash-mode-test.sh
 	bash tests/backup-control-test.sh
 	bash tests/backup-encryption-test.sh
+	bash tests/backup-outcome-test.sh
 	bash tests/backup-versioning-test.sh
 	bash tests/encryption-ui-test.sh
+	bash tests/launch-agent-safety-test.sh
 	bash tests/release-metadata-test.sh
+	@RUN_STATE_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-run-state-test.XXXXXX")"; \
+		clang $(OBJC_FLAGS) -framework Cocoa -I macos/GDriveBackupTiger \
+			tests/run-state-ui-test.m macos/GDriveBackupTiger/ConfigSupport.m \
+			macos/GDriveBackupTiger/BackupStatusSupport.m \
+			macos/GDriveBackupTiger/Localization.m -o "$$RUN_STATE_TEST_BIN"; \
+		"$$RUN_STATE_TEST_BIN"; \
+		./scripts/trash-path.sh "$$RUN_STATE_TEST_BIN"
+	@ACCESSIBILITY_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-accessibility-test.XXXXXX")"; \
+		clang $(OBJC_FLAGS) -framework Cocoa -I macos/GDriveBackupTiger \
+			tests/tiger-accessibility-test.m macos/GDriveBackupTiger/ConfigSupport.m \
+			macos/GDriveBackupTiger/BackupStatusSupport.m \
+			macos/GDriveBackupTiger/Localization.m -o "$$ACCESSIBILITY_TEST_BIN"; \
+		"$$ACCESSIBILITY_TEST_BIN"; \
+		./scripts/trash-path.sh "$$ACCESSIBILITY_TEST_BIN"
+	@STATUS_SUPPORT_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-status-support-test.XXXXXX")"; \
+		clang $(OBJC_FLAGS) -framework Foundation -I macos/GDriveBackupTiger \
+			tests/status-support-test.m macos/GDriveBackupTiger/BackupStatusSupport.m \
+			-o "$$STATUS_SUPPORT_TEST_BIN"; \
+		"$$STATUS_SUPPORT_TEST_BIN"; \
+		./scripts/trash-path.sh "$$STATUS_SUPPORT_TEST_BIN"
+	@OVERVIEW_UI_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-overview-ui-test.XXXXXX")"; \
+		clang $(OBJC_FLAGS) -framework Cocoa -I macos/GDriveBackupTiger \
+			tests/overview-ui-test.m macos/GDriveBackupTiger/ConfigSupport.m \
+			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/Localization.m \
+			-o "$$OVERVIEW_UI_TEST_BIN"; \
+		"$$OVERVIEW_UI_TEST_BIN"; \
+		./scripts/trash-path.sh "$$OVERVIEW_UI_TEST_BIN"
+	@SETUP_SAFETY_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-setup-safety-test.XXXXXX")"; \
+		clang $(OBJC_FLAGS) -framework Cocoa -I macos/GDriveBackupTiger \
+			tests/setup-safety-test.m macos/GDriveBackupTiger/ConfigSupport.m \
+			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/Localization.m \
+			-o "$$SETUP_SAFETY_TEST_BIN"; \
+		"$$SETUP_SAFETY_TEST_BIN"; \
+		./scripts/trash-path.sh "$$SETUP_SAFETY_TEST_BIN"
+	@MOUNT_TRIGGER_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-mount-trigger-test.XXXXXX")"; \
+		clang $(OBJC_FLAGS) -framework Cocoa -I macos/GDriveBackupTiger \
+			tests/mount-trigger-test.m macos/GDriveBackupTiger/ConfigSupport.m \
+			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/Localization.m \
+			-o "$$MOUNT_TRIGGER_TEST_BIN"; \
+		"$$MOUNT_TRIGGER_TEST_BIN"; \
+		./scripts/trash-path.sh "$$MOUNT_TRIGGER_TEST_BIN"
 	bash tests/trash-path-test.sh
 	bash tests/window-behavior-test.sh
 	@CONFIG_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-config-test.XXXXXX")"; \

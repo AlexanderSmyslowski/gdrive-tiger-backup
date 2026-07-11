@@ -126,6 +126,10 @@ static BOOL GDTAppendANSIEscape(NSMutableData *decoded, NSString *value, NSUInte
 }
 
 NSString *GDTConfigPath(void) {
+    const char *override = getenv("GDRIVE_BACKUP_CONFIG");
+    if (override && override[0] != '\0') {
+        return [NSString stringWithUTF8String:override];
+    }
     return [NSHomeDirectory() stringByAppendingPathComponent:@".config/gdrive-tiger-backup/config"];
 }
 

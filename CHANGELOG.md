@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## v1.6.1 - 2026-07-11
+
+- Show the real progress window as soon as a manual run owns the backup lock, before slow remote and destination checks.
+- Close the setup window after a successful launch, block duplicate clicks there, and keep it open when the process cannot be launched.
+- Treat transiently missing or partial run-state reads as pending while the verified owner process is alive, preventing premature failure screens.
+- Serialize NAS writes and disable multi-threaded destination streams for compatibility with SMB servers that reject concurrent file and directory creation.
+- Classify destination permission failures without persisting private paths and show a specific localized permissions explanation.
+- Open setup only on a first package installation; upgrades keep the single refreshed menu bar controller instead of launching a duplicate overview process.
+
+## v1.6.0 - 2026-07-11
+
+- Add a persistent overview and menu bar controller showing the last verified run, next configured schedule, exact destination, and destination capacity.
+- Replace the broad launchd `StartOnMount` job with exact-volume mount handling in the menu bar controller, including duplicate-event debouncing.
+- Stop `Backup now` and `Check backup` from silently saving edited setup values; unsaved changes now block the action with a localized explanation.
+- Show the full resolved external-disk or NAS destination in setup and preserve it for VoiceOver and pointer users even when visually truncated.
+- Persist a private, atomic last-run summary with explicit running, success, failure, and cancellation state for the overview.
+- Use native close, minimize, buttons, text, progress, keyboard focus, VoiceOver announcements, and Reduce Motion behavior while retaining the Tiger visual signature.
+
 - Preserve overwritten destination files in timestamped `.gdrive-versions` trees by default, with an explicit opt-out.
 - Thin successful version runs with a Time Machine-like hourly, daily, and weekly cadence; coalesce sparse per-file deltas before moving retired runs to recoverable Trash or retriable quarantine.
 - Let ordinary progress windows fall behind other applications while keeping confirmation prompts visible.

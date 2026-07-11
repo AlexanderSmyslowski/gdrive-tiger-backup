@@ -119,6 +119,15 @@ if [[ ! -d "$ANIMATION_APP" && -d "$HOME/Applications/GDrive Backup Tiger.app" ]
 fi
 ANIMATION_SENTINEL=""
 PROGRESS_FILE=""
+RUN_STATE_FILE="${GDRIVE_BACKUP_RUN_STATE_FILE:-}"
+RUN_STATE_IS_TEMP=0
+RUN_STATE_OVERRIDE=""
+RUN_OUTCOME="failure"
+RUN_STATE_REASON=""
+RUN_STATE_SIGNAL=""
+SUMMARY_STATE_FILE="${GDRIVE_BACKUP_SUMMARY_STATE_FILE:-$HOME/Library/Application Support/GDrive Backup Tiger/last-run.status}"
+RUN_STARTED_AT=0
+OPEN_BIN="${GDRIVE_BACKUP_OPEN_BIN:-/usr/bin/open}"
 CONFIRM_BACKUP="${GDRIVE_BACKUP_CONFIRM:-1}"
 AUTO_CREATE_VOLUME="${GDRIVE_BACKUP_AUTO_CREATE_VOLUME:-1}"
 BACKUP_LANG="${GDRIVE_BACKUP_LANG:-auto}"
@@ -917,6 +926,71 @@ write_progress() {
   } >"$tmp" && mv -f "$tmp" "$PROGRESS_FILE"
 }
 
+write_run_state() {
+  [[ -n "$RUN_STATE_FILE" ]] || return 0
+
+  local status="$1"
+  local exit_code="${2:-}"
+  local tmp="${RUN_STATE_FILE}.$$"
+  {
+    printf 'protocol=1\n'
+    printf 'status=%s\n' "$status"
+    printf 'pid=%s\n' "$$"
+    [[ -n "$RUN_STATE_REASON" ]] && printf 'reason=%s\n' "$RUN_STATE_REASON"
+    [[ -n "$RUN_STATE_SIGNAL" ]] && printf 'signal=%s\n' "$RUN_STATE_SIGNAL"
+    [[ -n "$exit_code" ]] && printf 'exit_code=%s\n' "$exit_code"
+  } >"$tmp" && mv -f "$tmp" "$RUN_STATE_FILE"
+}
+
+write_last_run_summary() {
+  local status="$1"
+  local exit_code="${2:-}"
+  local summary_dir tmp finished_at
+
+  [[ "$DRY_RUN" == "0" && "$SETUP_UI" == "0" ]] || return 0
+  # A lock-contended process did not perform a backup and must not replace the
+  # status of the process that actually owns the destination.
+  [[ "$status" != "skipped" ]] || return 0
+  [[ -n "$SUMMARY_STATE_FILE" ]] || return 0
+
+  summary_dir="${SUMMARY_STATE_FILE%/*}"
+  [[ "$summary_dir" != "$SUMMARY_STATE_FILE" ]] || summary_dir="."
+  (umask 077 && mkdir -p "$summary_dir") || return 0
+  tmp="${SUMMARY_STATE_FILE}.$$"
+  finished_at="$(date +%s 2>/dev/null || printf '0')"
+
+  if (umask 077 && {
+    printf 'protocol=1\n'
+    printf 'status=%s\n' "$status"
+    printf 'pid=%s\n' "$$"
+    printf 'started_at=%s\n' "$RUN_STARTED_AT"
+    if [[ "$status" != "running" ]]; then
+      printf 'finished_at=%s\n' "$finished_at"
+    fi
+    [[ -n "$exit_code" ]] && printf 'exit_code=%s\n' "$exit_code"
+    [[ -n "$RUN_STATE_REASON" ]] && printf 'reason=%s\n' "$(progress_escape "$RUN_STATE_REASON")"
+    [[ -n "$RUN_STATE_SIGNAL" ]] && printf 'signal=%s\n' "$(progress_escape "$RUN_STATE_SIGNAL")"
+    printf 'trigger=%s\n' "$(progress_escape "$BACKUP_TRIGGER")"
+    printf 'target=%s\n' "$(progress_escape "$BACKUP_TARGET")"
+    printf 'destination=%s\n' "$(progress_escape "$DEST_ROOT")"
+  } >"$tmp") && chmod 600 "$tmp" && mv -f "$tmp" "$SUMMARY_STATE_FILE"; then
+    return 0
+  fi
+
+  cleanup_temp_file "$tmp"
+  return 0
+}
+
+finish_run_state() {
+  local exit_status="$1"
+  local status="$RUN_OUTCOME"
+  if [[ "$RUN_STATE_OVERRIDE" == "cancelled" ]]; then
+    status="cancelled"
+  fi
+  write_run_state "$status" "$exit_status"
+  write_last_run_summary "$status" "$exit_status"
+}
+
 update_progress_from_rclone_line() {
   local label="$1"
   local phase="$2"
@@ -940,12 +1014,25 @@ run_rclone_with_progress() {
   local phase="$2"
   shift 2
 
-  local line status
+  local line status error_class_file="" error_class=""
+  error_class_file="$(mktemp "${TMPDIR:-/tmp}/gdrive-backup-error-class.XXXXXX")" || true
   "$@" 2>&1 | while IFS= read -r line; do
     printf '%s\n' "$line"
     update_progress_from_rclone_line "$label" "$phase" "$line"
+    if [[ -n "$error_class_file" && "$line" == *"Failed to copy:"* &&
+          ( "$line" == *"permission denied"* || "$line" == *"Permission denied"* ||
+            "$line" == *"access denied"* || "$line" == *"Access denied"* ) ]]; then
+      printf 'destination_permission_denied\n' >"$error_class_file"
+    fi
   done
   status=${PIPESTATUS[0]}
+  if [[ "$status" != "0" && -n "$error_class_file" ]]; then
+    IFS= read -r error_class <"$error_class_file" || true
+    if [[ -n "$error_class" ]]; then
+      RUN_STATE_REASON="$error_class"
+    fi
+  fi
+  cleanup_temp_file "$error_class_file"
   return "$status"
 }
 
@@ -973,7 +1060,19 @@ start_animation() {
     write_progress "Google Drive Backup" "" "$(t progress_preparing)" ""
   fi
 
-  if /usr/bin/open -n "$ANIMATION_APP" --args "$ANIMATION_SENTINEL" "$PROGRESS_FILE" >/dev/null 2>&1; then
+  if [[ -z "$RUN_STATE_FILE" ]]; then
+    RUN_STATE_FILE="$(mktemp "${TMPDIR:-/tmp}/gdrive-backup-state.XXXXXX")" || {
+      log "WARNUNG: Ergebnisdatei fuer Backup-Animation konnte nicht angelegt werden."
+      cleanup_temp_file "$ANIMATION_SENTINEL" "$PROGRESS_FILE"
+      ANIMATION_SENTINEL=""
+      PROGRESS_FILE=""
+      return
+    }
+    RUN_STATE_IS_TEMP=1
+  fi
+  write_run_state "running"
+
+  if "$OPEN_BIN" -n "$ANIMATION_APP" --args "$ANIMATION_SENTINEL" "$PROGRESS_FILE" "$RUN_STATE_FILE" >/dev/null 2>&1; then
     log "Backup-Animation gestartet."
   else
     log "WARNUNG: Backup-Animation konnte nicht gestartet werden."
@@ -981,6 +1080,11 @@ start_animation() {
     ANIMATION_SENTINEL=""
     cleanup_temp_file "$PROGRESS_FILE"
     PROGRESS_FILE=""
+    if [[ "$RUN_STATE_IS_TEMP" == "1" ]]; then
+      cleanup_temp_file "$RUN_STATE_FILE"
+      RUN_STATE_FILE=""
+      RUN_STATE_IS_TEMP=0
+    fi
   fi
 }
 
@@ -996,7 +1100,22 @@ stop_animation() {
 }
 
 cleanup() {
+  local exit_status="$1"
+  # Publish the terminal result before the sentinel disappears, so the UI can
+  # never infer success merely from process cleanup.
+  finish_run_state "$exit_status"
   stop_animation
+}
+
+on_exit() {
+  local exit_status=$?
+  cleanup "$exit_status"
+}
+
+cancel_run() {
+  RUN_STATE_OVERRIDE="cancelled"
+  RUN_STATE_SIGNAL="$2"
+  exit "$1"
 }
 
 run_with_timeout() {
@@ -1048,7 +1167,7 @@ confirm_prompt() {
     }
     : >"$response"
 
-    if /usr/bin/open -W -n "$ANIMATION_APP" --args --confirm "$title" "$detail" "$primary_button" "$secondary_button" "$response" >/dev/null 2>&1; then
+    if "$OPEN_BIN" -W -n "$ANIMATION_APP" --args --confirm "$title" "$detail" "$primary_button" "$secondary_button" "$response" >/dev/null 2>&1; then
       decision="$(tr -d '\r\n' <"$response" 2>/dev/null || true)"
     fi
     cleanup_temp_file "$response"
@@ -1331,6 +1450,13 @@ for arg in "$@"; do
   esac
 done
 
+RUN_STARTED_AT="$(date +%s 2>/dev/null || printf '0')"
+write_run_state "running"
+trap on_exit EXIT
+trap 'cancel_run 129 HUP' HUP
+trap 'cancel_run 130 INT' INT
+trap 'cancel_run 143 TERM' TERM
+
 if ! validate_versioning_config; then
   exit 64
 fi
@@ -1364,7 +1490,17 @@ done
 exec 9>"$LOCK"
 if ! flock -n 9; then
   log "Backup laeuft bereits; ueberspringe."
+  RUN_OUTCOME="skipped"
+  RUN_STATE_REASON="already_running"
   exit 0
+fi
+
+# Owning the lock is the first reliable point at which this process is the
+# actual backup run. Publish that fact before network and destination checks,
+# which can otherwise make a manual click appear to do nothing for minutes.
+if [[ "$CONFIRM_BACKUP" == "0" || "${BACKUP_ASSUME_YES:-0}" == "1" || "$TARGET_APPROVED" == "1" ]]; then
+  write_last_run_summary "running"
+  start_animation
 fi
 
 if ! ensure_backup_target; then
@@ -1386,8 +1522,11 @@ if ! rclone config show "$REMOTE" >/dev/null 2>&1; then
 fi
 
 if ! confirm_backup_target; then
+  RUN_OUTCOME="skipped"
+  RUN_STATE_REASON="user_declined"
   exit 0
 fi
+write_last_run_summary "running"
 
 if [[ "$DRY_RUN" == "0" ]]; then
   if ! mkdir -p "$DEST_ROOT"; then
@@ -1415,11 +1554,9 @@ else
   log "Dateiversionierung ist deaktiviert."
 fi
 
-start_animation
-trap cleanup EXIT
-trap 'cleanup; exit 129' HUP
-trap 'cleanup; exit 130' INT
-trap 'cleanup; exit 143' TERM
+if [[ -z "$ANIMATION_SENTINEL" ]]; then
+  start_animation
+fi
 
 RCLONE_OPTS=(
   --drive-export-formats "docx,xlsx,pptx"
@@ -1429,6 +1566,13 @@ RCLONE_OPTS=(
   --retries 3
   --low-level-retries 10
 )
+
+if [[ "$BACKUP_TARGET" == "nas" ]]; then
+  # Several SMB implementations reject concurrent opens or overlapping
+  # directory creation even though the mount reports itself writable. A NAS
+  # backup favors a slower, deterministic stream over an incomplete copy.
+  RCLONE_OPTS+=(--multi-thread-streams 0 --transfers 1)
+fi
 
 if [[ "$ENCRYPTION" == "apfs" ]]; then
   RCLONE_OPTS+=(--one-file-system)
@@ -1555,4 +1699,5 @@ else
   log "Versionsaufbewahrung uebersprungen, weil Dateiversionierung deaktiviert ist."
 fi
 
+RUN_OUTCOME="success"
 log "Fertig ohne Fehler."

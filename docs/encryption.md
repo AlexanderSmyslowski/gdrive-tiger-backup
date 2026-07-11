@@ -54,7 +54,7 @@ GDRIVE_BACKUP_ENCRYPTION=apfs
 Use a reliable connection and always eject the image cleanly.
 
 Mount-triggered jobs intentionally treat a missing configured volume as a
-no-op because macOS fires `StartOnMount` for unrelated disks too. Manual and
+no-op because unrelated disk events must never select a NAS target. Manual and
 scheduled runs report a missing or locked encrypted volume as an error.
 
 `rclone crypt` is also a strong fit for NAS storage: it can encrypt file data

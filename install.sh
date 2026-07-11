@@ -205,6 +205,7 @@ clang -fobjc-arc -Wall -Wextra -mmacosx-version-min=13.0 \
   -arch arm64 -arch x86_64 -framework Cocoa \
   "$ROOT/macos/GDriveBackupTiger/main.m" \
   "$ROOT/macos/GDriveBackupTiger/ConfigSupport.m" \
+  "$ROOT/macos/GDriveBackupTiger/BackupStatusSupport.m" \
   "$ROOT/macos/GDriveBackupTiger/Localization.m" \
   -o "$APP_CONTENTS/MacOS/GDriveBackupTiger"
 
@@ -215,6 +216,7 @@ clang -fobjc-arc -Wall -Wextra -framework Cocoa "$ROOT/macos/GDriveBackupTiger/I
 iconutil -c icns "$ICON_WORK/AppIcon.iconset" -o "$APP_CONTENTS/Resources/AppIcon.icns"
 "$ROOT/scripts/trash-path.sh" "$ICON_WORK"
 
+/usr/bin/xattr -cr "$APP_DIR"
 codesign --force --deep --sign - "$APP_DIR" >/dev/null
 
 sudo install -m 755 "$ROOT/bin/backup-google-drive.sh" /usr/local/bin/backup-google-drive.sh
@@ -223,7 +225,6 @@ install -m 644 "$AGENT_SRC" "$AGENT_DST"
 /usr/libexec/PlistBuddy -c 'Add :EnvironmentVariables dict' "$AGENT_DST"
 /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:HOME string $HOME" "$AGENT_DST"
 /usr/libexec/PlistBuddy -c 'Add :EnvironmentVariables:PATH string /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin' "$AGENT_DST"
-/usr/libexec/PlistBuddy -c 'Add :EnvironmentVariables:GDRIVE_BACKUP_TRIGGER string mount' "$AGENT_DST"
 
 launchctl bootout "gui/$(id -u)" "$AGENT_DST" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$AGENT_DST"

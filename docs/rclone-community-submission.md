@@ -12,7 +12,7 @@ Suggested location: after `rclone_jobber` on the third-party integrations page.
 ```markdown
 ## GDrive Tiger Backup
 
-[GDrive Tiger Backup](https://github.com/AlexanderSmyslowski/gdrive-tiger-backup) is an open-source macOS helper for creating local Google Drive backups with rclone. It supports external disks via launchd `StartOnMount`, NAS/network destinations, scheduled backups, Google Docs/Sheets/Slides export, and a small multilingual Mac OS X Tiger-style setup/status UI. It uses `rclone copy`, so it does not delete or modify files in Google Drive.
+[GDrive Tiger Backup](https://github.com/AlexanderSmyslowski/gdrive-tiger-backup) is an open-source macOS helper for creating local Google Drive backups with rclone. It supports exact-volume-aware external disk events, NAS/network destinations, scheduled backups, Google Docs/Sheets/Slides export, and a small multilingual Mac OS X Tiger-style overview/setup UI. It uses `rclone copy`, so it does not delete or modify files in Google Drive.
 ```
 
 ## Forum post
@@ -40,7 +40,7 @@ What it does:
 - backs up My Drive, Shared Drives, and "Shared with me"
 - exports Google Docs, Sheets, and Slides as docx/xlsx/pptx
 - uses `rclone copy`, so it does not delete or modify files in Google Drive
-- supports external disks through a launchd `StartOnMount` agent
+- supports external disks through an exact-target mount observer in its menu bar controller
 - supports NAS/network destinations and scheduled backups
 - includes a small multilingual Mac OS X Tiger-style setup/status app for macOS
 

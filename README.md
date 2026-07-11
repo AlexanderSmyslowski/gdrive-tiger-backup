@@ -4,7 +4,7 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window. “Tiger” describes the visual style; the app requires macOS 13 Ventura or later and does not run on Mac OS X 10.4 Tiger.
 
-Current release: `v1.5.0` with a downloadable macOS installer package, a normal macOS menu bar, settings, and language selection.
+Current release: `v1.6.1` with a downloadable macOS installer package, a persistent backup overview, a menu bar status, settings, and language selection.
 
 It backs up:
 
@@ -17,19 +17,19 @@ The backup is read-only from Google Drive's perspective. It uses `rclone copy`, 
 
 ## How It Works
 
-- A user LaunchAgent starts on every volume mount via `StartOnMount`.
-- The shell script checks whether the configured backup volume exists.
+- A user LaunchAgent starts the lightweight menu bar controller at login.
+- The controller observes macOS mount events and reacts only when the exact saved APFS backup volume was newly mounted. Unrelated disks and NAS mounts are ignored.
+- The overview shows the last verified run, configured schedule, exact local destination, and available destination capacity.
 - On first use, if the backup volume does not exist yet, the helper can ask to create a dedicated APFS volume on the newly attached external APFS disk.
 - In parallel, the setup window can configure a mounted NAS share, for example SMB, AFP, or NFS under `/Volumes`.
-- The setup window can select already mounted NAS shares, run a small Bonjour search, save a schedule, and start a backup manually.
+- The setup window can select already mounted NAS shares, run a small Bonjour search, show the exact resolved destination, save a schedule, and start a backup manually. Backup actions never save edited form values implicitly.
 - A `flock` lock prevents two backup jobs from running at the same time.
 - Before a real backup starts, the Tiger helper asks whether this volume or NAS destination should be used.
 - External disks and NAS targets are independent: plugging in the configured external disk still opens the confirmation dialog even when NAS backups are configured.
 - The native AppKit helper appears while the backup runs, but uses the normal
   window level so other apps can cover it.
 - During each `rclone copy`, the helper shows live progress, percent, transferred size, speed, and ETA when rclone reports it.
-- The yellow Tiger-style button minimizes the helper into the Dock.
-- Clicking the Dock icon restores the helper.
+- Native close and minimize controls behave like standard macOS controls; closing the overview leaves its menu bar status available.
 - When the backup finishes, the helper briefly shows completion without taking
   focus from the app currently in use.
 
@@ -72,7 +72,7 @@ rclone lsd gdrive:
 For most users, download the latest installer from the GitHub releases page:
 
 1. Open <https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/latest>
-2. Download `GDrive-Backup-Tiger-1.5.0.pkg` from `Assets`.
+2. Download `GDrive-Backup-Tiger-1.6.1.pkg` from `Assets`.
 3. Double-click the package and follow the macOS Installer.
 4. Open `/Applications/GDrive Backup Tiger.app` to choose language, external disk, NAS, and schedule settings.
 
@@ -86,13 +86,13 @@ The package is currently unsigned because the project does not yet have an Apple
 
 1. Click `Done`, not `Move to Trash`.
 2. Open `System Settings > Privacy & Security`.
-3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-1.5.0.pkg`.
+3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-1.6.1.pkg`.
 4. Confirm with `Open Anyway`, then install the package.
 
 Advanced users can also remove the download quarantine flag before opening:
 
 ```bash
-xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-1.5.0.pkg"
+xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-1.6.1.pkg"
 ```
 
 ### Install from source
@@ -287,7 +287,7 @@ Time Machine backup volumes can be protected by macOS ACLs. If the root of your 
 
 The built-in first-use setup does exactly that for APFS disks after confirmation. For non-APFS disks, create or format a suitable APFS volume yourself first.
 
-Thunderbolt, USB, SD-card, and other directly attached disks are all just mounted volumes to macOS, so the `StartOnMount` agent can handle them. NAS and Ethernet storage usually appear as network volumes under `/Volumes`; because they may stay mounted for a long time, NAS backups default to manual or scheduled starts instead of running on every unrelated mount event. These modes can be used together: external-disk backups remain mount-triggered, while NAS backups run from the app or schedule.
+Thunderbolt, USB, SD-card, and other directly attached disks appear as mounted volumes to macOS. The menu bar controller compares each mount notification with the exact saved APFS destination before offering a backup, so unrelated media cannot trigger repeated prompts. NAS and Ethernet storage usually appear as network volumes under `/Volumes`; because they may stay mounted for a long time, NAS backups use manual or scheduled starts. These modes can be used together: the saved external disk remains mount-aware, while NAS backups run from the app or schedule.
 
 ## rclone Community
 

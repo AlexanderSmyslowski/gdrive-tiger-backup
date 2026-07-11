@@ -30,6 +30,12 @@ static NSString *RunBashAndReadValue(NSString *configPath, NSString *key) {
 
 int main(void) {
     @autoreleasepool {
+        NSString *overridePath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"gdrive-config-override"];
+        setenv("GDRIVE_BACKUP_CONFIG", overridePath.UTF8String, 1);
+        AssertEqual(GDTConfigPath(), overridePath,
+                    @"the app must honor the same config override as the backup engine");
+        unsetenv("GDRIVE_BACKUP_CONFIG");
+
         NSString *roundTripValue = @"Client's \\Archive\\2026 $(untouched)";
         NSString *quoted = GDTShellQuote(roundTripValue);
         AssertEqual(quoted,
