@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## v1.8.0 - 2026-07-12
+
+- Add a native restore browser reachable from both the overview and menu bar.
+- Merge the live backup with sparse retained version trees so deleted or replaced files remain discoverable without presenting them as full snapshots.
+- List the current copy and every actually available older copy newest-first, with localized dates and sizes.
+- Restore only to a user-selected folder outside the backup tree, preserve existing files with a new name, and never overwrite silently.
+- Verify the source before and after copying and compare the restored file with SHA-256 before publishing it under its final name.
+- Reject traversal, symbolic links, sources outside the configured backup, retired quarantine data, and destinations inside the independent backup.
+- Provide native keyboard and VoiceOver navigation, explicit loading and empty states, and a Finder reveal action after verified recovery.
+
 ## v1.7.0 - 2026-07-11
 
 - Add an in-app system check for required tools, the configured Google Drive remote, and the exact local or NAS destination.

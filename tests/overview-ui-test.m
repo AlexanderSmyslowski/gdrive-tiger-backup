@@ -64,19 +64,35 @@ int main(void) {
                [view.storageValueLabel.stringValue isEqualToString:@"812 GB free of 2 TB"],
                @"overview applies one shared snapshot without losing values");
 
-        Assert(view.backupButton != nil && view.settingsButton != nil &&
+        SEL restoreButtonSelector = NSSelectorFromString(@"restoreButton");
+        NSButton *restoreButton = nil;
+        if ([view respondsToSelector:restoreButtonSelector]) {
+            typedef NSButton *(*ButtonMethod)(id, SEL);
+            ButtonMethod buttonMethod = (ButtonMethod)[view methodForSelector:restoreButtonSelector];
+            restoreButton = buttonMethod(view, restoreButtonSelector);
+        }
+        Assert(view.backupButton != nil && view.settingsButton != nil && restoreButton != nil &&
                [view.backupButton.keyEquivalent isEqualToString:@"\r"] &&
                [view.backupButton.accessibilityRole isEqualToString:NSAccessibilityButtonRole] &&
-               [view.settingsButton.accessibilityRole isEqualToString:NSAccessibilityButtonRole],
+               [view.settingsButton.accessibilityRole isEqualToString:NSAccessibilityButtonRole] &&
+               [restoreButton.accessibilityRole isEqualToString:NSAccessibilityButtonRole],
                @"overview actions use native keyboard and VoiceOver controls");
 
         __block NSInteger backupActions = 0;
         __block NSInteger settingsActions = 0;
+        __block NSInteger restoreActions = 0;
         view.backupHandler = ^{ backupActions++; };
         view.settingsHandler = ^{ settingsActions++; };
+        SEL setRestoreHandlerSelector = NSSelectorFromString(@"setRestoreHandler:");
+        if ([view respondsToSelector:setRestoreHandlerSelector]) {
+            typedef void (*SetHandlerMethod)(id, SEL, id);
+            SetHandlerMethod setHandler = (SetHandlerMethod)[view methodForSelector:setRestoreHandlerSelector];
+            setHandler(view, setRestoreHandlerSelector, [^{ restoreActions++; } copy]);
+        }
         [view.backupButton performClick:nil];
         [view.settingsButton performClick:nil];
-        Assert(backupActions == 1 && settingsActions == 1,
+        [restoreButton performClick:nil];
+        Assert(backupActions == 1 && settingsActions == 1 && restoreActions == 1,
                @"overview actions fire exactly once");
 
         NSString *successGlyph = view.statusSymbolLabel.stringValue;
@@ -137,8 +153,9 @@ int main(void) {
         BOOL actionTitlesFit = YES;
         for (NSString *language in SupportedLanguageCodes()) {
             view.language = language;
-            actionTitlesFit = actionTitlesFit &&
+            actionTitlesFit = actionTitlesFit && restoreButton != nil &&
                 view.settingsButton.frame.size.width >= ceil(view.settingsButton.cell.cellSize.width) &&
+                restoreButton.frame.size.width >= ceil(restoreButton.cell.cellSize.width) &&
                 view.backupButton.frame.size.width >= ceil(view.backupButton.cell.cellSize.width);
         }
         Assert(actionTitlesFit,
@@ -201,12 +218,27 @@ int main(void) {
         NSArray<NSString *> *menuTitles = [statusMenu.itemArray valueForKey:@"title"];
         Assert([menuTitles containsObject:T(@"en", @"overviewOpen")] &&
                [menuTitles containsObject:T(@"en", @"backupNow")] &&
+               [menuTitles containsObject:T(@"en", @"restoreTitle")] &&
                [menuTitles containsObject:T(@"en", @"overviewSettings")] &&
                [[menuTitles componentsJoinedByString:@" "] containsString:@"Successful"] &&
                [[menuTitles componentsJoinedByString:@" "] containsString:@"Today, 20:00"] &&
                [[menuTitles componentsJoinedByString:@" "] containsString:@"/Volumes/Archive"] &&
                [[menuTitles componentsJoinedByString:@" "] containsString:@"812 GB"],
                @"menu bar exposes the same status, schedule, target, storage, and actions");
+        Assert([delegate respondsToSelector:NSSelectorFromString(@"showRestoreBrowser:")],
+               @"overview and menu bar route to one restore browser workflow");
+
+        delegate.overviewMode = YES;
+        delegate.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 100, 100)
+                                                       styleMask:NSWindowStyleMaskTitled
+                                                         backing:NSBackingStoreBuffered
+                                                           defer:NO];
+        delegate.restoreWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 100, 100)
+                                                              styleMask:NSWindowStyleMaskTitled
+                                                                backing:NSBackingStoreBuffered
+                                                                  defer:NO];
+        Assert([delegate windowShouldClose:delegate.restoreWindow],
+               @"closing restore closes only that window and leaves the overview controller alive");
 
         TigerOverviewView *appliedView = [[TigerOverviewView alloc] initWithFrame:NSMakeRect(0, 0, 620, 420)];
         [delegate applyOverviewSnapshot:menuSnapshot toView:appliedView];

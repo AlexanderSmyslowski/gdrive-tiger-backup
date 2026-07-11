@@ -6,6 +6,8 @@
 #import "ConfigSupport.h"
 #import "BackupStatusSupport.h"
 #import "SetupHealthSupport.h"
+#import "RestoreSupport.h"
+#import "RestoreBrowserView.h"
 #import "Localization.h"
 
 static NSImage *CreateApplicationIcon(void) {
@@ -1098,6 +1100,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, copy) NSString *storageText;
 @property(nonatomic, copy) void (^backupHandler)(void);
 @property(nonatomic, copy) void (^settingsHandler)(void);
+@property(nonatomic, copy) void (^restoreHandler)(void);
 @property(nonatomic, strong) NSTextField *statusSymbolLabel;
 @property(nonatomic, strong) NSTextField *subtitleLabel;
 @property(nonatomic, strong) NSTextField *lastRunCaptionLabel;
@@ -1111,6 +1114,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, strong) NSTextField *storageValueLabel;
 @property(nonatomic, strong) NSButton *backupButton;
 @property(nonatomic, strong) NSButton *settingsButton;
+@property(nonatomic, strong) NSButton *restoreButton;
 @end
 
 @implementation TigerOverviewView
@@ -1203,6 +1207,13 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.settingsButton.accessibilityRole = NSAccessibilityButtonRole;
     [self addSubview:self.settingsButton];
 
+    self.restoreButton = [[NSButton alloc] initWithFrame:NSMakeRect(214, 368, 118, 30)];
+    self.restoreButton.bezelStyle = NSBezelStyleRounded;
+    self.restoreButton.target = self;
+    self.restoreButton.action = @selector(openRestore:);
+    self.restoreButton.accessibilityRole = NSAccessibilityButtonRole;
+    [self addSubview:self.restoreButton];
+
     self.backupButton = [[NSButton alloc] initWithFrame:NSMakeRect(470, 368, 124, 30)];
     self.backupButton.bezelStyle = NSBezelStyleRounded;
     self.backupButton.keyEquivalent = @"\r";
@@ -1210,7 +1221,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.backupButton.action = @selector(startBackup:);
     self.backupButton.accessibilityRole = NSAccessibilityButtonRole;
     [self addSubview:self.backupButton];
-    self.settingsButton.nextKeyView = self.backupButton;
+    self.settingsButton.nextKeyView = self.restoreButton;
+    self.restoreButton.nextKeyView = self.backupButton;
     self.backupButton.nextKeyView = self.settingsButton;
 
     self.language = @"en";
@@ -1227,8 +1239,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.targetCaptionLabel.stringValue = T(_language, @"overviewTarget");
     self.storageCaptionLabel.stringValue = T(_language, @"overviewStorage");
     self.settingsButton.title = T(_language, @"overviewSettings");
+    self.restoreButton.title = T(_language, @"restoreTitle");
     self.backupButton.title = T(_language, @"backupNow");
     self.settingsButton.accessibilityLabel = self.settingsButton.title;
+    self.restoreButton.accessibilityLabel = self.restoreButton.title;
     self.backupButton.accessibilityLabel = self.backupButton.title;
     [self layoutActionButtons];
     [self updateValueAccessibilityLabels];
@@ -1238,9 +1252,14 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 - (void)layoutActionButtons {
     CGFloat backupWidth = MAX(124.0, ceil(self.backupButton.cell.cellSize.width + 18.0));
     CGFloat settingsWidth = MAX(140.0, ceil(self.settingsButton.cell.cellSize.width + 18.0));
+    CGFloat restoreWidth = MAX(140.0, ceil(self.restoreButton.cell.cellSize.width + 18.0));
     CGFloat rightEdge = NSWidth(self.bounds) - 26.0;
     self.backupButton.frame = NSMakeRect(rightEdge - backupWidth, 368, backupWidth, 30);
-    self.settingsButton.frame = NSMakeRect(NSMinX(self.backupButton.frame) - 10.0 - settingsWidth,
+    self.restoreButton.frame = NSMakeRect(NSMinX(self.backupButton.frame) - 10.0 - restoreWidth,
+                                          368,
+                                          restoreWidth,
+                                          30);
+    self.settingsButton.frame = NSMakeRect(NSMinX(self.restoreButton.frame) - 10.0 - settingsWidth,
                                            368,
                                            settingsWidth,
                                            30);
@@ -1319,6 +1338,13 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     }
 }
 
+- (void)openRestore:(id)sender {
+    (void)sender;
+    if (self.restoreHandler) {
+        self.restoreHandler();
+    }
+}
+
 - (void)drawRect:(NSRect)dirtyRect {
     [super drawRect:dirtyRect];
     NSRect bounds = self.bounds;
@@ -1389,6 +1415,11 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic) BOOL manualLaunchPending;
 @property(nonatomic, copy) NSString *configuredAPFSVolumePath;
 @property(nonatomic, strong) NSStatusItem *statusItem;
+@property(nonatomic, strong) NSWindow *restoreWindow;
+@property(nonatomic, strong) GDTRestoreBrowserView *restoreView;
+@property(nonatomic, strong) GDTRestoreCatalog *restoreCatalog;
+@property(nonatomic, strong) GDTRestoreCopier *restoreCopier;
+@property(nonatomic) NSUInteger restoreLoadGeneration;
 @property(nonatomic, strong) NSTimer *overviewRefreshTimer;
 @property(nonatomic, copy) NSDictionary<NSString *, NSString *> *lastOverviewSnapshot;
 @property(nonatomic) NSTimeInterval overviewRefreshInterval;
@@ -1558,6 +1589,11 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     backup.enabled = !self.overviewLaunchPending &&
         ![snapshot[@"status"] isEqualToString:@"running"];
     [menu addItem:backup];
+    NSMenuItem *restore = [[NSMenuItem alloc] initWithTitle:T(language, @"restoreTitle")
+                                                      action:@selector(showRestoreBrowser:)
+                                               keyEquivalent:@""];
+    restore.target = self;
+    [menu addItem:restore];
     NSMenuItem *settings = [[NSMenuItem alloc] initWithTitle:T(language, @"overviewSettings")
                                                        action:@selector(showBackupSetup:)
                                                 keyEquivalent:@""];
@@ -1739,6 +1775,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     __weak typeof(self) weakSelf = self;
     content.backupHandler = ^{ [weakSelf startOverviewBackup:nil]; };
     content.settingsHandler = ^{ [weakSelf showBackupSetup:nil]; };
+    content.restoreHandler = ^{ [weakSelf showRestoreBrowser:nil]; };
     self.window.contentView = content;
     NSDictionary<NSString *, NSString *> *placeholder = self.lastOverviewSnapshot ?: @{
         @"status": @"unknown",
@@ -1758,6 +1795,223 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 - (void)showOverviewFromStatus:(id)sender {
     (void)sender;
     [self showOverviewWindow];
+}
+
+- (NSArray<NSDictionary<NSString *, id> *> *)displayRestoreVersions:
+    (NSArray<NSDictionary<NSString *, id> *> *)versions {
+    NSDictionary<NSString *, NSString *> *localeIdentifiers = @{
+        @"de": @"de_DE", @"en": @"en_US", @"fr": @"fr_FR", @"es": @"es_ES",
+        @"ja": @"ja_JP", @"yue": @"zh_HK", @"ko": @"ko_KR"
+    };
+    NSDateFormatter *dateFormatter = [[NSDateFormatter alloc] init];
+    dateFormatter.locale = [NSLocale localeWithLocaleIdentifier:
+        localeIdentifiers[self.language ?: @"en"] ?: @"en_US"];
+    dateFormatter.dateStyle = NSDateFormatterMediumStyle;
+    dateFormatter.timeStyle = NSDateFormatterShortStyle;
+    NSByteCountFormatter *sizeFormatter = [[NSByteCountFormatter alloc] init];
+    sizeFormatter.countStyle = NSByteCountFormatterCountStyleFile;
+
+    NSMutableArray<NSDictionary<NSString *, id> *> *display = [NSMutableArray array];
+    for (NSDictionary<NSString *, id> *version in versions) {
+        NSMutableDictionary<NSString *, id> *record = [version mutableCopy];
+        if ([version[@"kind"] isEqualToString:@"current"]) {
+            record[@"displayDate"] = T(self.language ?: @"en", @"restoreCurrent");
+        } else if ([version[@"date"] isKindOfClass:NSDate.class]) {
+            record[@"displayDate"] = [dateFormatter stringFromDate:version[@"date"]] ?:
+                T(self.language ?: @"en", @"restoreHistorical");
+        } else {
+            record[@"displayDate"] = T(self.language ?: @"en", @"restoreHistorical");
+        }
+        record[@"displaySize"] = [sizeFormatter stringFromByteCount:
+            [version[@"size"] longLongValue]] ?: @"";
+        [display addObject:record];
+    }
+    return display;
+}
+
+- (void)loadRestoreDirectory:(NSString *)relativePath {
+    if (!self.restoreCatalog || !self.restoreView) {
+        return;
+    }
+    NSUInteger generation = ++self.restoreLoadGeneration;
+    self.restoreView.currentRelativePath = relativePath ?: @"";
+    self.restoreView.loading = YES;
+    GDTRestoreCatalog *catalog = self.restoreCatalog;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSError *error = nil;
+        NSArray<NSDictionary<NSString *, id> *> *entries =
+            [catalog childrenAtRelativePath:relativePath ?: @"" error:&error];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) strongSelf = weakSelf;
+            if (!strongSelf || generation != strongSelf.restoreLoadGeneration) {
+                return;
+            }
+            strongSelf.restoreView.loading = NO;
+            strongSelf.restoreView.versions = @[];
+            if (error) {
+                strongSelf.restoreView.entries = @[];
+                [strongSelf.restoreView showRestoreError:
+                    T(strongSelf.language ?: @"en", @"restoreFailed")];
+                return;
+            }
+            strongSelf.restoreView.entries = entries;
+            strongSelf.restoreView.statusText = entries.count ? @"" :
+                T(strongSelf.language ?: @"en", @"restoreEmpty");
+        });
+    });
+}
+
+- (void)loadRestoreVersionsForRelativePath:(NSString *)relativePath {
+    if (!self.restoreCatalog || !self.restoreView) {
+        return;
+    }
+    NSUInteger generation = ++self.restoreLoadGeneration;
+    self.restoreView.loading = YES;
+    GDTRestoreCatalog *catalog = self.restoreCatalog;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSError *error = nil;
+        NSArray<NSDictionary<NSString *, id> *> *versions =
+            [catalog versionsForRelativePath:relativePath error:&error];
+        typeof(self) strongSelf = weakSelf;
+        NSArray<NSDictionary<NSString *, id> *> *display = strongSelf
+            ? [strongSelf displayRestoreVersions:versions] : @[];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) innerSelf = weakSelf;
+            if (!innerSelf || generation != innerSelf.restoreLoadGeneration) {
+                return;
+            }
+            innerSelf.restoreView.loading = NO;
+            if (error) {
+                innerSelf.restoreView.versions = @[];
+                [innerSelf.restoreView showRestoreError:
+                    T(innerSelf.language ?: @"en", @"restoreFailed")];
+                return;
+            }
+            innerSelf.restoreView.versions = display;
+            innerSelf.restoreView.statusText = display.count ? @"" :
+                T(innerSelf.language ?: @"en", @"restoreNoVersions");
+        });
+    });
+}
+
+- (void)beginRestoreForVersion:(NSDictionary<NSString *, id> *)version {
+    NSURL *sourceURL = [version[@"sourceURL"] isKindOfClass:NSURL.class]
+        ? version[@"sourceURL"] : nil;
+    if (!sourceURL || !self.restoreWindow || !self.restoreCopier) {
+        [self.restoreView showRestoreError:T(self.language ?: @"en", @"restoreFailed")];
+        return;
+    }
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.canChooseFiles = NO;
+    panel.canChooseDirectories = YES;
+    panel.canCreateDirectories = YES;
+    panel.allowsMultipleSelection = NO;
+    panel.prompt = T(self.language ?: @"en", @"restoreAction");
+    panel.message = T(self.language ?: @"en", @"restoreChooseDestination");
+    __weak typeof(self) weakSelf = self;
+    [panel beginSheetModalForWindow:self.restoreWindow completionHandler:^(NSModalResponse result) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf || result != NSModalResponseOK || !panel.URL) {
+            return;
+        }
+        strongSelf.restoreView.loading = YES;
+        GDTRestoreCopier *copier = strongSelf.restoreCopier;
+        NSURL *destinationDirectory = panel.URL;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            NSError *error = nil;
+            NSDictionary<NSString *, id> *restoreResult =
+                [copier restoreSourceURL:sourceURL
+                          toDirectoryURL:destinationDirectory
+                                   error:&error];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                typeof(self) innerSelf = weakSelf;
+                if (!innerSelf) {
+                    return;
+                }
+                if (restoreResult) {
+                    [innerSelf.restoreView showVerifiedDestinationURL:
+                        restoreResult[@"destinationURL"] sha256:restoreResult[@"sha256"]];
+                } else {
+                    NSString *key = [error.domain isEqualToString:
+                        @"com.commcats.gdrivebackup.restore"] && error.code == 4
+                        ? @"restoreIntegrityFailed" : @"restoreFailed";
+                    [innerSelf.restoreView showRestoreError:T(innerSelf.language ?: @"en", key)];
+                }
+            });
+        });
+    }];
+}
+
+- (void)showRestoreBrowser:(id)sender {
+    (void)sender;
+    if (self.restoreWindow.isVisible) {
+        [self.restoreWindow makeKeyAndOrderFront:nil];
+        [NSApp activateIgnoringOtherApps:YES];
+        return;
+    }
+    NSDictionary<NSString *, NSString *> *config = [self savedSetupConfig];
+    NSString *destination = GDTBackupDestinationForConfig(config);
+    NSURL *rootURL = destination.length
+        ? [NSURL fileURLWithPath:destination isDirectory:YES] : nil;
+
+    NSSize size = NSMakeSize(820, 560);
+    NSRect screenFrame = NSScreen.mainScreen ? NSScreen.mainScreen.visibleFrame :
+        NSMakeRect(0, 0, 1200, 800);
+    NSPoint origin = NSMakePoint(NSMidX(screenFrame) - size.width / 2,
+                                 NSMidY(screenFrame) - size.height / 2);
+    self.restoreWindow = [[NSWindow alloc]
+        initWithContentRect:NSMakeRect(origin.x, origin.y, size.width, size.height)
+                  styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                            NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
+                    backing:NSBackingStoreBuffered defer:NO];
+    self.restoreWindow.title = T(self.language ?: @"en", @"restoreTitle");
+    self.restoreWindow.minSize = NSMakeSize(720, 480);
+    self.restoreWindow.releasedWhenClosed = NO;
+    self.restoreWindow.delegate = self;
+    self.restoreView = [[GDTRestoreBrowserView alloc]
+        initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
+    self.restoreView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    self.restoreView.language = self.language ?: @"en";
+    self.restoreWindow.contentView = self.restoreView;
+
+    __weak typeof(self) weakSelf = self;
+    self.restoreView.backHandler = ^{
+        NSString *path = weakSelf.restoreView.currentRelativePath ?: @"";
+        NSString *parent = path.stringByDeletingLastPathComponent;
+        if ([parent isEqualToString:@"."]) parent = @"";
+        [weakSelf loadRestoreDirectory:parent];
+    };
+    self.restoreView.browseHandler = ^(NSString *relativePath) {
+        [weakSelf loadRestoreDirectory:relativePath];
+    };
+    self.restoreView.fileSelectionHandler = ^(NSString *relativePath) {
+        [weakSelf loadRestoreVersionsForRelativePath:relativePath];
+    };
+    self.restoreView.restoreHandler = ^(NSDictionary<NSString *, id> *version) {
+        [weakSelf beginRestoreForVersion:version];
+    };
+    self.restoreView.revealHandler = ^(NSURL *destinationURL) {
+        [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[destinationURL]];
+    };
+
+    BOOL isDirectory = NO;
+    if (!rootURL || ![NSFileManager.defaultManager fileExistsAtPath:rootURL.path
+                                                        isDirectory:&isDirectory] || !isDirectory) {
+        self.restoreView.entries = @[];
+        self.restoreView.statusText = T(self.language ?: @"en", @"restoreTargetUnavailable");
+    } else {
+        NSFileManager *fileManager = [[NSFileManager alloc] init];
+        self.restoreCatalog = [[GDTRestoreCatalog alloc] initWithBackupRootURL:rootURL
+                                                                  fileManager:fileManager];
+        self.restoreCopier = [[GDTRestoreCopier alloc] initWithBackupRootURL:rootURL
+                                                                 fileManager:fileManager];
+        [self loadRestoreDirectory:@""];
+    }
+    [self.restoreWindow makeFirstResponder:self.restoreView.itemsTable];
+    [self.restoreWindow makeKeyAndOrderFront:nil];
+    [NSApp activateIgnoringOtherApps:YES];
 }
 
 - (void)showBackupSetup:(id)sender {
@@ -2734,7 +2988,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 }
 
 - (BOOL)windowShouldClose:(NSWindow *)sender {
-    (void)sender;
+    if (sender == self.restoreWindow) {
+        self.restoreLoadGeneration++;
+        return YES;
+    }
     if (self.overviewMode) {
         [self.window orderOut:nil];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
@@ -2756,7 +3013,9 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 }
 
 - (BOOL)windowShouldMiniaturize:(NSWindow *)window {
-    (void)window;
+    if (window == self.restoreWindow) {
+        return YES;
+    }
     if (self.setupMode || self.overviewMode) {
         return YES;
     }

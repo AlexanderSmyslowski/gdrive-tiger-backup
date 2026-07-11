@@ -4,7 +4,7 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window. “Tiger” describes the visual style; the app requires macOS 13 Ventura or later and does not run on Mac OS X 10.4 Tiger.
 
-Current release: `v1.7.0` with a downloadable macOS installer package, a guided system check, a persistent backup overview, a menu bar status, settings, and language selection.
+Current release: `v1.8.0` with a downloadable macOS installer package, verified file recovery, a guided system check, a persistent backup overview, a menu bar status, settings, and language selection.
 
 It backs up:
 
@@ -30,6 +30,8 @@ The backup is read-only from Google Drive's perspective. It uses `rclone copy`, 
   window level so other apps can cover it.
 - During each `rclone copy`, the helper shows live progress, percent, transferred size, speed, and ETA when rclone reports it.
 - Native close and minimize controls behave like standard macOS controls; closing the overview leaves its menu bar status available.
+- The overview and menu bar open a native restore browser that combines the live backup with every actually available retained per-file version.
+- A restored file is copied to a user-selected folder outside the backup, never silently overwrites an existing file, and is published only after its SHA-256 digest matches the selected backup copy.
 - When the backup finishes, the helper briefly shows completion without taking
   focus from the app currently in use.
 
@@ -72,7 +74,7 @@ rclone lsd gdrive:
 For most users, download the latest installer from the GitHub releases page:
 
 1. Open <https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/latest>
-2. Download `GDrive-Backup-Tiger-1.7.0.pkg` from `Assets`.
+2. Download `GDrive-Backup-Tiger-1.8.0.pkg` from `Assets`.
 3. Double-click the package and follow the macOS Installer.
 4. Open `/Applications/GDrive Backup Tiger.app` to choose language, external disk, NAS, and schedule settings.
 
@@ -86,13 +88,13 @@ The package is currently unsigned because the project does not yet have an Apple
 
 1. Click `Done`, not `Move to Trash`.
 2. Open `System Settings > Privacy & Security`.
-3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-1.7.0.pkg`.
+3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-1.8.0.pkg`.
 4. Confirm with `Open Anyway`, then install the package.
 
 Advanced users can also remove the download quarantine flag before opening:
 
 ```bash
-xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-1.7.0.pkg"
+xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-1.8.0.pkg"
 ```
 
 ### Install from source
@@ -228,6 +230,21 @@ per-file versions are merged into that bucket's retained run without
 overwriting newer entries. The trees remain space-efficient deltas, not complete
 point-in-time snapshots like Time Machine. Restoring a file means selecting its
 newest suitable copy from the live backup or the retained version trees.
+
+## Restore files
+
+Open **Restore files** from the overview or the menu bar. Browse the backup
+areas, select a file, and then select one of the copies that actually exists.
+The current backup appears first; retained older copies follow newest-first.
+Because the retained trees are sparse deltas, the browser does not claim that
+every timestamp is a complete point-in-time snapshot.
+
+Choose a destination folder outside the backup tree. If a file with the same
+name already exists, the app creates a new `restored` name instead of
+overwriting it. The selected source is hashed before and after copying, the
+temporary restored copy is hashed again, and the file receives its final name
+only when all SHA-256 values match. Symbolic links, traversal paths, quarantine
+data, outside sources, and restore destinations inside the backup are rejected.
 
 ## Encryption
 
