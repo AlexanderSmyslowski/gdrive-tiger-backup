@@ -4,7 +4,7 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window. “Tiger” describes the visual style; the app requires macOS 13 Ventura or later and does not run on Mac OS X 10.4 Tiger.
 
-Current release: `v1.8.0` with a downloadable macOS installer package, verified file recovery, a guided system check, a persistent backup overview, a menu bar status, settings, and language selection.
+Current release: `v1.9.0` with a downloadable macOS installer package, safe in-app diagnostics, verified file recovery, a guided system check, a persistent backup overview, a menu bar status, settings, and language selection.
 
 It backs up:
 
@@ -32,6 +32,7 @@ The backup is read-only from Google Drive's perspective. It uses `rclone copy`, 
 - Native close and minimize controls behave like standard macOS controls; closing the overview leaves its menu bar status available.
 - The overview and menu bar open a native restore browser that combines the live backup with every actually available retained per-file version.
 - A restored file is copied to a user-selected folder outside the backup, never silently overwrites an existing file, and is published only after its SHA-256 digest matches the selected backup copy.
+- The app and menu bar open one native diagnostics window for tools, Google Drive, destination, schedule, services, and the last run. Its optional support report omits paths, credentials, file names, and log contents and is copied or saved only after an explicit click.
 - When the backup finishes, the helper briefly shows completion without taking
   focus from the app currently in use.
 
@@ -74,7 +75,7 @@ rclone lsd gdrive:
 For most users, download the latest installer from the GitHub releases page:
 
 1. Open <https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/latest>
-2. Download `GDrive-Backup-Tiger-1.8.0.pkg` from `Assets`.
+2. Download `GDrive-Backup-Tiger-1.9.0.pkg` from `Assets`.
 3. Double-click the package and follow the macOS Installer.
 4. Open `/Applications/GDrive Backup Tiger.app` to choose language, external disk, NAS, and schedule settings.
 
@@ -88,13 +89,13 @@ The package is currently unsigned because the project does not yet have an Apple
 
 1. Click `Done`, not `Move to Trash`.
 2. Open `System Settings > Privacy & Security`.
-3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-1.8.0.pkg`.
+3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-1.9.0.pkg`.
 4. Confirm with `Open Anyway`, then install the package.
 
 Advanced users can also remove the download quarantine flag before opening:
 
 ```bash
-xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-1.8.0.pkg"
+xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-1.9.0.pkg"
 ```
 
 ### Install from source
@@ -245,6 +246,21 @@ overwriting it. The selected source is hashed before and after copying, the
 temporary restored copy is hashed again, and the file receives its final name
 only when all SHA-256 values match. Symbolic links, traversal paths, quarantine
 data, outside sources, and restore destinations inside the backup are rejected.
+
+## Safe diagnostics
+
+Open **Diagnostics** from the application menu or menu bar to check the required
+tools, Google Drive access, backup destination, schedule, menu bar controller,
+backup engine, and last run. The checks run away from the main UI thread and
+show explicit ready, failed, blocked, or unknown states.
+
+**Copy safe report** and **Save safe report…** are manual actions. The app does
+not send a report or contact a support service. The stable text report contains
+only allowlisted status values, app and macOS versions, architecture, schedule
+mode, tool names, timestamps, exit code, trigger, and two safe failure reasons.
+It excludes local and NAS paths, URLs, account names, credentials, remote names,
+file names, provider output, and log contents. Saved reports use owner-only
+permissions (`0600`).
 
 ## Encryption
 

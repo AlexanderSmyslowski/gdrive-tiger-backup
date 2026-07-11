@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v1.9.0 - 2026-07-12
+
+- Add one native diagnostics window to the application menu and menu bar for tools, Google Drive, destination, schedule, services, backup engine, and the last run.
+- Run diagnostics asynchronously with explicit ready, failed, blocked, unknown, and refreshing states in all seven supported languages.
+- Generate a stable allowlist-only support report without paths, URLs, credentials, remote names, file names, provider output, or log contents.
+- Copy or save the report only after an explicit user action; never send it automatically and save it with owner-only permissions.
+- Keep the diagnostics window at the normal macOS window level so other applications can cover it, and leave the menu bar controller running when it closes.
+
 ## v1.8.0 - 2026-07-12
 
 - Add a native restore browser reachable from both the overview and menu bar.

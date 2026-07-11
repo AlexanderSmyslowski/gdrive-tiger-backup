@@ -8,6 +8,8 @@
 #import "SetupHealthSupport.h"
 #import "RestoreSupport.h"
 #import "RestoreBrowserView.h"
+#import "DiagnosticsSupport.h"
+#import "DiagnosticsView.h"
 #import "Localization.h"
 
 static NSImage *CreateApplicationIcon(void) {
@@ -1420,6 +1422,9 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, strong) GDTRestoreCatalog *restoreCatalog;
 @property(nonatomic, strong) GDTRestoreCopier *restoreCopier;
 @property(nonatomic) NSUInteger restoreLoadGeneration;
+@property(nonatomic, strong) NSWindow *diagnosticsWindow;
+@property(nonatomic, strong) GDTDiagnosticsView *diagnosticsView;
+@property(nonatomic) NSUInteger diagnosticsGeneration;
 @property(nonatomic, strong) NSTimer *overviewRefreshTimer;
 @property(nonatomic, copy) NSDictionary<NSString *, NSString *> *lastOverviewSnapshot;
 @property(nonatomic) NSTimeInterval overviewRefreshInterval;
@@ -1599,6 +1604,11 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
                                                 keyEquivalent:@""];
     settings.target = self;
     [menu addItem:settings];
+    NSMenuItem *diagnostics = [[NSMenuItem alloc] initWithTitle:T(language, @"diagnosticsTitle")
+                                                          action:@selector(showDiagnostics:)
+                                                   keyEquivalent:@""];
+    diagnostics.target = self;
+    [menu addItem:diagnostics];
     [menu addItem:[NSMenuItem separatorItem]];
     [menu addItemWithTitle:T(language, @"quitMenu") action:@selector(terminate:) keyEquivalent:@"q"];
     return menu;
@@ -2014,6 +2024,193 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     [NSApp activateIgnoringOtherApps:YES];
 }
 
+- (BOOL)diagnosticsServiceIsLoaded:(NSString *)label {
+    if (!label.length ||
+        [label rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].location != NSNotFound) {
+        return NO;
+    }
+    NSString *service = [NSString stringWithFormat:@"gui/%u/%@", getuid(), label];
+    int status = 0;
+    // launchctl may print user paths and environment values. Diagnostics need
+    // only the exit status, so its output must never enter the support report.
+    (void)RunCommand(@"/bin/launchctl", @[@"print", service], nil, &status);
+    return status == 0;
+}
+
+- (NSDictionary<NSString *, id> *)diagnosticsAppInfo {
+    NSBundle *bundle = NSBundle.mainBundle;
+    NSString *version = [bundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"unknown";
+    NSString *build = [bundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"unknown";
+    NSOperatingSystemVersion os = NSProcessInfo.processInfo.operatingSystemVersion;
+    NSString *osVersion = os.patchVersion > 0
+        ? [NSString stringWithFormat:@"macOS %ld.%ld.%ld", (long)os.majorVersion,
+            (long)os.minorVersion, (long)os.patchVersion]
+        : [NSString stringWithFormat:@"macOS %ld.%ld", (long)os.majorVersion,
+            (long)os.minorVersion];
+#if defined(__arm64__)
+    NSString *architecture = @"arm64";
+#elif defined(__x86_64__)
+    NSString *architecture = @"x86_64";
+#else
+    NSString *architecture = @"unknown";
+#endif
+    return @{
+        @"version": version,
+        @"build": build,
+        @"osVersion": osVersion,
+        @"architecture": architecture
+    };
+}
+
+- (NSDictionary<NSString *, id> *)diagnosticsServiceState {
+    return @{
+        @"controllerLoaded": @([self diagnosticsServiceIsLoaded:@"com.commcats.gdrivebackup"]),
+        @"scheduleLoaded": @([self diagnosticsServiceIsLoaded:@"com.commcats.gdrivebackup.schedule"])
+    };
+}
+
+- (NSDictionary<NSString *, id> *)diagnosticsScriptState {
+    NSString *path = @"/usr/local/bin/backup-google-drive.sh";
+    BOOL installed = [NSFileManager.defaultManager fileExistsAtPath:path];
+    return @{
+        @"installed": @(installed),
+        @"executable": @(installed && [NSFileManager.defaultManager isExecutableFileAtPath:path])
+    };
+}
+
+- (void)completeDiagnosticsWithSnapshot:(NSDictionary<NSString *, id> *)snapshot
+                                  report:(NSString *)report
+                              generation:(NSUInteger)generation {
+    if (generation != self.diagnosticsGeneration || !self.diagnosticsView) {
+        return;
+    }
+    self.diagnosticsView.report = report ?: @"";
+    self.diagnosticsView.loading = NO;
+    [self.diagnosticsView applySnapshot:snapshot ?: @{}];
+}
+
+- (void)refreshDiagnostics {
+    if (!self.diagnosticsView || self.diagnosticsView.loading) {
+        return;
+    }
+    self.diagnosticsView.loading = YES;
+    NSUInteger generation = ++self.diagnosticsGeneration;
+    NSDictionary<NSString *, NSString *> *config = [[self savedSetupConfig] copy];
+    NSDictionary<NSString *, NSString *> *summary =
+        [GDTReadBackupSummaryAtPath(GDTBackupSummaryPath()) copy];
+    NSDictionary<NSString *, id> *appInfo = [[self diagnosticsAppInfo] copy];
+    GDTSetupHealthChecker *checker = [GDTSetupHealthChecker productionChecker];
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSDictionary<NSString *, id> *health = [checker snapshotForConfig:config];
+        NSDictionary<NSString *, id> *serviceState = [strongSelf diagnosticsServiceState];
+        NSDictionary<NSString *, id> *scriptState = [strongSelf diagnosticsScriptState];
+        NSDictionary<NSString *, id> *snapshot = [GDTDiagnosticsBuilder
+            snapshotForConfig:config
+                      summary:summary
+                  setupHealth:health
+                      appInfo:appInfo
+                 serviceState:serviceState
+                  scriptState:scriptState];
+        NSString *report = [GDTDiagnosticsBuilder reportForSnapshot:snapshot];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf completeDiagnosticsWithSnapshot:snapshot
+                                                report:report
+                                            generation:generation];
+        });
+    });
+}
+
+- (void)copyDiagnosticsReport:(NSString *)report {
+    if (!report.length) return;
+    NSPasteboard *pasteboard = NSPasteboard.generalPasteboard;
+    [pasteboard clearContents];
+    [pasteboard setString:report forType:NSPasteboardTypeString];
+    [self.diagnosticsView showFeedbackKey:@"diagnosticsCopied"];
+}
+
+- (BOOL)writeDiagnosticsReport:(NSString *)report
+                         toURL:(NSURL *)url
+                         error:(NSError **)error {
+    if (!report.length || !url.isFileURL) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.commcats.gdrivebackup.diagnostics"
+                                          code:1
+                                      userInfo:@{NSLocalizedDescriptionKey: @"Invalid diagnostics report destination."}];
+        }
+        return NO;
+    }
+    NSData *data = [report dataUsingEncoding:NSUTF8StringEncoding];
+    if (![data writeToURL:url options:NSDataWritingAtomic error:error]) {
+        return NO;
+    }
+    if (![NSFileManager.defaultManager setAttributes:@{NSFilePosixPermissions: @0600}
+                                         ofItemAtPath:url.path
+                                                error:error]) {
+        return NO;
+    }
+    return YES;
+}
+
+- (void)saveDiagnosticsReport:(NSString *)report {
+    if (!report.length || !self.diagnosticsWindow) return;
+    NSSavePanel *panel = [NSSavePanel savePanel];
+    panel.nameFieldStringValue = @"GDrive-Backup-Tiger-Diagnostics.txt";
+    panel.canCreateDirectories = YES;
+    __weak typeof(self) weakSelf = self;
+    [panel beginSheetModalForWindow:self.diagnosticsWindow completionHandler:^(NSModalResponse response) {
+        if (response != NSModalResponseOK || !panel.URL) return;
+        NSError *error = nil;
+        if ([weakSelf writeDiagnosticsReport:report toURL:panel.URL error:&error]) {
+            [weakSelf.diagnosticsView showFeedbackKey:@"diagnosticsSaved"];
+        } else {
+            [weakSelf.diagnosticsView showFeedbackKey:@"diagnosticsFailure"];
+        }
+    }];
+}
+
+- (void)showDiagnostics:(id)sender {
+    (void)sender;
+    if (!self.diagnosticsWindow) {
+        NSSize size = NSMakeSize(680, 520);
+        NSRect screenFrame = NSScreen.mainScreen ? NSScreen.mainScreen.visibleFrame :
+            NSMakeRect(0, 0, 1200, 800);
+        NSPoint origin = NSMakePoint(NSMidX(screenFrame) - size.width / 2,
+                                     NSMidY(screenFrame) - size.height / 2);
+        self.diagnosticsWindow = [[NSWindow alloc]
+            initWithContentRect:NSMakeRect(origin.x, origin.y, size.width, size.height)
+                      styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                                NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
+                        backing:NSBackingStoreBuffered defer:NO];
+        self.diagnosticsWindow.title = T(self.language ?: @"en", @"diagnosticsTitle");
+        self.diagnosticsWindow.minSize = NSMakeSize(620, 500);
+        self.diagnosticsWindow.releasedWhenClosed = NO;
+        self.diagnosticsWindow.level = NSNormalWindowLevel;
+        self.diagnosticsWindow.delegate = self;
+        self.diagnosticsView = [[GDTDiagnosticsView alloc]
+            initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
+        self.diagnosticsView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        self.diagnosticsView.language = self.language ?: @"en";
+        __weak typeof(self) weakSelf = self;
+        self.diagnosticsView.refreshHandler = ^{ [weakSelf refreshDiagnostics]; };
+        self.diagnosticsView.copyHandler = ^(NSString *report) {
+            [weakSelf copyDiagnosticsReport:report];
+        };
+        self.diagnosticsView.saveHandler = ^(NSString *report) {
+            [weakSelf saveDiagnosticsReport:report];
+        };
+        self.diagnosticsWindow.contentView = self.diagnosticsView;
+    }
+    self.diagnosticsWindow.title = T(self.language ?: @"en", @"diagnosticsTitle");
+    self.diagnosticsView.language = self.language ?: @"en";
+    [self.diagnosticsWindow makeKeyAndOrderFront:nil];
+    [NSApp activateIgnoringOtherApps:YES];
+    [self refreshDiagnostics];
+}
+
 - (void)showBackupSetup:(id)sender {
     (void)sender;
     NSString *bundlePath = NSBundle.mainBundle.bundlePath;
@@ -2131,6 +2328,12 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     settingsItem.target = self;
     settingsItem.keyEquivalentModifierMask = NSEventModifierFlagCommand;
     [appMenu addItem:settingsItem];
+    NSMenuItem *diagnosticsItem = [[NSMenuItem alloc]
+        initWithTitle:T(self.language, @"diagnosticsTitle")
+                 action:@selector(showDiagnostics:)
+          keyEquivalent:@""];
+    diagnosticsItem.target = self;
+    [appMenu addItem:diagnosticsItem];
     [appMenu addItem:[NSMenuItem separatorItem]];
     [appMenu addItemWithTitle:T(self.language, @"hideMenu") action:@selector(hide:) keyEquivalent:@"h"];
     [appMenu addItemWithTitle:T(self.language, @"quitMenu") action:@selector(terminate:) keyEquivalent:@"q"];
@@ -2992,6 +3195,11 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
         self.restoreLoadGeneration++;
         return YES;
     }
+    if (sender == self.diagnosticsWindow) {
+        self.diagnosticsGeneration++;
+        self.diagnosticsView.loading = NO;
+        return YES;
+    }
     if (self.overviewMode) {
         [self.window orderOut:nil];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
@@ -3013,7 +3221,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 }
 
 - (BOOL)windowShouldMiniaturize:(NSWindow *)window {
-    if (window == self.restoreWindow) {
+    if (window == self.restoreWindow || window == self.diagnosticsWindow) {
         return YES;
     }
     if (self.setupMode || self.overviewMode) {
