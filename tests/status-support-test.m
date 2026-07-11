@@ -111,6 +111,18 @@ int main(void) {
         Assert(GDTStorageCapacityForPath(TemporaryPath(@"missing-storage")) == nil,
                @"unavailable destination has no fabricated capacity");
 
+        NSString *profileSummary = GDTBackupSummaryPathForConfig(@{
+            @"GDRIVE_BACKUP_PROFILE_ID": @"a1b2c3d4-1234-5678-9abc-def012345678",
+            @"GDRIVE_BACKUP_PROFILE_NAME": @"Private NAS name"
+        });
+        Assert([profileSummary hasSuffix:
+                   @"GDrive Backup Tiger/profiles/a1b2c3d4-1234-5678-9abc-def012345678/last-run.status"] &&
+               [profileSummary rangeOfString:@"Private NAS name"].location == NSNotFound,
+               @"each trusted profile has an isolated summary without exposing its display name");
+        Assert([GDTBackupSummaryPathForConfig(@{
+                   @"GDRIVE_BACKUP_PROFILE_ID": @"../../outside"
+               }) isEqualToString:GDTBackupSummaryPath()],
+               @"unsafe profile identifiers cannot redirect summary state");
         Assert([GDTBackupSummaryPath() hasSuffix:@"Library/Application Support/GDrive Backup Tiger/last-run.status"],
                @"default durable summary lives in private Application Support");
     }

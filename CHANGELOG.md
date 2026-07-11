@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## v2.0.0 - 2026-07-12
+
+- Add native create, rename, switch, and delete controls for named backup profiles in setup.
+- Copy the existing configuration into a private default profile without modifying the legacy source file.
+- Keep each profile’s destination, schedule, encryption policy, remote, and last-run summary separate while identifying the active profile in the overview and menu bar.
+- Block profile switches when setup has unsaved edits unless the user explicitly discards them, and roll back activation if launchd cannot apply the new schedule.
+- Resolve profiles through path-safe generated IDs, reject traversal and symbolic links for the config directory, config files, and active-pointer file, and keep files owner-only.
+- Let the backup engine source exactly the active trusted profile while preserving explicit config overrides and the legacy fallback.
+
 ## v1.9.0 - 2026-07-12
 
 - Add one native diagnostics window to the application menu and menu bar for tools, Google Drive, destination, schedule, services, backup engine, and the last run.

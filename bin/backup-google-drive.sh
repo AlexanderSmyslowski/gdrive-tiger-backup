@@ -66,7 +66,37 @@ find_nas_mount_for_url() {
   done < <(/sbin/mount)
 }
 
-CONFIG_FILE="${GDRIVE_BACKUP_CONFIG:-$HOME/.config/gdrive-tiger-backup/config}"
+CONFIG_DIR="${GDRIVE_BACKUP_CONFIG_DIR:-$HOME/.config/gdrive-tiger-backup}"
+LEGACY_CONFIG_FILE="$CONFIG_DIR/config"
+CONFIG_FILE="${GDRIVE_BACKUP_CONFIG:-}"
+ACTIVE_PROFILE_ID=""
+if [[ -z "$CONFIG_FILE" ]]; then
+  CONFIG_FILE="$LEGACY_CONFIG_FILE"
+  ACTIVE_PROFILE_FILE="$CONFIG_DIR/active-profile"
+  if [[ -f "$ACTIVE_PROFILE_FILE" && ! -L "$ACTIVE_PROFILE_FILE" ]]; then
+    profile_id="$(<"$ACTIVE_PROFILE_FILE")"
+    profiles_dir="$CONFIG_DIR/profiles"
+    if [[ "$profile_id" =~ ^[a-z0-9][a-z0-9-]{0,63}$ &&
+          -d "$profiles_dir" && ! -L "$profiles_dir" ]]; then
+      profile_config="$profiles_dir/$profile_id.conf"
+      profile_id_matches=0
+      if [[ -f "$profile_config" && ! -L "$profile_config" ]]; then
+        while IFS= read -r profile_line || [[ -n "$profile_line" ]]; do
+          case "$profile_line" in
+            "GDRIVE_BACKUP_PROFILE_ID=$profile_id"|"GDRIVE_BACKUP_PROFILE_ID='$profile_id'"|"GDRIVE_BACKUP_PROFILE_ID=\"$profile_id\"")
+              profile_id_matches=1
+              break
+              ;;
+          esac
+        done <"$profile_config"
+      fi
+      if [[ "$profile_id_matches" == "1" ]]; then
+        CONFIG_FILE="$profile_config"
+        ACTIVE_PROFILE_ID="$profile_id"
+      fi
+    fi
+  fi
+fi
 if [[ -f "$CONFIG_FILE" ]]; then
   # shellcheck source=/dev/null
   source "$CONFIG_FILE"
@@ -125,7 +155,13 @@ RUN_STATE_OVERRIDE=""
 RUN_OUTCOME="failure"
 RUN_STATE_REASON=""
 RUN_STATE_SIGNAL=""
-SUMMARY_STATE_FILE="${GDRIVE_BACKUP_SUMMARY_STATE_FILE:-$HOME/Library/Application Support/GDrive Backup Tiger/last-run.status}"
+if [[ -n "${GDRIVE_BACKUP_SUMMARY_STATE_FILE:-}" ]]; then
+  SUMMARY_STATE_FILE="$GDRIVE_BACKUP_SUMMARY_STATE_FILE"
+elif [[ -n "$ACTIVE_PROFILE_ID" ]]; then
+  SUMMARY_STATE_FILE="$HOME/Library/Application Support/GDrive Backup Tiger/profiles/$ACTIVE_PROFILE_ID/last-run.status"
+else
+  SUMMARY_STATE_FILE="$HOME/Library/Application Support/GDrive Backup Tiger/last-run.status"
+fi
 RUN_STARTED_AT=0
 OPEN_BIN="${GDRIVE_BACKUP_OPEN_BIN:-/usr/bin/open}"
 CONFIRM_BACKUP="${GDRIVE_BACKUP_CONFIRM:-1}"

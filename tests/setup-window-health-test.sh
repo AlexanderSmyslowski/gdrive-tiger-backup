@@ -12,22 +12,24 @@ show_setup="$(/usr/bin/awk '
   in_method && /^}$/ { exit }
 ' "$SOURCE")"
 
-if [[ "$show_setup" == *'NSMakeSize(650, 630)'* ]]; then
-  printf '%s\n' 'ok - setup window reserves space for the system check'
+if [[ "$show_setup" == *'NSMakeSize(650, 690)'* ]]; then
+  printf '%s\n' 'ok - setup window reserves space for profiles and the system check'
 else
   printf '%s\n' 'not ok - setup window is still too short for the system check'
   failures=$((failures + 1))
 fi
 
-if [[ "$show_setup" == *'[self installSetupHealthViewInContentView:content];'* ]]; then
-  printf '%s\n' 'ok - visible setup installs the system check'
+if [[ "$show_setup" == *'[self installProfileControlsInContentView:content];'* &&
+      "$show_setup" == *'[self installSetupHealthViewInContentView:content];'* ]]; then
+  printf '%s\n' 'ok - visible setup installs profiles and the system check'
 else
   printf '%s\n' 'not ok - system check is not installed in the visible setup'
   failures=$((failures + 1))
 fi
 
-if [[ "$show_setup" == *'NSMakeRect(26, 588, 270, 20)'* &&
-      "$source_contents" == *'NSMakeRect(18, 508, NSWidth(bounds) - 36, 52)'* ]]; then
+if [[ "$show_setup" == *'NSMakeRect(26, 648, 270, 20)'* &&
+      "$source_contents" == *'NSMakeRect(18, 562, NSWidth(bounds) - 36, 52)'* &&
+      "$source_contents" == *'NSMakeRect(18, 76, NSWidth(bounds) - 36, 44)'* ]]; then
   printf '%s\n' 'ok - footer and schedule remain below the setup sections'
 else
   printf '%s\n' 'not ok - setup controls still overlap the system check'

@@ -3,6 +3,7 @@
 NS_ASSUME_NONNULL_BEGIN
 
 FOUNDATION_EXPORT NSString *GDTConfigPath(void);
+FOUNDATION_EXPORT NSString *GDTConfigPathForConfigDirectory(NSString *configDirectory);
 FOUNDATION_EXPORT NSString *GDTDecodeConfigValue(NSString *value);
 FOUNDATION_EXPORT NSMutableDictionary<NSString *, NSString *> *GDTReadConfigDictionary(void);
 FOUNDATION_EXPORT NSMutableDictionary<NSString *, NSString *> *GDTReadConfigDictionaryAtPath(NSString *path);

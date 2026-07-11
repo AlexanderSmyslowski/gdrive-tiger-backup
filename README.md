@@ -4,7 +4,7 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window. “Tiger” describes the visual style; the app requires macOS 13 Ventura or later and does not run on Mac OS X 10.4 Tiger.
 
-Current release: `v1.9.0` with a downloadable macOS installer package, safe in-app diagnostics, verified file recovery, a guided system check, a persistent backup overview, a menu bar status, settings, and language selection.
+Current release: `v2.0.0` with named backup profiles, safe in-app diagnostics, verified file recovery, a guided system check, a persistent backup overview, a menu bar status, settings, and language selection.
 
 It backs up:
 
@@ -20,6 +20,7 @@ The backup is read-only from Google Drive's perspective. It uses `rclone copy`, 
 - A user LaunchAgent starts the lightweight menu bar controller at login.
 - The controller observes macOS mount events and reacts only when the exact saved APFS backup volume was newly mounted. Unrelated disks and NAS mounts are ignored.
 - The overview shows the last verified run, configured schedule, exact local destination, and available destination capacity.
+- Named profiles keep distinct destinations, schedules, encryption policies, and last-run histories while making the one active profile explicit in setup, the overview, and the menu bar.
 - On first use, if the backup volume does not exist yet, the helper can ask to create a dedicated APFS volume on the newly attached external APFS disk.
 - In parallel, the setup window can configure a mounted NAS share, for example SMB, AFP, or NFS under `/Volumes`.
 - The setup window can select already mounted NAS shares, run a small Bonjour search, show the exact resolved destination, save a schedule, and start a backup manually. Its system check verifies the required tools, Google Drive access, and destination before a run. Backup actions never save edited form values implicitly.
@@ -75,7 +76,7 @@ rclone lsd gdrive:
 For most users, download the latest installer from the GitHub releases page:
 
 1. Open <https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/latest>
-2. Download `GDrive-Backup-Tiger-1.9.0.pkg` from `Assets`.
+2. Download `GDrive-Backup-Tiger-2.0.0.pkg` from `Assets`.
 3. Double-click the package and follow the macOS Installer.
 4. Open `/Applications/GDrive Backup Tiger.app` to choose language, external disk, NAS, and schedule settings.
 
@@ -89,13 +90,13 @@ The package is currently unsigned because the project does not yet have an Apple
 
 1. Click `Done`, not `Move to Trash`.
 2. Open `System Settings > Privacy & Security`.
-3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-1.9.0.pkg`.
+3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-2.0.0.pkg`.
 4. Confirm with `Open Anyway`, then install the package.
 
 Advanced users can also remove the download quarantine flag before opening:
 
 ```bash
-xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-1.9.0.pkg"
+xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-2.0.0.pkg"
 ```
 
 ### Install from source
@@ -206,6 +207,27 @@ Set `GDRIVE_BACKUP_AUTO_CREATE_VOLUME=0` if you want to create the backup volume
 Set `GDRIVE_BACKUP_NAS_START_ON_MOUNT=1` only if mount events should also start the configured NAS backup; the default `0` reserves mount-triggered runs for the external APFS target.
 Set `GDRIVE_BACKUP_VERSIONING=0` only if overwritten destination files should not be preserved. Versioning is enabled by default and moves the previous content into `.gdrive-versions/<timestamp>/<backup area>` through rclone's `--backup-dir` support.
 `GDRIVE_BACKUP_VERSIONS_SUBDIR` must remain a safe relative path outside `My Drive`, `Shared with me`, and `Shared Drives`.
+
+## Backup profiles
+
+The setup window can create, rename, switch, and delete named profiles. Each
+profile is a complete saved configuration for its destination, schedule,
+encryption policy, and rclone remote. The overview and menu bar prefix the exact
+destination with the active profile name, and every profile has a separate
+last-run status so results cannot bleed between destinations.
+
+Exactly one profile is active. Switching profiles updates the launchd schedule
+but never starts a backup. Unsaved setup edits block a switch until the user
+explicitly chooses to discard them; if the new schedule cannot be activated,
+the app rolls back to the previous profile. Scheduled and app-started runs use
+the active profile, so profiles do not create concurrent background jobs.
+
+On the first v2 launch, the app copies the existing
+`~/.config/gdrive-tiger-backup/config` into a private `Default` profile and
+leaves the original file unchanged as a fallback. New profile IDs are generated
+independently of their display names, profile files use mode `0600`, and unsafe
+IDs or symbolic links are rejected. Deleting a profile moves only its config to
+the macOS Trash; it does not delete any backup data.
 
 ## Version retention
 

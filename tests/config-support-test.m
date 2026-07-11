@@ -36,6 +36,60 @@ int main(void) {
                     @"the app must honor the same config override as the backup engine");
         unsetenv("GDRIVE_BACKUP_CONFIG");
 
+        NSString *profileRoot = [NSTemporaryDirectory() stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"gdrive-config-profile-%@", NSUUID.UUID.UUIDString]];
+        NSString *profileDirectory = [profileRoot stringByAppendingPathComponent:@"profiles"];
+        [NSFileManager.defaultManager createDirectoryAtPath:profileDirectory
+                                withIntermediateDirectories:YES attributes:nil error:nil];
+        NSString *legacyProfileConfig = [profileRoot stringByAppendingPathComponent:@"config"];
+        NSString *activeProfileConfig = [profileDirectory stringByAppendingPathComponent:@"default.conf"];
+        GDTWriteConfigUpdatesAtPath(@{@"GDRIVE_BACKUP_TARGET": @"nas"},
+                                    legacyProfileConfig, nil);
+        GDTWriteConfigUpdatesAtPath(@{
+            @"GDRIVE_BACKUP_PROFILE_ID": @"default",
+            @"GDRIVE_BACKUP_PROFILE_NAME": @"Default",
+            @"GDRIVE_BACKUP_TARGET": @"apfs"
+        }, activeProfileConfig, nil);
+        [[NSString stringWithFormat:@"default\n"] writeToFile:
+            [profileRoot stringByAppendingPathComponent:@"active-profile"]
+            atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        AssertEqual(GDTConfigPathForConfigDirectory(profileRoot), activeProfileConfig,
+                    @"the app resolves the selected trusted profile config");
+        [@"../../outside\n" writeToFile:
+            [profileRoot stringByAppendingPathComponent:@"active-profile"]
+            atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        AssertEqual(GDTConfigPathForConfigDirectory(profileRoot), legacyProfileConfig,
+                    @"an unsafe active profile pointer falls back to the legacy config");
+        NSString *outsideActivePointer = [profileRoot stringByAppendingPathComponent:@"outside-active"];
+        [@"default\n" writeToFile:outsideActivePointer atomically:YES
+                         encoding:NSUTF8StringEncoding error:nil];
+        NSString *activePointer = [profileRoot stringByAppendingPathComponent:@"active-profile"];
+        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:activePointer]
+                                    resultingItemURL:nil error:nil];
+        [NSFileManager.defaultManager createSymbolicLinkAtPath:activePointer
+                                          withDestinationPath:outsideActivePointer error:nil];
+        AssertEqual(GDTConfigPathForConfigDirectory(profileRoot), legacyProfileConfig,
+                    @"a symlinked active profile pointer is never trusted");
+        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:activePointer]
+                                    resultingItemURL:nil error:nil];
+        [@"default\n" writeToFile:activePointer atomically:YES
+                         encoding:NSUTF8StringEncoding error:nil];
+        NSString *outsideProfiles = [profileRoot stringByAppendingPathComponent:@"outside-profiles"];
+        [NSFileManager.defaultManager createDirectoryAtPath:outsideProfiles
+                                withIntermediateDirectories:YES attributes:nil error:nil];
+        GDTWriteConfigUpdatesAtPath(@{
+            @"GDRIVE_BACKUP_PROFILE_ID": @"default",
+            @"GDRIVE_BACKUP_PROFILE_NAME": @"Default"
+        }, [outsideProfiles stringByAppendingPathComponent:@"default.conf"], nil);
+        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:profileDirectory]
+                                    resultingItemURL:nil error:nil];
+        [NSFileManager.defaultManager createSymbolicLinkAtPath:profileDirectory
+                                          withDestinationPath:outsideProfiles error:nil];
+        AssertEqual(GDTConfigPathForConfigDirectory(profileRoot), legacyProfileConfig,
+                    @"a symlinked profile directory is never trusted");
+        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:profileRoot]
+                                    resultingItemURL:nil error:nil];
+
         NSString *roundTripValue = @"Client's \\Archive\\2026 $(untouched)";
         NSString *quoted = GDTShellQuote(roundTripValue);
         AssertEqual(quoted,

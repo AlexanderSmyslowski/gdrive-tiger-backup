@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #import "ConfigSupport.h"
+#import "ProfileSupport.h"
 #import "BackupStatusSupport.h"
 #import "SetupHealthSupport.h"
 #import "RestoreSupport.h"
@@ -1069,21 +1070,28 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     [[NSColor colorWithCalibratedWhite:0.46 alpha:0.35] setFill];
     NSRectFill(NSMakeRect(0, NSMaxY(titleBar) - 1, NSWidth(bounds), 1));
 
-    NSBezierPath *healthPanel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 76, NSWidth(bounds) - 36, 116) xRadius:12 yRadius:12];
+    NSBezierPath *profilePanel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 76, NSWidth(bounds) - 36, 44) xRadius:12 yRadius:12];
+    [[NSColor colorWithCalibratedWhite:1.0 alpha:0.42] setFill];
+    [profilePanel fill];
+    [[NSColor colorWithCalibratedWhite:0.42 alpha:0.20] setStroke];
+    profilePanel.lineWidth = 1;
+    [profilePanel stroke];
+
+    NSBezierPath *healthPanel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 130, NSWidth(bounds) - 36, 116) xRadius:12 yRadius:12];
     [[NSColor colorWithCalibratedWhite:1.0 alpha:0.42] setFill];
     [healthPanel fill];
     [[NSColor colorWithCalibratedWhite:0.42 alpha:0.20] setStroke];
     healthPanel.lineWidth = 1;
     [healthPanel stroke];
 
-    NSBezierPath *panel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 206, NSWidth(bounds) - 36, 292) xRadius:12 yRadius:12];
+    NSBezierPath *panel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 260, NSWidth(bounds) - 36, 292) xRadius:12 yRadius:12];
     [[NSColor colorWithCalibratedWhite:1.0 alpha:0.54] setFill];
     [panel fill];
     [[NSColor colorWithCalibratedWhite:0.42 alpha:0.24] setStroke];
     panel.lineWidth = 1;
     [panel stroke];
 
-    NSBezierPath *schedulePanel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 508, NSWidth(bounds) - 36, 52) xRadius:12 yRadius:12];
+    NSBezierPath *schedulePanel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 562, NSWidth(bounds) - 36, 52) xRadius:12 yRadius:12];
     [[NSColor colorWithCalibratedWhite:1.0 alpha:0.42] setFill];
     [schedulePanel fill];
     [[NSColor colorWithCalibratedWhite:0.42 alpha:0.20] setStroke];
@@ -1412,6 +1420,11 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, strong) NSButton *setupDryRunButton;
 @property(nonatomic, strong) TigerSetupHealthView *setupHealthView;
 @property(nonatomic, strong) GDTSetupHealthChecker *setupHealthChecker;
+@property(nonatomic, strong) GDTProfileStore *profileStore;
+@property(nonatomic, strong) NSPopUpButton *profilePopup;
+@property(nonatomic, strong) NSButton *profileCreateButton;
+@property(nonatomic, strong) NSButton *profileRenameButton;
+@property(nonatomic, strong) NSButton *profileDeleteButton;
 @property(nonatomic) BOOL setupHealthCheckInFlight;
 @property(nonatomic) NSUInteger setupHealthGeneration;
 @property(nonatomic) BOOL manualLaunchPending;
@@ -1436,6 +1449,22 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @end
 
 @implementation AppDelegate
+
+- (void)prepareProfileStore {
+    if (NSProcessInfo.processInfo.environment[@"GDRIVE_BACKUP_CONFIG"].length) {
+        return;
+    }
+    NSString *root = NSProcessInfo.processInfo.environment[@"GDRIVE_BACKUP_CONFIG_DIR"];
+    if (!root.length) {
+        root = [NSHomeDirectory() stringByAppendingPathComponent:@".config/gdrive-tiger-backup"];
+    }
+    GDTProfileStore *store = [[GDTProfileStore alloc] initWithConfigDirectory:root];
+    NSError *error = nil;
+    if ([store migrateLegacyConfigAtPath:[root stringByAppendingPathComponent:@"config"]
+                                   error:&error]) {
+        self.profileStore = store;
+    }
+}
 
 - (NSString *)applicationModeForArguments:(NSArray<NSString *> *)arguments {
     if (arguments.count <= 1) {
@@ -1520,6 +1549,14 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     NSString *target = destination.length
         ? [NSString stringWithFormat:@"%@ — %@", destination.lastPathComponent, destination]
         : T(language, @"overviewUnavailable");
+    NSString *profileName = config[@"GDRIVE_BACKUP_PROFILE_NAME"] ?: @"";
+    if (profileName.length <= 80 &&
+        [profileName rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location == NSNotFound &&
+        [profileName rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location == NSNotFound) {
+        NSString *trimmed = [profileName
+            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (trimmed.length) target = [NSString stringWithFormat:@"%@ · %@", trimmed, target];
+    }
 
     NSDictionary<NSString *, NSNumber *> *capacity =
         GDTStorageCapacityForPath(GDTBackupCapacityPathForConfig(config));
@@ -1672,7 +1709,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     if (self.overviewRefreshInFlight) return;
     self.overviewRefreshInFlight = YES;
     NSDictionary<NSString *, NSString *> *config = GDTReadConfigDictionary();
-    NSString *summaryPath = GDTBackupSummaryPath();
+    NSString *summaryPath = GDTBackupSummaryPathForConfig(config);
     NSCalendar *calendar = NSCalendar.autoupdatingCurrentCalendar;
     NSDate *now = [NSDate date];
     __weak typeof(self) weakSelf = self;
@@ -2097,7 +2134,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     NSUInteger generation = ++self.diagnosticsGeneration;
     NSDictionary<NSString *, NSString *> *config = [[self savedSetupConfig] copy];
     NSDictionary<NSString *, NSString *> *summary =
-        [GDTReadBackupSummaryAtPath(GDTBackupSummaryPath()) copy];
+        [GDTReadBackupSummaryAtPath(GDTBackupSummaryPathForConfig(config)) copy];
     NSDictionary<NSString *, id> *appInfo = [[self diagnosticsAppInfo] copy];
     GDTSetupHealthChecker *checker = [GDTSetupHealthChecker productionChecker];
 
@@ -2388,9 +2425,228 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     }
 }
 
+- (NSString *)displayNameForProfile:(NSDictionary<NSString *, NSString *> *)profile {
+    return [profile[@"id"] isEqualToString:@"default"] &&
+        [profile[@"name"] isEqualToString:@"Default"]
+        ? T(self.language ?: @"en", @"profileDefault")
+        : profile[@"name"] ?: @"";
+}
+
+- (void)populateProfilePopup {
+    [self.profilePopup removeAllItems];
+    if (!self.profileStore) {
+        [self.profilePopup addItemWithTitle:T(self.language ?: @"en", @"profileDefault")];
+        self.profilePopup.enabled = NO;
+        self.profileCreateButton.enabled = NO;
+        self.profileRenameButton.enabled = NO;
+        self.profileDeleteButton.enabled = NO;
+        return;
+    }
+    self.profilePopup.enabled = YES;
+    self.profileCreateButton.enabled = YES;
+    self.profileRenameButton.enabled = YES;
+    NSString *activeID = self.profileStore.activeProfileID;
+    for (NSDictionary<NSString *, NSString *> *profile in self.profileStore.profiles) {
+        [self.profilePopup addItemWithTitle:[self displayNameForProfile:profile]];
+        self.profilePopup.lastItem.representedObject = profile[@"id"];
+        if ([profile[@"id"] isEqualToString:activeID]) {
+            [self.profilePopup selectItem:self.profilePopup.lastItem];
+        }
+    }
+    self.profileDeleteButton.enabled = self.profileStore.profiles.count > 1;
+}
+
+- (void)installProfileControlsInContentView:(NSView *)contentView {
+    NSTextField *label = [self label:T(self.language ?: @"en", @"profileLabel")
+                                frame:NSMakeRect(34, 88, 124, 22)];
+    label.accessibilityRole = NSAccessibilityStaticTextRole;
+    label.accessibilityLabel = label.stringValue;
+    [contentView addSubview:label];
+
+    self.profilePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 84, 300, 28)];
+    self.profilePopup.target = self;
+    self.profilePopup.action = @selector(profileSelectionChanged:);
+    self.profilePopup.accessibilityRole = NSAccessibilityPopUpButtonRole;
+    self.profilePopup.accessibilityLabel = T(self.language ?: @"en", @"profileLabel");
+    [contentView addSubview:self.profilePopup];
+
+    NSArray<NSArray *> *actions = @[
+        @[@"+", @"profileCreate", NSStringFromSelector(@selector(createProfile:))],
+        @[@"✎", @"profileRename", NSStringFromSelector(@selector(renameProfile:))],
+        @[@"−", @"profileDelete", NSStringFromSelector(@selector(deleteProfile:))]
+    ];
+    NSMutableArray<NSButton *> *buttons = [NSMutableArray array];
+    for (NSUInteger index = 0; index < actions.count; index++) {
+        NSButton *button = [self button:actions[index][0]
+                                  frame:NSMakeRect(474 + index * 46, 84, 40, 28)
+                                 action:NSSelectorFromString(actions[index][2])];
+        button.toolTip = T(self.language ?: @"en", actions[index][1]);
+        button.accessibilityLabel = button.toolTip;
+        button.accessibilityRole = NSAccessibilityButtonRole;
+        [contentView addSubview:button];
+        [buttons addObject:button];
+    }
+    self.profileCreateButton = buttons[0];
+    self.profileRenameButton = buttons[1];
+    self.profileDeleteButton = buttons[2];
+    self.profilePopup.nextKeyView = self.profileCreateButton;
+    self.profileCreateButton.nextKeyView = self.profileRenameButton;
+    self.profileRenameButton.nextKeyView = self.profileDeleteButton;
+    [self populateProfilePopup];
+}
+
+- (BOOL)activateProfileID:(NSString *)profileID
+ discardingUnsavedChanges:(BOOL)discardingUnsavedChanges
+                    error:(NSError **)error {
+    NSString *currentID = self.profileStore.activeProfileID;
+    if ([currentID isEqualToString:profileID]) return YES;
+    if ([self hasUnsavedSetupChanges] && !discardingUnsavedChanges) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"com.commcats.gdrivebackup.profiles"
+                                          code:6
+                                      userInfo:@{NSLocalizedDescriptionKey:
+                                          T(self.language ?: @"en", @"profileUnsavedSwitch")}];
+        }
+        return NO;
+    }
+    NSString *currentPath = [self.profileStore configPathForProfileID:currentID];
+    NSDictionary<NSString *, NSString *> *currentConfig = currentPath.length
+        ? GDTReadConfigDictionaryAtPath(currentPath) : @{};
+    NSString *nextPath = [self.profileStore configPathForProfileID:profileID];
+    NSDictionary<NSString *, NSString *> *nextConfig = nextPath.length
+        ? GDTReadConfigDictionaryAtPath(nextPath) : @{};
+    if (![self.profileStore selectProfileID:profileID error:error]) return NO;
+    NSString *schedule = nextConfig[@"GDRIVE_BACKUP_SCHEDULE"] ?: @"manual";
+    NSError *scheduleError = nil;
+    if (![self applySchedule:schedule error:&scheduleError]) {
+        if (currentID.length) {
+            [self.profileStore selectProfileID:currentID error:nil];
+            [self applySchedule:currentConfig[@"GDRIVE_BACKUP_SCHEDULE"] ?: @"manual" error:nil];
+        }
+        if (error) *error = scheduleError;
+        [self populateProfilePopup];
+        return NO;
+    }
+    [self populateProfilePopup];
+    self.statusField.stringValue = T(self.language ?: @"en", @"profileActivated");
+    return YES;
+}
+
+- (BOOL)confirmDiscardingUnsavedChanges {
+    if (![self hasUnsavedSetupChanges]) return YES;
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = T(self.language ?: @"en", @"profileUnsavedSwitch");
+    [alert addButtonWithTitle:T(self.language ?: @"en", @"discardChanges")];
+    [alert addButtonWithTitle:T(self.language ?: @"en", @"cancel")];
+    return [alert runModal] == NSAlertFirstButtonReturn;
+}
+
+- (void)reloadSetupForActiveProfile {
+    if (!self.setupMode) return;
+    [self.window orderOut:nil];
+    self.window = nil;
+    [self showSetupWindow];
+}
+
+- (void)profileSelectionChanged:(id)sender {
+    (void)sender;
+    NSString *profileID = self.profilePopup.selectedItem.representedObject;
+    if ([profileID isEqualToString:self.profileStore.activeProfileID]) return;
+    BOOL discard = [self confirmDiscardingUnsavedChanges];
+    NSError *error = nil;
+    if (!discard || ![self activateProfileID:profileID
+                       discardingUnsavedChanges:discard error:&error]) {
+        [self populateProfilePopup];
+        if (error) self.statusField.stringValue = error.localizedDescription;
+        return;
+    }
+    [self reloadSetupForActiveProfile];
+}
+
+- (NSString *)promptForProfileNameWithTitleKey:(NSString *)titleKey
+                                   initialValue:(NSString *)initialValue {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = T(self.language ?: @"en", titleKey);
+    alert.informativeText = T(self.language ?: @"en", @"profileNamePrompt");
+    NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 280, 26)];
+    field.stringValue = initialValue ?: @"";
+    alert.accessoryView = field;
+    [alert addButtonWithTitle:T(self.language ?: @"en", @"done")];
+    [alert addButtonWithTitle:T(self.language ?: @"en", @"cancel")];
+    if ([alert runModal] != NSAlertFirstButtonReturn) return nil;
+    return field.stringValue;
+}
+
+- (void)createProfile:(id)sender {
+    (void)sender;
+    if (![self confirmDiscardingUnsavedChanges]) return;
+    NSString *name = [self promptForProfileNameWithTitleKey:@"profileCreate" initialValue:@""];
+    if (!name) return;
+    NSString *activePath = self.profileStore.activeConfigPath;
+    NSDictionary<NSString *, NSString *> *config = activePath.length
+        ? GDTReadConfigDictionaryAtPath(activePath) : @{};
+    NSError *error = nil;
+    NSDictionary *profile = [self.profileStore createProfileNamed:name
+                                                    copyingConfig:config error:&error];
+    if (!profile || ![self activateProfileID:profile[@"id"]
+                       discardingUnsavedChanges:YES error:&error]) {
+        self.statusField.stringValue = error.localizedDescription ?: T(self.language, @"diagnosticsFailure");
+        [self populateProfilePopup];
+        return;
+    }
+    [self reloadSetupForActiveProfile];
+}
+
+- (void)renameProfile:(id)sender {
+    (void)sender;
+    NSString *activeID = self.profileStore.activeProfileID;
+    NSDictionary *active = nil;
+    for (NSDictionary *profile in self.profileStore.profiles) {
+        if ([profile[@"id"] isEqualToString:activeID]) active = profile;
+    }
+    NSString *name = [self promptForProfileNameWithTitleKey:@"profileRename"
+                                               initialValue:[self displayNameForProfile:active ?: @{}]];
+    if (!name) return;
+    NSError *error = nil;
+    if (![self.profileStore renameProfileID:activeID name:name error:&error]) {
+        self.statusField.stringValue = error.localizedDescription ?: T(self.language, @"diagnosticsFailure");
+        return;
+    }
+    [self populateProfilePopup];
+}
+
+- (void)deleteProfile:(id)sender {
+    (void)sender;
+    NSArray<NSDictionary<NSString *, NSString *> *> *profiles = self.profileStore.profiles;
+    if (profiles.count <= 1 || ![self confirmDiscardingUnsavedChanges]) return;
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = T(self.language ?: @"en", @"profileDeleteConfirm");
+    [alert addButtonWithTitle:T(self.language ?: @"en", @"profileDelete")];
+    [alert addButtonWithTitle:T(self.language ?: @"en", @"cancel")];
+    if ([alert runModal] != NSAlertFirstButtonReturn) return;
+
+    NSString *oldID = self.profileStore.activeProfileID;
+    NSDictionary *replacement = nil;
+    for (NSDictionary *profile in profiles) {
+        if (![profile[@"id"] isEqualToString:oldID]) {
+            replacement = profile;
+            break;
+        }
+    }
+    NSError *error = nil;
+    if (![self activateProfileID:replacement[@"id"]
+             discardingUnsavedChanges:YES error:&error] ||
+        ![self.profileStore deleteProfileID:oldID error:&error]) {
+        self.statusField.stringValue = error.localizedDescription ?: T(self.language, @"diagnosticsFailure");
+        [self populateProfilePopup];
+        return;
+    }
+    [self reloadSetupForActiveProfile];
+}
+
 - (void)installSetupHealthViewInContentView:(NSView *)contentView {
     self.setupHealthView = [[TigerSetupHealthView alloc] initWithFrame:
-        NSMakeRect(24, 78, MAX(580, NSWidth(contentView.bounds) - 48), 116)];
+        NSMakeRect(24, 132, MAX(580, NSWidth(contentView.bounds) - 48), 116)];
     self.setupHealthView.language = self.language ?: @"en";
     __weak typeof(self) weakSelf = self;
     self.setupHealthView.checkHandler = ^{
@@ -2404,7 +2660,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     [self buildMainMenu];
     [NSApp setApplicationIconImage:CreateApplicationIcon()];
 
-    NSSize size = NSMakeSize(650, 630);
+    NSSize size = NSMakeSize(650, 690);
     NSRect screenFrame = NSScreen.mainScreen ? NSScreen.mainScreen.visibleFrame : NSMakeRect(0, 0, 1200, 800);
     NSPoint origin = NSMakePoint(NSMidX(screenFrame) - size.width / 2, NSMidY(screenFrame) - size.height / 2);
 
@@ -2418,6 +2674,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     TigerSetupView *content = [[TigerSetupView alloc] initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
     content.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.window.contentView = content;
+    [self installProfileControlsInContentView:content];
     [self installSetupHealthViewInContentView:content];
 
     NSMutableDictionary<NSString *, NSString *> *config = GDTReadConfigDictionary();
@@ -2437,8 +2694,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     subtitle.textColor = [NSColor colorWithCalibratedWhite:0.36 alpha:1.0];
     [content addSubview:subtitle];
 
-    [content addSubview:[self label:T(self.language, @"targetType") frame:NSMakeRect(34, 222, 124, 22)]];
-    self.targetPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 218, 170, 28)];
+    [content addSubview:[self label:T(self.language, @"targetType") frame:NSMakeRect(34, 276, 124, 22)]];
+    self.targetPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 272, 170, 28)];
     [self.targetPopup addItemWithTitle:T(self.language, @"externalVolume")];
     self.targetPopup.lastItem.representedObject = @"apfs";
     [self.targetPopup addItemWithTitle:T(self.language, @"nas")];
@@ -2448,15 +2705,15 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.targetPopup.action = @selector(targetChanged:);
     [content addSubview:self.targetPopup];
 
-    [content addSubview:[self label:T(self.language, @"destinationPreview") frame:NSMakeRect(34, 256, 124, 22)]];
-    self.destinationPreviewField = [self fieldWithFrame:NSMakeRect(164, 252, 440, 26)];
+    [content addSubview:[self label:T(self.language, @"destinationPreview") frame:NSMakeRect(34, 310, 124, 22)]];
+    self.destinationPreviewField = [self fieldWithFrame:NSMakeRect(164, 306, 440, 26)];
     self.destinationPreviewField.editable = NO;
     self.destinationPreviewField.selectable = YES;
     self.destinationPreviewField.lineBreakMode = NSLineBreakByTruncatingMiddle;
     self.destinationPreviewField.accessibilityRole = NSAccessibilityStaticTextRole;
     [content addSubview:self.destinationPreviewField];
 
-    self.encryptionCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(164, 286, 440, 24)];
+    self.encryptionCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(164, 340, 440, 24)];
     self.encryptionCheckbox.buttonType = NSButtonTypeSwitch;
     self.encryptionCheckbox.title = T(self.language, @"encryptionAPFS");
     self.encryptionCheckbox.toolTip = T(self.language, @"encryptionAPFSTip");
@@ -2467,41 +2724,41 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.encryptionCheckbox.action = @selector(setupControlChanged:);
     [content addSubview:self.encryptionCheckbox];
 
-    [content addSubview:[self label:T(self.language, @"mountedNas") frame:NSMakeRect(34, 322, 124, 22)]];
-    self.mountedNasPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 318, 300, 28)];
+    [content addSubview:[self label:T(self.language, @"mountedNas") frame:NSMakeRect(34, 376, 124, 22)]];
+    self.mountedNasPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 372, 300, 28)];
     self.mountedNasPopup.target = self;
     self.mountedNasPopup.action = @selector(selectMountedNAS:);
     [content addSubview:self.mountedNasPopup];
-    [content addSubview:[self button:T(self.language, @"refresh") frame:NSMakeRect(474, 318, 130, 28) action:@selector(refreshMountedNAS:)]];
+    [content addSubview:[self button:T(self.language, @"refresh") frame:NSMakeRect(474, 372, 130, 28) action:@selector(refreshMountedNAS:)]];
 
-    [content addSubview:[self label:T(self.language, @"nasUrl") frame:NSMakeRect(34, 360, 124, 22)]];
-    self.nasURLField = [self fieldWithFrame:NSMakeRect(164, 356, 300, 26)];
+    [content addSubview:[self label:T(self.language, @"nasUrl") frame:NSMakeRect(34, 414, 124, 22)]];
+    self.nasURLField = [self fieldWithFrame:NSMakeRect(164, 410, 300, 26)];
     self.nasURLField.stringValue = config[@"GDRIVE_BACKUP_NAS_URL"] ?: @"";
     self.nasURLField.delegate = self;
     [content addSubview:self.nasURLField];
-    [content addSubview:[self button:T(self.language, @"openFinder") frame:NSMakeRect(474, 355, 130, 28) action:@selector(openNASInFinder:)]];
+    [content addSubview:[self button:T(self.language, @"openFinder") frame:NSMakeRect(474, 409, 130, 28) action:@selector(openNASInFinder:)]];
 
-    [content addSubview:[self label:T(self.language, @"nasMount") frame:NSMakeRect(34, 396, 124, 22)]];
-    self.nasMountField = [self fieldWithFrame:NSMakeRect(164, 392, 300, 26)];
+    [content addSubview:[self label:T(self.language, @"nasMount") frame:NSMakeRect(34, 450, 124, 22)]];
+    self.nasMountField = [self fieldWithFrame:NSMakeRect(164, 446, 300, 26)];
     self.nasMountField.stringValue = config[@"GDRIVE_BACKUP_NAS_MOUNT"] ?: @"";
     self.nasMountField.delegate = self;
     [content addSubview:self.nasMountField];
 
-    [content addSubview:[self label:T(self.language, @"nasSubdir") frame:NSMakeRect(34, 432, 124, 22)]];
-    self.nasSubdirField = [self fieldWithFrame:NSMakeRect(164, 428, 300, 26)];
+    [content addSubview:[self label:T(self.language, @"nasSubdir") frame:NSMakeRect(34, 486, 124, 22)]];
+    self.nasSubdirField = [self fieldWithFrame:NSMakeRect(164, 482, 300, 26)];
     self.nasSubdirField.stringValue = config[@"GDRIVE_BACKUP_NAS_SUBDIR"] ?: @"GoogleDrive-Backup";
     self.nasSubdirField.delegate = self;
     [content addSubview:self.nasSubdirField];
 
-    self.discoveredNasPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 464, 300, 28)];
+    self.discoveredNasPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 518, 300, 28)];
     [self.discoveredNasPopup addItemWithTitle:@"Bonjour"];
     self.discoveredNasPopup.target = self;
     self.discoveredNasPopup.action = @selector(selectDiscoveredNAS:);
     [content addSubview:self.discoveredNasPopup];
-    [content addSubview:[self button:T(self.language, @"discover") frame:NSMakeRect(474, 464, 130, 28) action:@selector(discoverNAS:)]];
+    [content addSubview:[self button:T(self.language, @"discover") frame:NSMakeRect(474, 518, 130, 28) action:@selector(discoverNAS:)]];
 
-    [content addSubview:[self label:T(self.language, @"schedule") frame:NSMakeRect(34, 526, 124, 22)]];
-    self.schedulePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 522, 300, 28)];
+    [content addSubview:[self label:T(self.language, @"schedule") frame:NSMakeRect(34, 580, 124, 22)]];
+    self.schedulePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 576, 300, 28)];
     NSArray<NSArray<NSString *> *> *scheduleItems = @[
         @[T(self.language, @"scheduleManual"), @"manual"],
         @[T(self.language, @"scheduleLogin"), @"login"],
@@ -2519,14 +2776,14 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.schedulePopup.action = @selector(setupControlChanged:);
     [content addSubview:self.schedulePopup];
 
-    self.statusField = [self label:T(self.language, @"statusReady") frame:NSMakeRect(26, 588, 270, 20)];
+    self.statusField = [self label:T(self.language, @"statusReady") frame:NSMakeRect(26, 648, 270, 20)];
     self.statusField.textColor = [NSColor colorWithCalibratedWhite:0.36 alpha:1.0];
     [content addSubview:self.statusField];
 
-    NSButton *saveButton = [self button:T(self.language, @"save") frame:NSMakeRect(312, 583, 88, 30) action:@selector(saveSetup:)];
-    self.setupDryRunButton = [self button:T(self.language, @"dryRun") frame:NSMakeRect(408, 583, 112, 30) action:@selector(startDryRun:)];
+    NSButton *saveButton = [self button:T(self.language, @"save") frame:NSMakeRect(312, 643, 88, 30) action:@selector(saveSetup:)];
+    self.setupDryRunButton = [self button:T(self.language, @"dryRun") frame:NSMakeRect(408, 643, 112, 30) action:@selector(startDryRun:)];
     self.setupDryRunButton.toolTip = T(self.language, @"dryRunTip");
-    self.setupBackupButton = [self button:T(self.language, @"backupNow") frame:NSMakeRect(528, 583, 96, 30) action:@selector(startBackupNow:)];
+    self.setupBackupButton = [self button:T(self.language, @"backupNow") frame:NSMakeRect(528, 643, 96, 30) action:@selector(startBackupNow:)];
     self.setupBackupButton.toolTip = T(self.language, @"backupNowTip");
     [content addSubview:saveButton];
     [content addSubview:self.setupDryRunButton];
@@ -3029,12 +3286,15 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.voiceOverEnabled = NSWorkspace.sharedWorkspace.isVoiceOverEnabled;
     [NSWorkspace.sharedWorkspace.notificationCenter
         addObserver:self
-           selector:@selector(accessibilityDisplayOptionsChanged:)
+             selector:@selector(accessibilityDisplayOptionsChanged:)
                name:NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification
              object:nil];
-    self.language = ConfiguredLanguage();
     NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
     NSString *mode = [self applicationModeForArguments:arguments];
+    if ([self shouldInstallStatusItemForMode:mode] || [mode isEqualToString:@"setup"]) {
+        [self prepareProfileStore];
+    }
+    self.language = ConfiguredLanguage();
     if ([self shouldInstallStatusItemForMode:mode]) {
         self.overviewMode = YES;
         self.menubarOnlyMode = [mode isEqualToString:@"menubar"];

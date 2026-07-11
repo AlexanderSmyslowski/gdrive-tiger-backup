@@ -125,12 +125,56 @@ static BOOL GDTAppendANSIEscape(NSMutableData *decoded, NSString *value, NSUInte
     return YES;
 }
 
+static BOOL GDTIsSafeProfileID(NSString *profileID) {
+    if (![profileID isKindOfClass:NSString.class] || !profileID.length || profileID.length > 64) {
+        return NO;
+    }
+    NSCharacterSet *first = [NSCharacterSet characterSetWithCharactersInString:
+        @"abcdefghijklmnopqrstuvwxyz0123456789"];
+    NSCharacterSet *remaining = [NSCharacterSet characterSetWithCharactersInString:
+        @"abcdefghijklmnopqrstuvwxyz0123456789-"];
+    if (![first characterIsMember:[profileID characterAtIndex:0]]) return NO;
+    for (NSUInteger index = 1; index < profileID.length; index++) {
+        if (![remaining characterIsMember:[profileID characterAtIndex:index]]) return NO;
+    }
+    return YES;
+}
+
+NSString *GDTConfigPathForConfigDirectory(NSString *configDirectory) {
+    NSString *root = configDirectory.stringByStandardizingPath;
+    NSString *legacyPath = [root stringByAppendingPathComponent:@"config"];
+    NSString *activePath = [root stringByAppendingPathComponent:@"active-profile"];
+    NSDictionary *activeAttributes = [NSFileManager.defaultManager
+        attributesOfItemAtPath:activePath error:nil];
+    if (![activeAttributes[NSFileType] isEqualToString:NSFileTypeRegular]) return legacyPath;
+    NSString *profilesPath = [root stringByAppendingPathComponent:@"profiles"];
+    NSDictionary *profilesAttributes = [NSFileManager.defaultManager
+        attributesOfItemAtPath:profilesPath error:nil];
+    if (![profilesAttributes[NSFileType] isEqualToString:NSFileTypeDirectory]) return legacyPath;
+    NSString *profileID = [[NSString stringWithContentsOfFile:activePath
+                                                     encoding:NSUTF8StringEncoding error:nil]
+        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!GDTIsSafeProfileID(profileID)) return legacyPath;
+    NSString *profilePath = [profilesPath
+        stringByAppendingPathComponent:[profileID stringByAppendingPathExtension:@"conf"]];
+    NSDictionary *attributes = [NSFileManager.defaultManager
+        attributesOfItemAtPath:profilePath error:nil];
+    if (![attributes[NSFileType] isEqualToString:NSFileTypeRegular]) return legacyPath;
+    NSDictionary<NSString *, NSString *> *profile = GDTReadConfigDictionaryAtPath(profilePath);
+    return [profile[@"GDRIVE_BACKUP_PROFILE_ID"] isEqualToString:profileID]
+        ? profilePath : legacyPath;
+}
+
 NSString *GDTConfigPath(void) {
     const char *override = getenv("GDRIVE_BACKUP_CONFIG");
     if (override && override[0] != '\0') {
         return [NSString stringWithUTF8String:override];
     }
-    return [NSHomeDirectory() stringByAppendingPathComponent:@".config/gdrive-tiger-backup/config"];
+    const char *directoryOverride = getenv("GDRIVE_BACKUP_CONFIG_DIR");
+    NSString *directory = directoryOverride && directoryOverride[0] != '\0'
+        ? [NSString stringWithUTF8String:directoryOverride]
+        : [NSHomeDirectory() stringByAppendingPathComponent:@".config/gdrive-tiger-backup"];
+    return GDTConfigPathForConfigDirectory(directory);
 }
 
 NSString *GDTDecodeConfigValue(NSString *value) {

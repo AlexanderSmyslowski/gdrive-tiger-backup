@@ -43,6 +43,26 @@ NSString *GDTBackupSummaryPath(void) {
         @"Library/Application Support/GDrive Backup Tiger/last-run.status"];
 }
 
+NSString *GDTBackupSummaryPathForConfig(NSDictionary<NSString *, NSString *> *config) {
+    NSString *override = NSProcessInfo.processInfo.environment[@"GDRIVE_BACKUP_SUMMARY_STATE_FILE"];
+    if (override.length) return override;
+    NSString *profileID = config[@"GDRIVE_BACKUP_PROFILE_ID"];
+    if (!profileID.length || profileID.length > 64) return GDTBackupSummaryPath();
+    NSCharacterSet *first = [NSCharacterSet characterSetWithCharactersInString:
+        @"abcdefghijklmnopqrstuvwxyz0123456789"];
+    NSCharacterSet *remaining = [NSCharacterSet characterSetWithCharactersInString:
+        @"abcdefghijklmnopqrstuvwxyz0123456789-"];
+    if (![first characterIsMember:[profileID characterAtIndex:0]]) return GDTBackupSummaryPath();
+    for (NSUInteger index = 1; index < profileID.length; index++) {
+        if (![remaining characterIsMember:[profileID characterAtIndex:index]]) {
+            return GDTBackupSummaryPath();
+        }
+    }
+    return [NSHomeDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:
+        @"Library/Application Support/GDrive Backup Tiger/profiles/%@/last-run.status",
+        profileID]];
+}
+
 NSDictionary<NSString *, NSString *> *GDTReadBackupSummaryAtPath(NSString *path) {
     NSString *content = [NSString stringWithContentsOfFile:path
                                                   encoding:NSUTF8StringEncoding
