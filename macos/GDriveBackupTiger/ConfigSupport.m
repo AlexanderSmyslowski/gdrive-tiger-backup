@@ -308,6 +308,8 @@ BOOL GDTWriteConfigUpdatesAtPath(NSDictionary<NSString *, NSString *> *updates,
         @"GDRIVE_BACKUP_SCHEDULE",
         @"GDRIVE_BACKUP_VERSIONING",
         @"GDRIVE_BACKUP_VERSIONS_SUBDIR",
+        @"GDRIVE_BACKUP_RETENTION",
+        @"GDRIVE_BACKUP_ENCRYPTION",
         @"GDRIVE_BACKUP_LANG"
     ];
     for (NSString *key in orderedKeys) {

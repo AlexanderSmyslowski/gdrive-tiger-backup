@@ -31,10 +31,14 @@ pkg:
 	./packaging/build-pkg.sh
 
 test:
+	bash tests/app-trash-mode-test.sh
 	bash tests/backup-control-test.sh
+	bash tests/backup-encryption-test.sh
 	bash tests/backup-versioning-test.sh
+	bash tests/encryption-ui-test.sh
 	bash tests/release-metadata-test.sh
 	bash tests/trash-path-test.sh
+	bash tests/window-behavior-test.sh
 	@CONFIG_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-config-test.XXXXXX")"; \
 		clang $(OBJC_FLAGS) -framework Foundation -I macos/GDriveBackupTiger \
 			tests/config-support-test.m macos/GDriveBackupTiger/ConfigSupport.m -o "$$CONFIG_TEST_BIN"; \

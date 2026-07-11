@@ -25,11 +25,13 @@ The backup is read-only from Google Drive's perspective. It uses `rclone copy`, 
 - A `flock` lock prevents two backup jobs from running at the same time.
 - Before a real backup starts, the Tiger helper asks whether this volume or NAS destination should be used.
 - External disks and NAS targets are independent: plugging in the configured external disk still opens the confirmation dialog even when NAS backups are configured.
-- The native AppKit helper appears while the backup runs.
+- The native AppKit helper appears while the backup runs, but uses the normal
+  window level so other apps can cover it.
 - During each `rclone copy`, the helper shows live progress, percent, transferred size, speed, and ETA when rclone reports it.
 - The yellow Tiger-style button minimizes the helper into the Dock.
 - Clicking the Dock icon restores the helper.
-- When the backup finishes, the helper pops back up even if it was minimized.
+- When the backup finishes, the helper briefly shows completion without taking
+  focus from the app currently in use.
 
 ## Requirements
 
@@ -179,6 +181,8 @@ GDRIVE_BACKUP_CONFIRM=1
 GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
 GDRIVE_BACKUP_VERSIONING=1
 GDRIVE_BACKUP_VERSIONS_SUBDIR=.gdrive-versions
+GDRIVE_BACKUP_RETENTION=1
+GDRIVE_BACKUP_ENCRYPTION=none
 ```
 
 For NAS backups, the config looks like this:
@@ -198,7 +202,44 @@ Set `GDRIVE_BACKUP_CONFIRM=0` only if you deliberately want fully automatic back
 Set `GDRIVE_BACKUP_AUTO_CREATE_VOLUME=0` if you want to create the backup volume yourself.
 Set `GDRIVE_BACKUP_NAS_START_ON_MOUNT=1` only if mount events should also start the configured NAS backup; the default `0` reserves mount-triggered runs for the external APFS target.
 Set `GDRIVE_BACKUP_VERSIONING=0` only if overwritten destination files should not be preserved. Versioning is enabled by default and moves the previous content into `.gdrive-versions/<timestamp>/<backup area>` through rclone's `--backup-dir` support.
-`GDRIVE_BACKUP_VERSIONS_SUBDIR` must remain a safe relative path outside `My Drive`, `Shared with me`, and `Shared Drives`. Old versions are never deleted automatically; review and archive them according to your own storage policy.
+`GDRIVE_BACKUP_VERSIONS_SUBDIR` must remain a safe relative path outside `My Drive`, `Shared with me`, and `Shared Drives`.
+
+## Version retention
+
+Version retention is enabled by default and follows a Time Machine-like cadence:
+
+- keep every version run from the last 24 hours
+- from 24 hours through 30 days, keep the newest run for each calendar day
+- from 30 days through 52 weeks, keep the newest run for each ISO week
+- retire versions older than 52 weeks
+
+Thinning runs only after every copy phase has completed successfully. A dry run
+only logs candidates. Retired folders are moved to the macOS Trash when that is
+available. On macOS 13 and 14, the packaged app provides the same recoverable
+Foundation Trash operation because `/usr/bin/trash` is not present there. If no
+Trash method is available, candidates remain recoverable in
+`.gdrive-versions/.retention-trash` and are retried on later successful runs.
+Unknown or malformed version folder names are always kept. Set
+`GDRIVE_BACKUP_RETENTION=0` to disable automatic thinning.
+
+These version directories contain the older copies of files that were replaced
+in that run. Before a redundant daily or weekly run is retired, its newest
+per-file versions are merged into that bucket's retained run without
+overwriting newer entries. The trees remain space-efficient deltas, not complete
+point-in-time snapshots like Time Machine. Restoring a file means selecting its
+newest suitable copy from the live backup or the retained version trees.
+
+## Encryption
+
+Set `GDRIVE_BACKUP_ENCRYPTION=apfs` to require an already unlocked, encrypted
+APFS destination. The backup fails closed before rclone writes anything if the
+volume is missing, non-APFS, or not encrypted. The app never reads or stores the
+volume passphrase and will not auto-create an unencrypted volume in this mode.
+The same setting is available in the setup window as **Require encrypted APFS
+(already unlocked)** and is disabled for NAS targets.
+
+For setup steps, encrypted disk images on a NAS, and the separate `rclone crypt`
+design considerations, see [`docs/encryption.md`](docs/encryption.md).
 
 The app includes setup UI translations for Deutsch, English, Français, Español, 日本語, 粵語, and 한국어. Open `/Applications/GDrive Backup Tiger.app`, then use `GDrive Backup Tiger > Settings` to change the language.
 

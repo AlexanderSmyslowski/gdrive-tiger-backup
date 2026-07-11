@@ -26,6 +26,14 @@ check_contains "$ROOT/CHANGELOG.md" "## v${version} " \
   "changelog contains the app version"
 check_contains "$ROOT/README.md" "macOS ${minimum_macos%%.*}" \
   "README states the minimum macOS generation"
+check_contains "$ROOT/install.sh" "GDRIVE_BACKUP_RETENTION=1" \
+  "source installer enables retention explicitly"
+check_contains "$ROOT/install.sh" "GDRIVE_BACKUP_ENCRYPTION=none" \
+  "source installer keeps encryption opt-in"
+check_contains "$ROOT/packaging/scripts/postinstall" "GDRIVE_BACKUP_RETENTION=1" \
+  "package installer enables retention explicitly"
+check_contains "$ROOT/packaging/scripts/postinstall" "GDRIVE_BACKUP_ENCRYPTION=none" \
+  "package installer keeps encryption opt-in"
 
 if (( failures > 0 )); then
   printf '%s release metadata check(s) failed.\n' "$failures"

@@ -615,14 +615,14 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     [[NSColor colorWithCalibratedWhite:0.46 alpha:0.35] setFill];
     NSRectFill(NSMakeRect(0, NSMaxY(titleBar) - 1, NSWidth(bounds), 1));
 
-    NSBezierPath *panel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 84, NSWidth(bounds) - 36, 222) xRadius:12 yRadius:12];
+    NSBezierPath *panel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 84, NSWidth(bounds) - 36, 254) xRadius:12 yRadius:12];
     [[NSColor colorWithCalibratedWhite:1.0 alpha:0.54] setFill];
     [panel fill];
     [[NSColor colorWithCalibratedWhite:0.42 alpha:0.24] setStroke];
     panel.lineWidth = 1;
     [panel stroke];
 
-    NSBezierPath *schedulePanel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 318, NSWidth(bounds) - 36, 52) xRadius:12 yRadius:12];
+    NSBezierPath *schedulePanel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 350, NSWidth(bounds) - 36, 52) xRadius:12 yRadius:12];
     [[NSColor colorWithCalibratedWhite:1.0 alpha:0.42] setFill];
     [schedulePanel fill];
     [[NSColor colorWithCalibratedWhite:0.42 alpha:0.20] setStroke];
@@ -650,6 +650,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic) BOOL completing;
 @property(nonatomic) BOOL confirmationAnswered;
 @property(nonatomic, strong) NSPopUpButton *targetPopup;
+@property(nonatomic, strong) NSButton *encryptionCheckbox;
 @property(nonatomic, strong) NSPopUpButton *mountedNasPopup;
 @property(nonatomic, strong) NSPopUpButton *discoveredNasPopup;
 @property(nonatomic, strong) NSPopUpButton *schedulePopup;
@@ -767,7 +768,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     [self buildMainMenu];
     [NSApp setApplicationIconImage:CreateApplicationIcon()];
 
-    NSSize size = NSMakeSize(610, 430);
+    NSSize size = NSMakeSize(610, 462);
     NSRect screenFrame = NSScreen.mainScreen ? NSScreen.mainScreen.visibleFrame : NSMakeRect(0, 0, 1200, 800);
     NSPoint origin = NSMakePoint(NSMidX(screenFrame) - size.width / 2, NSMidY(screenFrame) - size.height / 2);
 
@@ -783,7 +784,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.window.contentView = content;
 
     NSMutableDictionary<NSString *, NSString *> *config = GDTReadConfigDictionary();
-    NSString *target = [config[@"GDRIVE_BACKUP_TARGET"] ?: @"apfs" lowercaseString];
+    NSString *configuredTarget = [config[@"GDRIVE_BACKUP_TARGET"] lowercaseString];
+    NSString *target = configuredTarget.length ? configuredTarget : @"apfs";
+    BOOL preserveConfiguredAPFSTarget = [configuredTarget isEqualToString:@"apfs"];
+    NSString *encryption = [config[@"GDRIVE_BACKUP_ENCRYPTION"] ?: @"none" lowercaseString];
     NSString *schedule = [config[@"GDRIVE_BACKUP_SCHEDULE"] ?: @"manual" lowercaseString];
 
     NSTextField *title = [self label:@"Google Drive Backup" frame:NSMakeRect(26, 16, 300, 22)];
@@ -801,40 +805,51 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     [self.targetPopup addItemWithTitle:T(self.language, @"nas")];
     self.targetPopup.lastItem.representedObject = @"nas";
     [self.targetPopup selectItemAtIndex:[target isEqualToString:@"nas"] ? 1 : 0];
+    self.targetPopup.target = self;
+    self.targetPopup.action = @selector(targetChanged:);
     [content addSubview:self.targetPopup];
 
-    [content addSubview:[self label:T(self.language, @"mountedNas") frame:NSMakeRect(34, 136, 124, 22)]];
-    self.mountedNasPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 132, 270, 28)];
+    self.encryptionCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(164, 132, 400, 24)];
+    self.encryptionCheckbox.buttonType = NSButtonTypeSwitch;
+    self.encryptionCheckbox.title = T(self.language, @"encryptionAPFS");
+    self.encryptionCheckbox.toolTip = T(self.language, @"encryptionAPFSTip");
+    self.encryptionCheckbox.accessibilityHelp = self.encryptionCheckbox.toolTip;
+    self.encryptionCheckbox.state = [encryption isEqualToString:@"apfs"] ? NSControlStateValueOn : NSControlStateValueOff;
+    self.encryptionCheckbox.font = [NSFont fontWithName:@"Lucida Grande" size:12] ?: [NSFont systemFontOfSize:12];
+    [content addSubview:self.encryptionCheckbox];
+
+    [content addSubview:[self label:T(self.language, @"mountedNas") frame:NSMakeRect(34, 168, 124, 22)]];
+    self.mountedNasPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 164, 270, 28)];
     self.mountedNasPopup.target = self;
     self.mountedNasPopup.action = @selector(selectMountedNAS:);
     [content addSubview:self.mountedNasPopup];
-    [content addSubview:[self button:T(self.language, @"refresh") frame:NSMakeRect(444, 132, 120, 28) action:@selector(refreshMountedNAS:)]];
+    [content addSubview:[self button:T(self.language, @"refresh") frame:NSMakeRect(444, 164, 120, 28) action:@selector(refreshMountedNAS:)]];
 
-    [content addSubview:[self label:T(self.language, @"nasUrl") frame:NSMakeRect(34, 174, 124, 22)]];
-    self.nasURLField = [self fieldWithFrame:NSMakeRect(164, 170, 270, 26)];
+    [content addSubview:[self label:T(self.language, @"nasUrl") frame:NSMakeRect(34, 206, 124, 22)]];
+    self.nasURLField = [self fieldWithFrame:NSMakeRect(164, 202, 270, 26)];
     self.nasURLField.stringValue = config[@"GDRIVE_BACKUP_NAS_URL"] ?: @"";
     [content addSubview:self.nasURLField];
-    [content addSubview:[self button:T(self.language, @"openFinder") frame:NSMakeRect(444, 169, 120, 28) action:@selector(openNASInFinder:)]];
+    [content addSubview:[self button:T(self.language, @"openFinder") frame:NSMakeRect(444, 201, 120, 28) action:@selector(openNASInFinder:)]];
 
-    [content addSubview:[self label:T(self.language, @"nasMount") frame:NSMakeRect(34, 210, 124, 22)]];
-    self.nasMountField = [self fieldWithFrame:NSMakeRect(164, 206, 270, 26)];
+    [content addSubview:[self label:T(self.language, @"nasMount") frame:NSMakeRect(34, 242, 124, 22)]];
+    self.nasMountField = [self fieldWithFrame:NSMakeRect(164, 238, 270, 26)];
     self.nasMountField.stringValue = config[@"GDRIVE_BACKUP_NAS_MOUNT"] ?: @"";
     [content addSubview:self.nasMountField];
 
-    [content addSubview:[self label:T(self.language, @"nasSubdir") frame:NSMakeRect(34, 246, 124, 22)]];
-    self.nasSubdirField = [self fieldWithFrame:NSMakeRect(164, 242, 270, 26)];
+    [content addSubview:[self label:T(self.language, @"nasSubdir") frame:NSMakeRect(34, 278, 124, 22)]];
+    self.nasSubdirField = [self fieldWithFrame:NSMakeRect(164, 274, 270, 26)];
     self.nasSubdirField.stringValue = config[@"GDRIVE_BACKUP_NAS_SUBDIR"] ?: @"GoogleDrive-Backup";
     [content addSubview:self.nasSubdirField];
 
-    self.discoveredNasPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 278, 270, 28)];
+    self.discoveredNasPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 310, 270, 28)];
     [self.discoveredNasPopup addItemWithTitle:@"Bonjour"];
     self.discoveredNasPopup.target = self;
     self.discoveredNasPopup.action = @selector(selectDiscoveredNAS:);
     [content addSubview:self.discoveredNasPopup];
-    [content addSubview:[self button:T(self.language, @"discover") frame:NSMakeRect(444, 278, 120, 28) action:@selector(discoverNAS:)]];
+    [content addSubview:[self button:T(self.language, @"discover") frame:NSMakeRect(444, 310, 120, 28) action:@selector(discoverNAS:)]];
 
-    [content addSubview:[self label:T(self.language, @"schedule") frame:NSMakeRect(34, 334, 124, 22)]];
-    self.schedulePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 330, 270, 28)];
+    [content addSubview:[self label:T(self.language, @"schedule") frame:NSMakeRect(34, 366, 124, 22)]];
+    self.schedulePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 362, 270, 28)];
     NSArray<NSArray<NSString *> *> *scheduleItems = @[
         @[T(self.language, @"scheduleManual"), @"manual"],
         @[T(self.language, @"scheduleLogin"), @"login"],
@@ -850,25 +865,41 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     }
     [content addSubview:self.schedulePopup];
 
-    self.statusField = [self label:T(self.language, @"statusReady") frame:NSMakeRect(26, 388, 270, 20)];
+    self.statusField = [self label:T(self.language, @"statusReady") frame:NSMakeRect(26, 420, 270, 20)];
     self.statusField.textColor = [NSColor colorWithCalibratedWhite:0.36 alpha:1.0];
     [content addSubview:self.statusField];
 
-    NSButton *saveButton = [self button:T(self.language, @"save") frame:NSMakeRect(282, 383, 88, 30) action:@selector(saveSetup:)];
-    NSButton *dryRunButton = [self button:T(self.language, @"dryRun") frame:NSMakeRect(378, 383, 112, 30) action:@selector(startDryRun:)];
+    NSButton *saveButton = [self button:T(self.language, @"save") frame:NSMakeRect(282, 415, 88, 30) action:@selector(saveSetup:)];
+    NSButton *dryRunButton = [self button:T(self.language, @"dryRun") frame:NSMakeRect(378, 415, 112, 30) action:@selector(startDryRun:)];
     dryRunButton.toolTip = T(self.language, @"dryRunTip");
-    NSButton *backupButton = [self button:T(self.language, @"backupNow") frame:NSMakeRect(498, 383, 88, 30) action:@selector(startBackupNow:)];
+    NSButton *backupButton = [self button:T(self.language, @"backupNow") frame:NSMakeRect(498, 415, 88, 30) action:@selector(startBackupNow:)];
     backupButton.toolTip = T(self.language, @"backupNowTip");
     [content addSubview:saveButton];
     [content addSubview:dryRunButton];
     [content addSubview:backupButton];
 
-    [self refreshMountedNAS:nil];
+    [self refreshMountedNASAllowingTargetAutoSelection:!preserveConfiguredAPFSTarget];
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
 }
 
+- (void)targetChanged:(id)sender {
+    (void)sender;
+    [self updateTargetControls];
+}
+
+- (void)updateTargetControls {
+    NSString *target = self.targetPopup.selectedItem.representedObject ?: @"apfs";
+    BOOL isAPFSTarget = [target isEqualToString:@"apfs"];
+    self.encryptionCheckbox.enabled = isAPFSTarget;
+}
+
 - (void)refreshMountedNAS:(id)sender {
+    (void)sender;
+    [self refreshMountedNASAllowingTargetAutoSelection:YES];
+}
+
+- (void)refreshMountedNASAllowingTargetAutoSelection:(BOOL)allowAutomaticTargetSelection {
     [self.mountedNasPopup removeAllItems];
     [self.mountedNasPopup addItemWithTitle:T(self.language, @"selectMountedVolume")];
     self.mountedNasPopup.lastItem.representedObject = @{};
@@ -887,13 +918,13 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
         }
 
         NSString *volumeHost = [self hostPartFromURLString:volume[@"url"]];
-        if (!currentMount.length && wantedHost.length && [volumeHost isEqualToString:wantedHost]) {
+        if (allowAutomaticTargetSelection && !currentMount.length && wantedHost.length && [volumeHost isEqualToString:wantedHost]) {
             autoSelection = volume;
             [self.mountedNasPopup selectItem:self.mountedNasPopup.lastItem];
         }
     }
 
-    if (!currentMount.length && !autoSelection && volumes.count == 1) {
+    if (allowAutomaticTargetSelection && !currentMount.length && !autoSelection && volumes.count == 1) {
         autoSelection = volumes.firstObject;
         [self.mountedNasPopup selectItemAtIndex:1];
     }
@@ -906,6 +937,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
         }
         [self.targetPopup selectItemAtIndex:1];
     }
+    [self updateTargetControls];
 }
 
 - (NSString *)hostPartFromURLString:(NSString *)urlString {
@@ -946,6 +978,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
         self.nasURLField.stringValue = url;
     }
     [self.targetPopup selectItemAtIndex:1];
+    [self updateTargetControls];
 }
 
 - (void)selectDiscoveredNAS:(id)sender {
@@ -954,6 +987,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     if (url.length) {
         self.nasURLField.stringValue = url;
         [self.targetPopup selectItemAtIndex:1];
+        [self updateTargetControls];
     }
 }
 
@@ -1008,6 +1042,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     NSMutableDictionary<NSString *, NSString *> *updates = [NSMutableDictionary dictionary];
     updates[@"GDRIVE_BACKUP_TARGET"] = target;
     updates[@"GDRIVE_BACKUP_SCHEDULE"] = schedule;
+    BOOL requiresEncryptedAPFS = [target isEqualToString:@"apfs"] && self.encryptionCheckbox.state == NSControlStateValueOn;
+    updates[@"GDRIVE_BACKUP_ENCRYPTION"] = requiresEncryptedAPFS ? @"apfs" : @"none";
 
     if ([target isEqualToString:@"nas"]) {
         updates[@"GDRIVE_BACKUP_NAS_MOUNT"] = self.nasMountField.stringValue ?: @"";
@@ -1219,7 +1255,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.window.opaque = NO;
     self.window.backgroundColor = NSColor.clearColor;
     self.window.hasShadow = YES;
-    self.window.level = NSFloatingWindowLevel;
+    self.window.level = self.confirmMode ? NSFloatingWindowLevel : NSNormalWindowLevel;
     self.window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
     TigerBackupView *contentView = [[TigerBackupView alloc] initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
     __weak typeof(self) weakSelf = self;
@@ -1245,7 +1281,9 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
         self.window.animator.alphaValue = 1;
     } completionHandler:nil];
 
-    [NSApp activateIgnoringOtherApps:YES];
+    if (self.confirmMode) {
+        [NSApp activateIgnoringOtherApps:YES];
+    }
 
     if (self.confirmMode) {
         self.confirmTimeoutTimer = [NSTimer scheduledTimerWithTimeInterval:120.0
@@ -1442,14 +1480,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     if (wasHidden) {
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
         self.window.alphaValue = 0;
-        [self.window makeKeyAndOrderFront:nil];
-        [self.window orderFrontRegardless];
+        [self.window orderFront:nil];
     } else {
         self.window.alphaValue = 1;
-        [self.window orderFrontRegardless];
     }
-
-    [NSApp activateIgnoringOtherApps:YES];
 
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
         context.duration = 0.22;
@@ -1473,10 +1507,41 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 
 @end
 
+static int TrashPathsFromArguments(int argc, const char *argv[]) {
+    if (argc < 3) {
+        fprintf(stderr, "Usage: GDriveBackupTiger --trash PATH [...]\n");
+        return 64;
+    }
+
+    NSFileManager *fileManager = NSFileManager.defaultManager;
+    int result = 0;
+    for (int index = 2; index < argc; index++) {
+        NSString *path = [NSString stringWithUTF8String:argv[index]];
+        if (!path.length) {
+            fprintf(stderr, "Invalid filesystem path.\n");
+            result = 64;
+            continue;
+        }
+
+        NSError *error = nil;
+        NSURL *trashedURL = nil;
+        if (![fileManager trashItemAtURL:[NSURL fileURLWithPath:path]
+                         resultingItemURL:&trashedURL
+                                    error:&error]) {
+            const char *message = error.localizedDescription.UTF8String ?: "Trash operation failed.";
+            fprintf(stderr, "%s: %s\n", path.fileSystemRepresentation, message);
+            result = 1;
+        }
+    }
+    return result;
+}
+
 int main(int argc, const char *argv[]) {
-    (void)argc;
-    (void)argv;
     @autoreleasepool {
+        if (argc > 1 && [[NSString stringWithUTF8String:argv[1]] isEqualToString:@"--trash"]) {
+            return TrashPathsFromArguments(argc, argv);
+        }
+
         NSApplication *app = NSApplication.sharedApplication;
         AppDelegate *delegate = [[AppDelegate alloc] init];
         app.delegate = delegate;

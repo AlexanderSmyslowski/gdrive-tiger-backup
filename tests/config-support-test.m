@@ -54,7 +54,9 @@ int main(void) {
         NSError *error = nil;
         NSDictionary<NSString *, NSString *> *updates = @{
             @"GDRIVE_BACKUP_NAS_SUBDIR": roundTripValue,
-            @"GDRIVE_BACKUP_NAS_URL": @"smb://guest:p'a\\ss@nas.local/Backups"
+            @"GDRIVE_BACKUP_NAS_URL": @"smb://guest:p'a\\ss@nas.local/Backups",
+            @"GDRIVE_BACKUP_RETENTION": @"1",
+            @"GDRIVE_BACKUP_ENCRYPTION": @"apfs"
         };
         if (!GDTWriteConfigUpdatesAtPath(updates, path, &error)) {
             NSLog(@"FAIL: could not write config: %@", error);
@@ -68,6 +70,12 @@ int main(void) {
                     @"written URL must survive an app readback");
         AssertEqual(RunBashAndReadValue(path, @"GDRIVE_BACKUP_NAS_SUBDIR"), roundTripValue,
                     @"written values must retain their value when sourced by the backup script");
+        AssertEqual(readBack[@"GDRIVE_BACKUP_ENCRYPTION"], @"apfs",
+                    @"the encryption policy must survive an app readback");
+        AssertEqual(RunBashAndReadValue(path, @"GDRIVE_BACKUP_ENCRYPTION"), @"apfs",
+                    @"the encryption policy must retain its value in the backup script");
+        AssertEqual(readBack[@"GDRIVE_BACKUP_RETENTION"], @"1",
+                    @"the retention policy must survive an app readback");
 
         NSNumber *permissions = [NSFileManager.defaultManager attributesOfItemAtPath:path error:nil][NSFilePosixPermissions];
         if ((permissions.unsignedShortValue & 0777) != 0600) {

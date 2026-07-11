@@ -2,7 +2,10 @@
 
 ## Unreleased
 
-- Preserve overwritten destination files in timestamped `.gdrive-versions` trees by default, with an explicit opt-out and no automatic retention deletion.
+- Preserve overwritten destination files in timestamped `.gdrive-versions` trees by default, with an explicit opt-out.
+- Thin successful version runs with a Time Machine-like hourly, daily, and weekly cadence; coalesce sparse per-file deltas before moving retired runs to recoverable Trash or retriable quarantine.
+- Let ordinary progress windows fall behind other applications while keeping confirmation prompts visible.
+- Add a fail-closed mode for already unlocked encrypted APFS destinations without storing volume passphrases.
 - Make the NAS mount-trigger opt-in effective and return a failure status when manual or scheduled backups have no available target.
 - Add hermetic backup-control, rclone command, NAS parsing, config roundtrip, release metadata, and package payload tests.
 - Split configuration and localization responsibilities out of the AppKit entry point.

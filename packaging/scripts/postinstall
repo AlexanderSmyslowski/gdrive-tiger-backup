@@ -53,6 +53,8 @@ if [[ ! -f "$config_file" ]]; then
     printf 'GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1\n'
     printf 'GDRIVE_BACKUP_VERSIONING=1\n'
     printf 'GDRIVE_BACKUP_VERSIONS_SUBDIR=.gdrive-versions\n'
+    printf 'GDRIVE_BACKUP_RETENTION=1\n'
+    printf 'GDRIVE_BACKUP_ENCRYPTION=none\n'
     printf 'GDRIVE_BACKUP_SCHEDULE=manual\n'
   } >"$config_file"
 fi

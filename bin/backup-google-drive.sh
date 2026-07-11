@@ -124,6 +124,15 @@ AUTO_CREATE_VOLUME="${GDRIVE_BACKUP_AUTO_CREATE_VOLUME:-1}"
 BACKUP_LANG="${GDRIVE_BACKUP_LANG:-auto}"
 VERSIONING="${GDRIVE_BACKUP_VERSIONING-1}"
 VERSIONS_SUBDIR="${GDRIVE_BACKUP_VERSIONS_SUBDIR-.gdrive-versions}"
+RETENTION="${GDRIVE_BACKUP_RETENTION-1}"
+RETENTION_TRASH_BIN="${GDRIVE_BACKUP_RETENTION_TRASH_BIN-}"
+RETENTION_APP_TRASH_BIN="${GDRIVE_BACKUP_APP_TRASH_BIN-${ANIMATION_APP%/}/Contents/MacOS/GDriveBackupTiger}"
+ENCRYPTION="$(lowercase "${GDRIVE_BACKUP_ENCRYPTION-none}")"
+DISKUTIL_BIN="${GDRIVE_BACKUP_DISKUTIL-/usr/sbin/diskutil}"
+ENCRYPTED_VOLUME_REAL=""
+ENCRYPTED_VOLUME_DEVICE=""
+ENCRYPTED_VOLUME_UUID=""
+ENCRYPTED_VOLUME_IDENTIFIER=""
 VERSION_RUN_ID=""
 TARGET_APPROVED=0
 COPY_INDEX=0
@@ -160,6 +169,14 @@ validate_versioning_config() {
       ;;
   esac
 
+  case "$RETENTION" in
+    0|1) ;;
+    *)
+      log "FEHLER: GDRIVE_BACKUP_RETENTION muss 0 oder 1 sein."
+      return 1
+      ;;
+  esac
+
   [[ "$VERSIONING" == "1" ]] || return 0
 
   if [[ -z "$VERSIONS_SUBDIR" || "$VERSIONS_SUBDIR" == /* ||
@@ -183,6 +200,22 @@ validate_versioning_config() {
   esac
 }
 
+validate_encryption_config() {
+  case "$ENCRYPTION" in
+    none) return 0 ;;
+    apfs)
+      if [[ "$BACKUP_TARGET" != "apfs" ]]; then
+        log "FEHLER: GDRIVE_BACKUP_ENCRYPTION=apfs ist nur fuer ein lokales APFS-Ziel zulaessig."
+        return 1
+      fi
+      ;;
+    *)
+      log "FEHLER: GDRIVE_BACKUP_ENCRYPTION muss 'none' oder 'apfs' sein."
+      return 1
+      ;;
+  esac
+}
+
 version_backup_dir_for() {
   local destination="$1"
   local relative_destination="${destination#"$DEST_ROOT"/}"
@@ -200,6 +233,546 @@ safe_name() {
   value="${value//:/_}"
   value="${value//$'\n'/_}"
   printf '%s' "$value"
+}
+
+canonical_existing_directory() {
+  local path="$1"
+  [[ -d "$path" ]] || return 1
+  (cd "$path" 2>/dev/null && /bin/pwd -P)
+}
+
+canonical_existing_ancestor() {
+  local path="$1"
+  local parent=""
+
+  while [[ ! -e "$path" && ! -L "$path" ]]; do
+    parent="$(/usr/bin/dirname "$path")"
+    [[ "$parent" != "$path" ]] || return 1
+    path="$parent"
+  done
+
+  canonical_existing_directory "$path"
+}
+
+path_is_on_encrypted_volume() {
+  local path="$1"
+  local existing_real device
+
+  [[ "$ENCRYPTION" == "apfs" ]] || return 0
+  [[ -n "$ENCRYPTED_VOLUME_REAL" && -n "$ENCRYPTED_VOLUME_DEVICE" ]] || return 1
+
+  if ! existing_real="$(canonical_existing_ancestor "$path")"; then
+    log "FEHLER: Verschluesseltes Ziel kann nicht sicher aufgeloest werden: $(safe_name "$path")"
+    return 1
+  fi
+  if ! device="$(/usr/bin/stat -f '%d' "$existing_real" 2>/dev/null)" ||
+     [[ -z "$device" ]]; then
+    log "FEHLER: Volume-Zugehoerigkeit kann nicht geprueft werden: $(safe_name "$path")"
+    return 1
+  fi
+
+  case "$existing_real/" in
+    "$ENCRYPTED_VOLUME_REAL/"|"$ENCRYPTED_VOLUME_REAL/"*) ;;
+    *)
+      log "FEHLER: Zielpfad verlaesst das verschluesselte Volume: $(safe_name "$path")"
+      return 1
+      ;;
+  esac
+
+  if [[ "$device" != "$ENCRYPTED_VOLUME_DEVICE" ]]; then
+    log "FEHLER: Zielpfad liegt auf einem anderen Dateisystem: $(safe_name "$path")"
+    return 1
+  fi
+}
+
+plist_data_value() {
+  local plist_data="$1"
+  local key="$2"
+  printf '%s' "$plist_data" | /usr/bin/plutil -extract "$key" raw -o - - 2>/dev/null
+}
+
+validate_encrypted_apfs_destination() {
+  local plist_data filesystem encrypted mount_point locked volume_uuid volume_identifier
+  local mount_real current_real current_device active_path initial_validation=0
+
+  [[ "$ENCRYPTION" == "apfs" ]] || return 0
+
+  if [[ ! -x "$DISKUTIL_BIN" ]]; then
+    log "FEHLER: diskutil fuer die Verschluesselungspruefung fehlt: $(safe_name "$DISKUTIL_BIN")"
+    return 1
+  fi
+  if ! plist_data="$(run_with_timeout 8 "$DISKUTIL_BIN" info -plist "$VOLUME" 2>/dev/null)"; then
+    log "FEHLER: Verschluesselungsstatus des Backup-Volumes ist nicht lesbar."
+    return 1
+  fi
+
+  filesystem="$(plist_data_value "$plist_data" FilesystemType || true)"
+  encrypted="$(plist_data_value "$plist_data" Encryption || true)"
+  mount_point="$(plist_data_value "$plist_data" MountPoint || true)"
+  locked="$(plist_data_value "$plist_data" Locked || true)"
+  volume_uuid="$(plist_data_value "$plist_data" VolumeUUID || true)"
+  volume_identifier="$(plist_data_value "$plist_data" DeviceIdentifier || true)"
+  if [[ "$filesystem" != "apfs" || "$encrypted" != "true" || "$locked" != "false" ||
+        -z "$mount_point" || -z "$volume_uuid" || -z "$volume_identifier" ]]; then
+    log "FEHLER: Backup-Volume ist nicht verschluesselt oder kein entsperrtes APFS-Volume."
+    return 1
+  fi
+
+  if ! current_real="$(canonical_existing_directory "$VOLUME")" ||
+     ! mount_real="$(canonical_existing_directory "$mount_point")" ||
+     [[ "$current_real" != "$mount_real" ]]; then
+    log "FEHLER: diskutil bestaetigt nicht den konfigurierten APFS-Mountpunkt."
+    return 1
+  fi
+  if ! current_device="$(/usr/bin/stat -f '%d' "$current_real" 2>/dev/null)" ||
+     [[ -z "$current_device" ]]; then
+    log "FEHLER: Dateisystem-ID des verschluesselten Volumes ist nicht lesbar."
+    return 1
+  fi
+
+  if [[ -z "$ENCRYPTED_VOLUME_UUID" ]]; then
+    initial_validation=1
+    ENCRYPTED_VOLUME_REAL="$current_real"
+    ENCRYPTED_VOLUME_DEVICE="$current_device"
+    ENCRYPTED_VOLUME_UUID="$volume_uuid"
+    ENCRYPTED_VOLUME_IDENTIFIER="$volume_identifier"
+  elif [[ "$current_real" != "$ENCRYPTED_VOLUME_REAL" ||
+          "$current_device" != "$ENCRYPTED_VOLUME_DEVICE" ||
+          "$volume_uuid" != "$ENCRYPTED_VOLUME_UUID" ||
+          "$volume_identifier" != "$ENCRYPTED_VOLUME_IDENTIFIER" ]]; then
+    log "FEHLER: Identitaet des verschluesselten Backup-Volumes hat sich waehrend des Laufs geaendert."
+    return 1
+  fi
+
+  if ! path_is_on_encrypted_volume "$DEST_ROOT"; then
+    return 1
+  fi
+  for active_path in \
+    "$DEST_ROOT/My Drive" \
+    "$DEST_ROOT/Shared with me" \
+    "$DEST_ROOT/Shared Drives" \
+    "$DEST_ROOT/Shared Drives"/* \
+    "$DEST_ROOT/Shared Drives"/.[!.]* \
+    "$DEST_ROOT/Shared Drives"/..?*; do
+    if [[ -e "$active_path" || -L "$active_path" ]] &&
+       ! path_is_on_encrypted_volume "$active_path"; then
+      return 1
+    fi
+  done
+  if [[ "$VERSIONING" == "1" ]] &&
+     ! path_is_on_encrypted_volume "${DEST_ROOT%/}/$VERSIONS_SUBDIR"; then
+    return 1
+  fi
+
+  if (( initial_validation == 1 )); then
+    log "Verschluesseltes APFS-Ziel bestaetigt: $ENCRYPTED_VOLUME_REAL"
+  fi
+}
+
+validate_encrypted_destination_tree() {
+  local root="$1"
+  local symlink_path device_listing device
+
+  [[ "$ENCRYPTION" == "apfs" ]] || return 0
+  [[ -e "$root" || -L "$root" ]] || return 0
+
+  if ! path_is_on_encrypted_volume "$root"; then
+    return 1
+  fi
+  if [[ -L "$root" ]]; then
+    log "FEHLER: Symbolischer Link im verschluesselten Ziel ist nicht zulaessig: $(safe_name "$root")"
+    return 1
+  fi
+  if ! symlink_path="$(/usr/bin/find -x "$root" -type l -print -quit 2>/dev/null)"; then
+    log "FEHLER: Zielbaum kann nicht vollstaendig auf symbolische Links geprueft werden: $(safe_name "$root")"
+    return 1
+  fi
+  if [[ -n "$symlink_path" ]]; then
+    log "FEHLER: Symbolischer Link im verschluesselten Ziel ist nicht zulaessig: $(safe_name "$symlink_path")"
+    return 1
+  fi
+  if ! device_listing="$(/usr/bin/find -x "$root" -type d -exec /usr/bin/stat -f '%d' {} + 2>/dev/null)"; then
+    log "FEHLER: Zielbaum kann nicht vollstaendig auf fremde Dateisysteme geprueft werden: $(safe_name "$root")"
+    return 1
+  fi
+  while IFS= read -r device; do
+    [[ -n "$device" ]] || continue
+    if [[ "$device" != "$ENCRYPTED_VOLUME_DEVICE" ]]; then
+      log "FEHLER: Ein eingebundenes fremdes Dateisystem liegt im verschluesselten Zielbaum: $(safe_name "$root")"
+      return 1
+    fi
+  done <<<"$device_listing"
+}
+
+validate_all_encrypted_active_trees() {
+  local active_path
+  [[ "$ENCRYPTION" == "apfs" ]] || return 0
+
+  if ! validate_encrypted_apfs_destination; then
+    return 1
+  fi
+  for active_path in \
+    "$DEST_ROOT/My Drive" \
+    "$DEST_ROOT/Shared with me" \
+    "$DEST_ROOT/Shared Drives"; do
+    if ! validate_encrypted_destination_tree "$active_path"; then
+      return 1
+    fi
+  done
+}
+
+retention_timestamp_for_name() {
+  local name="$1"
+  if [[ "$name" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}[+-][0-9]{4})-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  return 1
+}
+
+merge_retention_candidate_into_keeper() {
+  local source="$1"
+  local keeper="$2"
+  local bucket="$3"
+  local unsafe_link
+  local -a merge_options
+
+  [[ "$source" != "$keeper" ]] || return 0
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "DRY-RUN Aufbewahrung wuerde Dateiversionen zusammenfuehren: ${source##*/} -> ${keeper##*/} ($bucket)"
+    return 0
+  fi
+
+  if ! validate_encrypted_apfs_destination ||
+     ! validate_encrypted_destination_tree "$source" ||
+     ! validate_encrypted_destination_tree "$keeper"; then
+    log "FEHLER: Versionsstaende koennen nicht sicher zusammengefuehrt werden: ${source##*/}"
+    return 1
+  fi
+
+  if ! unsafe_link="$(/usr/bin/find -x "$keeper" -type l -print -quit 2>/dev/null)" ||
+     [[ -n "$unsafe_link" ]]; then
+    log "FEHLER: Aufbewahrungsstand enthaelt einen unsicheren symbolischen Link: ${keeper##*/}"
+    return 1
+  fi
+
+  merge_options=(--ignore-existing --create-empty-src-dirs --log-level INFO --one-file-system)
+  if ! rclone copy "$source" "$keeper" "${merge_options[@]}"; then
+    log "FEHLER: Dateiversionen konnten nicht in den Aufbewahrungsstand uebernommen werden: ${source##*/}"
+    return 1
+  fi
+
+  log "Aufbewahrung: neueste Dateiversionen zusammengefuehrt: ${source##*/} -> ${keeper##*/} ($bucket)"
+}
+
+move_retention_candidate() {
+  local path="$1"
+  local reason="$2"
+  local versions_root="$3"
+  local name="${path##*/}"
+  local quarantine="$versions_root/.retention-trash"
+  local quarantine_target="$quarantine/$name"
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "DRY-RUN Aufbewahrungskandidat: $name ($reason)"
+    return 0
+  fi
+
+  if trash_retention_path "$path"; then
+    log "Aufbewahrung: $name in den Papierkorb verschoben ($reason)."
+    return 0
+  fi
+  if [[ -n "$RETENTION_TRASH_BIN" || -x /usr/bin/trash || -x "$RETENTION_APP_TRASH_BIN" ]]; then
+    log "WARNUNG: Papierkorb fehlgeschlagen; verwende lokale Quarantaene fuer $name."
+  fi
+
+  if ! path_is_on_encrypted_volume "$quarantine" ||
+     ! path_is_on_encrypted_volume "$quarantine_target"; then
+    log "FEHLER: Aufbewahrungs-Quarantaene verlaesst das verschluesselte Volume: $name"
+    return 1
+  fi
+  if ! mkdir -p "$quarantine"; then
+    log "FEHLER: Aufbewahrungs-Quarantaene kann nicht angelegt werden: $quarantine"
+    return 1
+  fi
+  if [[ -e "$quarantine_target" ]]; then
+    log "FEHLER: Aufbewahrungskandidat bleibt erhalten; Quarantaeneziel existiert bereits: $name"
+    return 1
+  fi
+  if ! /bin/mv "$path" "$quarantine_target"; then
+    log "FEHLER: Aufbewahrungskandidat konnte nicht in die Quarantaene verschoben werden: $name"
+    return 1
+  fi
+
+  log "Aufbewahrung: $name nach .retention-trash verschoben ($reason)."
+}
+
+trash_retention_path() {
+  local path="$1"
+
+  if [[ -n "$RETENTION_TRASH_BIN" ]]; then
+    [[ -x "$RETENTION_TRASH_BIN" ]] || return 1
+    "$RETENTION_TRASH_BIN" "$path" >/dev/null 2>&1
+    return
+  fi
+  if [[ -x /usr/bin/trash ]]; then
+    /usr/bin/trash "$path" >/dev/null 2>&1
+    return
+  fi
+  if [[ -x "$RETENTION_APP_TRASH_BIN" ]]; then
+    "$RETENTION_APP_TRASH_BIN" --trash "$path" >/dev/null 2>&1
+    return
+  fi
+  return 1
+}
+
+retry_retention_quarantine() {
+  local versions_root="$1"
+  local quarantine="$versions_root/.retention-trash"
+  local path name remaining=0 moved=0
+
+  [[ -e "$quarantine" || -L "$quarantine" ]] || return 0
+  if [[ ! -d "$quarantine" || -L "$quarantine" ]]; then
+    log "WARNUNG: Aufbewahrungs-Quarantaene ist kein sicherer Ordner und bleibt unangetastet."
+    return 0
+  fi
+  if ! path_is_on_encrypted_volume "$quarantine"; then
+    log "WARNUNG: Aufbewahrungs-Quarantaene verlaesst das verschluesselte Volume und bleibt unangetastet."
+    return 0
+  fi
+
+  for path in "$quarantine"/* "$quarantine"/.[!.]* "$quarantine"/..?*; do
+    [[ -e "$path" || -L "$path" ]] || continue
+    name="${path##*/}"
+    if [[ "$DRY_RUN" == "1" ]]; then
+      log "DRY-RUN Quarantaene-Papierkorb: $name"
+      remaining=$((remaining + 1))
+    elif trash_retention_path "$path"; then
+      log "Aufbewahrung: Quarantaene nachtraeglich in den Papierkorb verschoben: $name"
+      moved=$((moved + 1))
+    else
+      remaining=$((remaining + 1))
+    fi
+  done
+
+  if (( moved > 0 || remaining > 0 )); then
+    log "Aufbewahrung: Quarantaene nachgeprueft, papierkorb=$moved verbleibend=$remaining"
+  fi
+}
+
+prune_version_history() {
+  local versions_root="${DEST_ROOT%/}/$VERSIONS_SUBDIR"
+  local now_epoch path name timestamp epoch age tier bucket day
+  local calendar_value normalized_calendar timezone_hours timezone_minutes
+  local entry_count=0 daily_count=0 weekly_count=0
+  local recent_count=0 unknown_count=0 future_count=0 candidate_count=0 prune_errors=0
+  local index keeper_index found
+  local -a entry_paths entry_tiers entry_buckets entry_epochs entry_processed
+  local -a daily_buckets daily_keeper_epochs daily_keeper_paths
+  local -a weekly_buckets weekly_keeper_epochs weekly_keeper_paths
+
+  if ! validate_encrypted_apfs_destination; then
+    log "FEHLER: Verschluesseltes Volume konnte vor der Aufbewahrung nicht erneut bestaetigt werden."
+    return 1
+  fi
+  if ! path_is_on_encrypted_volume "$versions_root"; then
+    log "FEHLER: Versionsaufbewahrung verlaesst das verschluesselte Volume."
+    return 1
+  fi
+
+  if [[ ! -d "$versions_root" ]]; then
+    log "Aufbewahrung: Noch kein Versionsbaum vorhanden."
+    return 0
+  fi
+  if [[ -L "$versions_root" ]]; then
+    log "FEHLER: Versionsbaum ist ein symbolischer Link und bleibt unangetastet."
+    return 1
+  fi
+
+  retry_retention_quarantine "$versions_root"
+
+  if ! validate_encrypted_destination_tree "$versions_root"; then
+    log "FEHLER: Versionsbaum enthaelt einen unsicheren Link oder Mount."
+    return 1
+  fi
+
+  now_epoch="$(date '+%s')"
+  if [[ ! "$now_epoch" =~ ^[0-9]+$ ]]; then
+    log "FEHLER: Aktuelle Zeit fuer die Aufbewahrung konnte nicht ermittelt werden."
+    return 1
+  fi
+
+  for path in "$versions_root"/* "$versions_root"/.[!.]* "$versions_root"/..?*; do
+    [[ -d "$path" ]] || continue
+    name="${path##*/}"
+    [[ "$name" != ".retention-trash" ]] || continue
+    if [[ -L "$path" ]]; then
+      log "Aufbewahrung: Symbolischer Versionsordner bleibt erhalten: $(safe_name "$name")"
+      unknown_count=$((unknown_count + 1))
+      continue
+    fi
+
+    if ! timestamp="$(retention_timestamp_for_name "$name")"; then
+      log "Aufbewahrung: Unbekannter Versionsordner bleibt erhalten: $(safe_name "$name")"
+      unknown_count=$((unknown_count + 1))
+      continue
+    fi
+    calendar_value="${timestamp:0:19}"
+    timezone_hours="${timestamp:20:2}"
+    timezone_minutes="${timestamp:22:2}"
+    if ! normalized_calendar="$(LC_ALL=C /bin/date -j -f '%Y-%m-%dT%H-%M-%S' \
+        "$calendar_value" '+%Y-%m-%dT%H-%M-%S' 2>/dev/null)" ||
+       [[ "$normalized_calendar" != "$calendar_value" ]] ||
+       (( 10#$timezone_hours > 23 || 10#$timezone_minutes > 59 )); then
+      log "Aufbewahrung: Ungueltiger Versionszeitpunkt bleibt erhalten: $(safe_name "$name")"
+      unknown_count=$((unknown_count + 1))
+      continue
+    fi
+    if ! epoch="$(LC_ALL=C /bin/date -j -f '%Y-%m-%dT%H-%M-%S%z' "$timestamp" '+%s' 2>/dev/null)" ||
+       [[ ! "$epoch" =~ ^[0-9]+$ ]]; then
+      log "Aufbewahrung: Ungueltiger Versionszeitpunkt bleibt erhalten: $(safe_name "$name")"
+      unknown_count=$((unknown_count + 1))
+      continue
+    fi
+
+    age=$((now_epoch - epoch))
+    if (( age < 0 )); then
+      future_count=$((future_count + 1))
+      continue
+    fi
+    if (( age < 24 * 60 * 60 )); then
+      recent_count=$((recent_count + 1))
+      continue
+    fi
+
+    day="${timestamp:0:10}"
+    if (( age <= 30 * 24 * 60 * 60 )); then
+      tier="daily"
+      bucket="$day"
+    elif (( age <= 52 * 7 * 24 * 60 * 60 )); then
+      tier="weekly"
+      if ! bucket="$(LC_ALL=C /bin/date -j -f '%Y-%m-%d' "$day" '+%G-W%V' 2>/dev/null)" ||
+         [[ ! "$bucket" =~ ^[0-9]{4}-W[0-9]{2}$ ]]; then
+        log "Aufbewahrung: ISO-Woche unklar; Versionsordner bleibt erhalten: $(safe_name "$name")"
+        unknown_count=$((unknown_count + 1))
+        continue
+      fi
+    else
+      tier="expired"
+      bucket=""
+    fi
+
+    entry_paths[entry_count]="$path"
+    entry_tiers[entry_count]="$tier"
+    entry_buckets[entry_count]="$bucket"
+    entry_epochs[entry_count]="$epoch"
+    entry_count=$((entry_count + 1))
+
+    if [[ "$tier" == "daily" ]]; then
+      found=-1
+      for ((index = 0; index < daily_count; index++)); do
+        if [[ "${daily_buckets[$index]}" == "$bucket" ]]; then
+          found=$index
+          break
+        fi
+      done
+      if (( found < 0 )); then
+        daily_buckets[daily_count]="$bucket"
+        daily_keeper_epochs[daily_count]="$epoch"
+        daily_keeper_paths[daily_count]="$path"
+        daily_count=$((daily_count + 1))
+      elif [[ "$epoch" -gt "${daily_keeper_epochs[$found]}" ||
+              ( "$epoch" == "${daily_keeper_epochs[$found]}" && "$path" > "${daily_keeper_paths[$found]}" ) ]]; then
+        daily_keeper_epochs[found]="$epoch"
+        daily_keeper_paths[found]="$path"
+      fi
+    elif [[ "$tier" == "weekly" ]]; then
+      found=-1
+      for ((index = 0; index < weekly_count; index++)); do
+        if [[ "${weekly_buckets[$index]}" == "$bucket" ]]; then
+          found=$index
+          break
+        fi
+      done
+      if (( found < 0 )); then
+        weekly_buckets[weekly_count]="$bucket"
+        weekly_keeper_epochs[weekly_count]="$epoch"
+        weekly_keeper_paths[weekly_count]="$path"
+        weekly_count=$((weekly_count + 1))
+      elif [[ "$epoch" -gt "${weekly_keeper_epochs[$found]}" ||
+              ( "$epoch" == "${weekly_keeper_epochs[$found]}" && "$path" > "${weekly_keeper_paths[$found]}" ) ]]; then
+        weekly_keeper_epochs[found]="$epoch"
+        weekly_keeper_paths[found]="$path"
+      fi
+    fi
+  done
+
+  local pass_index candidate_index selected_index merge_target
+  for ((pass_index = 0; pass_index < entry_count; pass_index++)); do
+    selected_index=-1
+    for ((candidate_index = 0; candidate_index < entry_count; candidate_index++)); do
+      [[ "${entry_processed[$candidate_index]-0}" != "1" ]] || continue
+      if (( selected_index < 0 )) ||
+         [[ "${entry_epochs[$candidate_index]}" -gt "${entry_epochs[$selected_index]}" ]] ||
+         [[ "${entry_epochs[$candidate_index]}" == "${entry_epochs[$selected_index]}" &&
+            "${entry_paths[$candidate_index]}" > "${entry_paths[$selected_index]}" ]]; then
+        selected_index=$candidate_index
+      fi
+    done
+    (( selected_index >= 0 )) || break
+    entry_processed[selected_index]=1
+    index=$selected_index
+    path="${entry_paths[$index]}"
+    tier="${entry_tiers[$index]}"
+    bucket="${entry_buckets[$index]}"
+    keeper_index=-1
+    merge_target=""
+
+    if [[ "$tier" == "daily" ]]; then
+      for ((found = 0; found < daily_count; found++)); do
+        if [[ "${daily_buckets[$found]}" == "$bucket" ]]; then
+          keeper_index=$found
+          break
+        fi
+      done
+      if (( keeper_index < 0 )); then
+        log "WARNUNG: Tages-Bucket unklar; Versionsordner bleibt erhalten: $(safe_name "${path##*/}")"
+        continue
+      fi
+      [[ "$path" != "${daily_keeper_paths[$keeper_index]}" ]] || continue
+      merge_target="${daily_keeper_paths[$keeper_index]}"
+      bucket="weiterer Stand fuer Kalendertag $bucket"
+    elif [[ "$tier" == "weekly" ]]; then
+      for ((found = 0; found < weekly_count; found++)); do
+        if [[ "${weekly_buckets[$found]}" == "$bucket" ]]; then
+          keeper_index=$found
+          break
+        fi
+      done
+      if (( keeper_index < 0 )); then
+        log "WARNUNG: Wochen-Bucket unklar; Versionsordner bleibt erhalten: $(safe_name "${path##*/}")"
+        continue
+      fi
+      [[ "$path" != "${weekly_keeper_paths[$keeper_index]}" ]] || continue
+      merge_target="${weekly_keeper_paths[$keeper_index]}"
+      bucket="weiterer Stand fuer ISO-Woche $bucket"
+    else
+      bucket="aelter als 52 Wochen"
+    fi
+
+    candidate_count=$((candidate_count + 1))
+    if [[ -n "$merge_target" ]] &&
+       ! merge_retention_candidate_into_keeper "$path" "$merge_target" "$bucket"; then
+      log "FEHLER: Aufbewahrung wird abgebrochen, damit kein aelterer Dateistand eine fehlgeschlagene neuere Zusammenfuehrung ersetzt."
+      return 1
+    fi
+    if ! move_retention_candidate "$path" "$bucket" "$versions_root"; then
+      prune_errors=$((prune_errors + 1))
+    fi
+  done
+
+  log "Aufbewahrung: geprueft=$((entry_count + recent_count + unknown_count + future_count)) frisch=$recent_count zukunft=$future_count unbekannt=$unknown_count kandidaten=$candidate_count"
+  (( prune_errors == 0 ))
 }
 
 detect_language() {
@@ -436,7 +1009,7 @@ run_with_timeout() {
   (
     sleep "$seconds"
     kill "$command_pid" 2>/dev/null || true
-  ) &
+  ) >/dev/null 2>&1 &
   local killer_pid=$!
 
   wait "$command_pid"
@@ -625,6 +1198,11 @@ ensure_backup_volume() {
 
   log "Backup-Volume noch nicht vorhanden: $VOLUME"
 
+  if [[ "$ENCRYPTION" == "apfs" ]]; then
+    log "FEHLER: Verschluesseltes APFS muss bereits entsperrt und gemountet sein; ein unverschluesseltes Volume wird nicht automatisch angelegt."
+    return 1
+  fi
+
   if [[ "$DRY_RUN" == "1" ]]; then
     log "DRY-RUN: Volume-Setup wird nicht ausgefuehrt."
     return 1
@@ -756,6 +1334,9 @@ done
 if ! validate_versioning_config; then
   exit 64
 fi
+if ! validate_encryption_config; then
+  exit 64
+fi
 
 if [[ "$SETUP_UI" == "1" ]]; then
   if [[ -d "$ANIMATION_APP" ]]; then
@@ -794,6 +1375,11 @@ if ! ensure_backup_target; then
   exit 69
 fi
 
+if ! validate_encrypted_apfs_destination; then
+  log "FEHLER: Das konfigurierte Backup-Ziel erfuellt die Verschluesselungsrichtlinie nicht."
+  exit 69
+fi
+
 if ! rclone config show "$REMOTE" >/dev/null 2>&1; then
   log "FEHLER: rclone-Remote '${REMOTE}:' ist nicht konfiguriert."
   exit 78
@@ -808,6 +1394,11 @@ if [[ "$DRY_RUN" == "0" ]]; then
     log "FEHLER: Zielordner kann nicht angelegt werden: $DEST_ROOT"
     exit 73
   fi
+fi
+
+if ! validate_all_encrypted_active_trees; then
+  log "FEHLER: Der vorhandene Zielbaum erfuellt die Verschluesselungsrichtlinie nicht."
+  exit 69
 fi
 
 if [[ "$VERSIONING" == "1" ]]; then
@@ -839,6 +1430,10 @@ RCLONE_OPTS=(
   --low-level-retries 10
 )
 
+if [[ "$ENCRYPTION" == "apfs" ]]; then
+  RCLONE_OPTS+=(--one-file-system)
+fi
+
 if [[ "$DRY_RUN" == "1" ]]; then
   RCLONE_OPTS+=(--dry-run)
   log "DRY-RUN aktiv: Es werden keine Dateien kopiert, geloescht oder veraendert."
@@ -860,6 +1455,17 @@ copy_one() {
     phase="${COPY_INDEX}/${COPY_TOTAL}"
   fi
 
+  if ! validate_encrypted_apfs_destination; then
+    log "FEHLER: Verschluesseltes Volume konnte vor '$label' nicht erneut bestaetigt werden."
+    errors=$((errors + 1))
+    return
+  fi
+  if ! path_is_on_encrypted_volume "$dest"; then
+    log "FEHLER: Kopierziel liegt nicht sicher auf dem verschluesselten Volume: $dest"
+    errors=$((errors + 1))
+    return
+  fi
+
   if [[ "$DRY_RUN" == "0" ]]; then
     mkdir -p "$dest" || {
       log "FEHLER: Zielordner kann nicht angelegt werden: $dest"
@@ -868,9 +1474,20 @@ copy_one() {
     }
   fi
 
+  if ! validate_encrypted_destination_tree "$dest"; then
+    log "FEHLER: Kopierziel enthaelt einen unsicheren Link oder Mount: $dest"
+    errors=$((errors + 1))
+    return
+  fi
+
   if [[ "$VERSIONING" == "1" ]]; then
     if ! backup_dir="$(version_backup_dir_for "$dest")"; then
       log "FEHLER: Versionsziel konnte fuer '$dest' nicht sicher bestimmt werden."
+      errors=$((errors + 1))
+      return
+    fi
+    if ! path_is_on_encrypted_volume "$backup_dir"; then
+      log "FEHLER: Versionsziel liegt nicht sicher auf dem verschluesselten Volume: $backup_dir"
       errors=$((errors + 1))
       return
     fi
@@ -925,6 +1542,17 @@ cleanup_temp_file "$drives_json"
 if (( errors > 0 )); then
   log "Fertig mit $errors Fehler(n)."
   exit 1
+fi
+
+if [[ "$VERSIONING" == "1" && "$RETENTION" == "1" ]]; then
+  if ! prune_version_history; then
+    log "Fertig: Backup erfolgreich, aber Aufbewahrung mit Fehler(n)."
+    exit 1
+  fi
+elif [[ "$RETENTION" == "0" ]]; then
+  log "Automatische Versionsaufbewahrung ist deaktiviert."
+else
+  log "Versionsaufbewahrung uebersprungen, weil Dateiversionierung deaktiviert ist."
 fi
 
 log "Fertig ohne Fehler."
