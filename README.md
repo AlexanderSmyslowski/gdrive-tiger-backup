@@ -4,7 +4,7 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window. “Tiger” describes the visual style; the app requires macOS 13 Ventura or later and does not run on Mac OS X 10.4 Tiger.
 
-Current release: `v2.0.0` with named backup profiles, safe in-app diagnostics, verified file recovery, a guided system check, a persistent backup overview, a menu bar status, settings, and language selection.
+Current release: `v2.1.0` with manual safe update checks, named backup profiles, in-app diagnostics, verified file recovery, a guided system check, a persistent backup overview, and a menu bar status.
 
 It backs up:
 
@@ -76,7 +76,7 @@ rclone lsd gdrive:
 For most users, download the latest installer from the GitHub releases page:
 
 1. Open <https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/latest>
-2. Download `GDrive-Backup-Tiger-2.0.0.pkg` from `Assets`.
+2. Download `GDrive-Backup-Tiger-2.1.0.pkg` from `Assets`.
 3. Double-click the package and follow the macOS Installer.
 4. Open `/Applications/GDrive Backup Tiger.app` to choose language, external disk, NAS, and schedule settings.
 
@@ -90,13 +90,13 @@ The package is currently unsigned because the project does not yet have an Apple
 
 1. Click `Done`, not `Move to Trash`.
 2. Open `System Settings > Privacy & Security`.
-3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-2.0.0.pkg`.
+3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-2.1.0.pkg`.
 4. Confirm with `Open Anyway`, then install the package.
 
 Advanced users can also remove the download quarantine flag before opening:
 
 ```bash
-xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-2.0.0.pkg"
+xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-2.1.0.pkg"
 ```
 
 ### Install from source
@@ -283,6 +283,19 @@ mode, tool names, timestamps, exit code, trigger, and two safe failure reasons.
 It excludes local and NAS paths, URLs, account names, credentials, remote names,
 file names, provider output, and log contents. Saved reports use owner-only
 permissions (`0600`).
+
+## Manual update checks
+
+Choose **Check for Updates…** in the application menu or menu bar. The app makes
+one unauthenticated request to the fixed GitHub API endpoint for this repository
+and accepts only a stable numeric release version from that exact endpoint.
+Cookies, cached responses, stored web credentials, foreign redirects, oversized
+responses, prereleases, and malformed version strings are rejected.
+
+The app never checks automatically at launch, downloads no package, and never
+opens macOS Installer. If a newer version exists, the result offers one explicit
+button to open the fixed official GitHub releases page in the browser. Download
+and installation remain separate manual user actions.
 
 ## Encryption
 

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v2.1.0 - 2026-07-12
+
+- Add a manual **Check for Updates…** action to the application menu and menu bar in all seven supported languages.
+- Compare stable numeric versions from the exact official GitHub API endpoint without cookies, credentials, cached responses, or authentication tokens.
+- Reject foreign redirects, malformed and prerelease versions, oversized bodies, non-200 responses, and untrusted release URLs.
+- Open only the hard-coded official GitHub releases page after a second explicit user action.
+- Never check on launch, download a package, start macOS Installer, or install an update automatically.
+
 ## v2.0.0 - 2026-07-12
 
 - Add native create, rename, switch, and delete controls for named backup profiles in setup.

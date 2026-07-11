@@ -9,6 +9,7 @@ APP_SOURCES := \
 	macos/GDriveBackupTiger/RestoreBrowserView.m \
 	macos/GDriveBackupTiger/DiagnosticsSupport.m \
 	macos/GDriveBackupTiger/DiagnosticsView.m \
+	macos/GDriveBackupTiger/UpdateSupport.m \
 	macos/GDriveBackupTiger/Localization.m
 OBJC_FLAGS := -fobjc-arc -Wall -Wextra -Werror
 MACOS_DEPLOYMENT_TARGET ?= 13.0
@@ -49,6 +50,7 @@ test:
 	bash tests/encryption-ui-test.sh
 	bash tests/launch-agent-safety-test.sh
 	bash tests/release-metadata-test.sh
+	bash tests/update-flow-safety-test.sh
 	@RUN_STATE_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-run-state-test.XXXXXX")"; \
 		clang $(OBJC_FLAGS) -framework Cocoa -I macos/GDriveBackupTiger \
 			tests/run-state-ui-test.m macos/GDriveBackupTiger/ConfigSupport.m \
@@ -56,6 +58,7 @@ test:
 			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/SetupHealthSupport.m \
 			macos/GDriveBackupTiger/RestoreSupport.m macos/GDriveBackupTiger/RestoreBrowserView.m \
 			macos/GDriveBackupTiger/DiagnosticsSupport.m macos/GDriveBackupTiger/DiagnosticsView.m \
+			macos/GDriveBackupTiger/UpdateSupport.m \
 			macos/GDriveBackupTiger/Localization.m -o "$$RUN_STATE_TEST_BIN"; \
 		"$$RUN_STATE_TEST_BIN"; \
 		./scripts/trash-path.sh "$$RUN_STATE_TEST_BIN"
@@ -66,6 +69,7 @@ test:
 			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/SetupHealthSupport.m \
 			macos/GDriveBackupTiger/RestoreSupport.m macos/GDriveBackupTiger/RestoreBrowserView.m \
 			macos/GDriveBackupTiger/DiagnosticsSupport.m macos/GDriveBackupTiger/DiagnosticsView.m \
+			macos/GDriveBackupTiger/UpdateSupport.m \
 			macos/GDriveBackupTiger/Localization.m -o "$$ACCESSIBILITY_TEST_BIN"; \
 		"$$ACCESSIBILITY_TEST_BIN"; \
 		./scripts/trash-path.sh "$$ACCESSIBILITY_TEST_BIN"
@@ -106,6 +110,12 @@ test:
 			-o "$$DIAGNOSTICS_SUPPORT_TEST_BIN"; \
 		"$$DIAGNOSTICS_SUPPORT_TEST_BIN"; \
 		./scripts/trash-path.sh "$$DIAGNOSTICS_SUPPORT_TEST_BIN"
+	@UPDATE_SUPPORT_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-update-support-test.XXXXXX")"; \
+		clang $(OBJC_FLAGS) -framework Foundation -I macos/GDriveBackupTiger \
+			tests/update-support-test.m macos/GDriveBackupTiger/UpdateSupport.m \
+			-o "$$UPDATE_SUPPORT_TEST_BIN"; \
+		"$$UPDATE_SUPPORT_TEST_BIN"; \
+		./scripts/trash-path.sh "$$UPDATE_SUPPORT_TEST_BIN"
 	@DIAGNOSTICS_UI_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-diagnostics-ui-test.XXXXXX")"; \
 		clang $(OBJC_FLAGS) -framework Cocoa -I macos/GDriveBackupTiger \
 			tests/diagnostics-ui-test.m macos/GDriveBackupTiger/DiagnosticsView.m \
@@ -120,6 +130,7 @@ test:
 			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/SetupHealthSupport.m \
 			macos/GDriveBackupTiger/RestoreSupport.m macos/GDriveBackupTiger/RestoreBrowserView.m \
 			macos/GDriveBackupTiger/DiagnosticsSupport.m macos/GDriveBackupTiger/DiagnosticsView.m \
+			macos/GDriveBackupTiger/UpdateSupport.m \
 			macos/GDriveBackupTiger/Localization.m -o "$$DIAGNOSTICS_INTEGRATION_TEST_BIN"; \
 		"$$DIAGNOSTICS_INTEGRATION_TEST_BIN"; \
 		./scripts/trash-path.sh "$$DIAGNOSTICS_INTEGRATION_TEST_BIN"
@@ -130,6 +141,7 @@ test:
 			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/SetupHealthSupport.m \
 			macos/GDriveBackupTiger/RestoreSupport.m macos/GDriveBackupTiger/RestoreBrowserView.m \
 			macos/GDriveBackupTiger/DiagnosticsSupport.m macos/GDriveBackupTiger/DiagnosticsView.m \
+			macos/GDriveBackupTiger/UpdateSupport.m \
 			macos/GDriveBackupTiger/Localization.m -o "$$SETUP_HEALTH_UI_TEST_BIN"; \
 		"$$SETUP_HEALTH_UI_TEST_BIN"; \
 		./scripts/trash-path.sh "$$SETUP_HEALTH_UI_TEST_BIN"
@@ -140,6 +152,7 @@ test:
 			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/SetupHealthSupport.m \
 			macos/GDriveBackupTiger/RestoreSupport.m macos/GDriveBackupTiger/RestoreBrowserView.m \
 			macos/GDriveBackupTiger/DiagnosticsSupport.m macos/GDriveBackupTiger/DiagnosticsView.m \
+			macos/GDriveBackupTiger/UpdateSupport.m \
 			macos/GDriveBackupTiger/Localization.m \
 			-o "$$OVERVIEW_UI_TEST_BIN"; \
 		"$$OVERVIEW_UI_TEST_BIN"; \
@@ -151,6 +164,7 @@ test:
 			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/SetupHealthSupport.m \
 			macos/GDriveBackupTiger/RestoreSupport.m macos/GDriveBackupTiger/RestoreBrowserView.m \
 			macos/GDriveBackupTiger/DiagnosticsSupport.m macos/GDriveBackupTiger/DiagnosticsView.m \
+			macos/GDriveBackupTiger/UpdateSupport.m \
 			macos/GDriveBackupTiger/Localization.m \
 			-o "$$SETUP_SAFETY_TEST_BIN"; \
 		"$$SETUP_SAFETY_TEST_BIN"; \
@@ -162,6 +176,7 @@ test:
 			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/SetupHealthSupport.m \
 			macos/GDriveBackupTiger/RestoreSupport.m macos/GDriveBackupTiger/RestoreBrowserView.m \
 			macos/GDriveBackupTiger/DiagnosticsSupport.m macos/GDriveBackupTiger/DiagnosticsView.m \
+			macos/GDriveBackupTiger/UpdateSupport.m \
 			macos/GDriveBackupTiger/Localization.m \
 			-o "$$MOUNT_TRIGGER_TEST_BIN"; \
 		"$$MOUNT_TRIGGER_TEST_BIN"; \
@@ -172,10 +187,21 @@ test:
 			macos/GDriveBackupTiger/ProfileSupport.m macos/GDriveBackupTiger/BackupStatusSupport.m \
 			macos/GDriveBackupTiger/SetupHealthSupport.m macos/GDriveBackupTiger/RestoreSupport.m \
 			macos/GDriveBackupTiger/RestoreBrowserView.m macos/GDriveBackupTiger/DiagnosticsSupport.m \
-			macos/GDriveBackupTiger/DiagnosticsView.m macos/GDriveBackupTiger/Localization.m \
+			macos/GDriveBackupTiger/DiagnosticsView.m macos/GDriveBackupTiger/UpdateSupport.m \
+			macos/GDriveBackupTiger/Localization.m \
 			-o "$$PROFILE_UI_TEST_BIN"; \
 		"$$PROFILE_UI_TEST_BIN"; \
 		./scripts/trash-path.sh "$$PROFILE_UI_TEST_BIN"
+	@UPDATE_UI_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-update-ui-test.XXXXXX")"; \
+		clang $(OBJC_FLAGS) -framework Cocoa -I macos/GDriveBackupTiger \
+			tests/update-ui-test.m macos/GDriveBackupTiger/ConfigSupport.m \
+			macos/GDriveBackupTiger/ProfileSupport.m macos/GDriveBackupTiger/BackupStatusSupport.m \
+			macos/GDriveBackupTiger/SetupHealthSupport.m macos/GDriveBackupTiger/RestoreSupport.m \
+			macos/GDriveBackupTiger/RestoreBrowserView.m macos/GDriveBackupTiger/DiagnosticsSupport.m \
+			macos/GDriveBackupTiger/DiagnosticsView.m macos/GDriveBackupTiger/UpdateSupport.m \
+			macos/GDriveBackupTiger/Localization.m -o "$$UPDATE_UI_TEST_BIN"; \
+		"$$UPDATE_UI_TEST_BIN"; \
+		./scripts/trash-path.sh "$$UPDATE_UI_TEST_BIN"
 	bash tests/trash-path-test.sh
 	bash tests/window-behavior-test.sh
 	bash tests/setup-window-health-test.sh

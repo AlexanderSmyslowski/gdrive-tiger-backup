@@ -11,6 +11,7 @@
 #import "RestoreBrowserView.h"
 #import "DiagnosticsSupport.h"
 #import "DiagnosticsView.h"
+#import "UpdateSupport.h"
 #import "Localization.h"
 
 static NSImage *CreateApplicationIcon(void) {
@@ -1438,6 +1439,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, strong) NSWindow *diagnosticsWindow;
 @property(nonatomic, strong) GDTDiagnosticsView *diagnosticsView;
 @property(nonatomic) NSUInteger diagnosticsGeneration;
+@property(nonatomic, strong) GDTUpdateChecker *updateChecker;
+@property(nonatomic) BOOL updateChecking;
 @property(nonatomic, strong) NSTimer *overviewRefreshTimer;
 @property(nonatomic, copy) NSDictionary<NSString *, NSString *> *lastOverviewSnapshot;
 @property(nonatomic) NSTimeInterval overviewRefreshInterval;
@@ -1646,6 +1649,13 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
                                                    keyEquivalent:@""];
     diagnostics.target = self;
     [menu addItem:diagnostics];
+    NSMenuItem *update = [[NSMenuItem alloc]
+        initWithTitle:T(language, self.updateChecking ? @"updateChecking" : @"updateCheck")
+                 action:@selector(checkForUpdates:)
+          keyEquivalent:@""];
+    update.target = self;
+    update.enabled = !self.updateChecking;
+    [menu addItem:update];
     [menu addItem:[NSMenuItem separatorItem]];
     [menu addItemWithTitle:T(language, @"quitMenu") action:@selector(terminate:) keyEquivalent:@"q"];
     return menu;
@@ -2248,6 +2258,88 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     [self refreshDiagnostics];
 }
 
+- (BOOL)openUpdateURL:(NSURL *)url {
+    return [NSWorkspace.sharedWorkspace openURL:url];
+}
+
+- (void)openOfficialReleasePage:(id)sender {
+    (void)sender;
+    NSURL *url = [NSURL URLWithString:
+        @"https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/latest"];
+    [self openUpdateURL:url];
+}
+
+- (void)presentUpdateResult:(NSDictionary<NSString *, NSString *> *)result {
+    NSString *language = self.language ?: @"en";
+    NSString *status = result[@"status"] ?: @"unavailable";
+    NSAlert *alert = [[NSAlert alloc] init];
+    if ([status isEqualToString:@"updateAvailable"]) {
+        alert.messageText = T(language, @"updateAvailableTitle");
+        alert.informativeText = [NSString stringWithFormat:T(language, @"updateAvailableMessage"),
+            result[@"version"] ?: @"?"];
+        [alert addButtonWithTitle:T(language, @"updateOpenRelease")];
+        [alert addButtonWithTitle:T(language, @"notNow")];
+        [NSApp activateIgnoringOtherApps:YES];
+        if ([alert runModal] == NSAlertFirstButtonReturn) {
+            [self openOfficialReleasePage:nil];
+        }
+        return;
+    }
+    if ([status isEqualToString:@"current"]) {
+        alert.messageText = T(language, @"updateCurrentTitle");
+        alert.informativeText = [NSString stringWithFormat:T(language, @"updateCurrentMessage"),
+            result[@"version"] ?: @"?"];
+    } else {
+        alert.messageText = T(language, @"updateUnavailableTitle");
+        alert.informativeText = T(language, @"updateUnavailableMessage");
+    }
+    [alert addButtonWithTitle:T(language, @"done")];
+    [NSApp activateIgnoringOtherApps:YES];
+    [alert runModal];
+}
+
+- (void)completeUpdateCheck:(NSDictionary<NSString *, NSString *> *)result {
+    self.updateChecking = NO;
+    [self buildMainMenu];
+    if (self.statusItem) {
+        NSDictionary<NSString *, NSString *> *snapshot = self.lastOverviewSnapshot ?: @{
+            @"status": @"unknown",
+            @"lastRun": T(self.language ?: @"en", @"overviewNeverRun"),
+            @"lastRunDetail": @"",
+            @"nextRun": T(self.language ?: @"en", @"overviewUnavailable"),
+            @"target": T(self.language ?: @"en", @"overviewUnavailable"),
+            @"storage": T(self.language ?: @"en", @"overviewUnavailable")
+        };
+        self.statusItem.menu = [self statusMenuForSnapshot:snapshot];
+        self.statusItem.menu.delegate = self;
+    }
+    [self presentUpdateResult:result ?: @{ @"status": @"unavailable", @"reason": @"network" }];
+}
+
+- (void)checkForUpdates:(id)sender {
+    if (self.updateChecking) return;
+    self.updateChecking = YES;
+    if ([sender isKindOfClass:NSMenuItem.class]) {
+        NSMenuItem *item = sender;
+        item.title = T(self.language ?: @"en", @"updateChecking");
+        item.enabled = NO;
+    }
+    if (!self.updateChecker) self.updateChecker = [[GDTUpdateChecker alloc] init];
+    NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:
+        @"CFBundleShortVersionString"] ?: @"0.0.0";
+    __weak typeof(self) weakSelf = self;
+    [self.updateChecker checkCurrentVersion:version completion:^(NSDictionary *result) {
+        void (^finish)(void) = ^{
+            [weakSelf completeUpdateCheck:result];
+        };
+        if (NSThread.isMainThread) {
+            finish();
+        } else {
+            dispatch_async(dispatch_get_main_queue(), finish);
+        }
+    }];
+}
+
 - (void)showBackupSetup:(id)sender {
     (void)sender;
     NSString *bundlePath = NSBundle.mainBundle.bundlePath;
@@ -2371,6 +2463,13 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
           keyEquivalent:@""];
     diagnosticsItem.target = self;
     [appMenu addItem:diagnosticsItem];
+    NSMenuItem *updateItem = [[NSMenuItem alloc]
+        initWithTitle:T(self.language ?: @"en", self.updateChecking ? @"updateChecking" : @"updateCheck")
+                 action:@selector(checkForUpdates:)
+          keyEquivalent:@""];
+    updateItem.target = self;
+    updateItem.enabled = !self.updateChecking;
+    [appMenu addItem:updateItem];
     [appMenu addItem:[NSMenuItem separatorItem]];
     [appMenu addItemWithTitle:T(self.language, @"hideMenu") action:@selector(hide:) keyEquivalent:@"h"];
     [appMenu addItemWithTitle:T(self.language, @"quitMenu") action:@selector(terminate:) keyEquivalent:@"q"];
