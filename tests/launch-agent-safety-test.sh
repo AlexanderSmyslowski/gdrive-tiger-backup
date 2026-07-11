@@ -16,7 +16,11 @@ fail() {
   failures=$((failures + 1))
 }
 
-start_on_mount="$(/usr/bin/plutil -extract StartOnMount raw -o - "$AGENT" 2>/dev/null || true)"
+if ! start_on_mount="$(/usr/bin/plutil -extract StartOnMount raw -o - "$AGENT" 2>/dev/null)"; then
+  # Newer plutil versions emit their missing-key diagnostic on stdout. The
+  # failed extraction still means exactly what this assertion needs: no key.
+  start_on_mount=""
+fi
 run_at_load="$(/usr/bin/plutil -extract RunAtLoad raw -o - "$AGENT" 2>/dev/null || true)"
 program="$(/usr/bin/plutil -extract ProgramArguments.0 raw -o - "$AGENT" 2>/dev/null || true)"
 mode="$(/usr/bin/plutil -extract ProgramArguments.1 raw -o - "$AGENT" 2>/dev/null || true)"
