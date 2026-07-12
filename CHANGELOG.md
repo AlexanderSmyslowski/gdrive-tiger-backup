@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v2.2.1 - 2026-07-12
+
+- Identify menu bar and overview destinations by device type, NAS host, and backup folder instead of relying on an ambiguous mounted-volume path.
+- Keep meaningful profile names while removing the generic `Default` prefix from the compact destination summary.
+- Parse NAS URLs into credential-free display components so legacy SMB user names and passwords can never enter the status UI.
+
 ## v2.2.0 - 2026-07-12
 
 - Add an optional `rclone crypt` mode that encrypts contents plus file and directory names while keeping all passwords inside rclone.

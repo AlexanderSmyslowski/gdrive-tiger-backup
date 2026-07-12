@@ -138,9 +138,10 @@ int main(void) {
             @"GDRIVE_BACKUP_NAS_SUBDIR": @"GoogleDrive-Backup",
             @"GDRIVE_BACKUP_SCHEDULE": @"manual"
         } summaryPath:@"/missing" now:[NSDate date] calendar:NSCalendar.currentCalendar];
-        Assert([overview[@"target"] containsString:@"Büro-NAS"] &&
-               [overview[@"target"] containsString:@"/Volumes/Buero/GoogleDrive-Backup"],
-               @"overview and menu status identify the active profile and exact destination");
+        Assert([overview[@"target"] isEqualToString:
+                   @"Büro-NAS · NAS / Netzwerk · Buero/GoogleDrive-Backup"] &&
+               [overview[@"target"] rangeOfString:@"/Volumes/"].location == NSNotFound,
+               @"overview and menu status identify the profile, device kind, and NAS folder");
 
         [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:root]
                                     resultingItemURL:nil error:nil];

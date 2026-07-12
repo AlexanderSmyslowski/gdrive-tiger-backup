@@ -206,6 +206,37 @@ int main(void) {
                [emptySnapshot[@"nextRun"] isEqualToString:T(@"en", @"scheduleManual")],
                @"missing history and manual schedules stay explicit instead of guessed");
 
+        NSDictionary<NSString *, NSString *> *nasSnapshot =
+            [delegate overviewSnapshotForConfig:@{
+                @"GDRIVE_BACKUP_TARGET": @"nas",
+                @"GDRIVE_BACKUP_NAS_URL": @"smb://private-user:secret-password@wdmycloudex2100.local/alexander",
+                @"GDRIVE_BACKUP_NAS_MOUNT": @"/Volumes/alexander",
+                @"GDRIVE_BACKUP_NAS_SUBDIR": @"GoogleDrive-Backup",
+                @"GDRIVE_BACKUP_PROFILE_NAME": @"Default",
+                @"GDRIVE_BACKUP_SCHEDULE": @"manual"
+            }
+                                     summaryPath:@"/path/that/does/not/exist"
+                                             now:now
+                                        calendar:calendar];
+        Assert([nasSnapshot[@"target"] isEqualToString:
+                   @"NAS / Network · wdmycloudex2100.local · alexander/GoogleDrive-Backup"] &&
+               [nasSnapshot[@"target"] rangeOfString:@"private-user"].location == NSNotFound &&
+               [nasSnapshot[@"target"] rangeOfString:@"secret-password"].location == NSNotFound,
+               @"NAS target identifies the server and share without exposing credentials");
+
+        NSDictionary<NSString *, NSString *> *diskSnapshot =
+            [delegate overviewSnapshotForConfig:@{
+                @"GDRIVE_BACKUP_TARGET": @"apfs",
+                @"GDRIVE_BACKUP_VOLUME": @"/Volumes/GoogleDrive-Backup",
+                @"GDRIVE_BACKUP_SCHEDULE": @"manual"
+            }
+                                     summaryPath:@"/path/that/does/not/exist"
+                                             now:now
+                                        calendar:calendar];
+        Assert([diskSnapshot[@"target"] isEqualToString:
+                   @"External disk · GoogleDrive-Backup"],
+               @"local target is explicitly identified as an external disk");
+
         NSDictionary<NSString *, NSString *> *menuSnapshot = @{
             @"status": @"success",
             @"lastRun": @"Successful",

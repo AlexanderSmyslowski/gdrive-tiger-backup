@@ -1453,6 +1453,80 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, copy) NSString *terminalFailureReason;
 @end
 
+static NSString *GDTSafeDestinationLabelComponent(NSString *value) {
+    NSString *trimmed = [value ?: @""
+        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!trimmed.length || trimmed.length > 255 ||
+        [trimmed rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound ||
+        [trimmed rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location != NSNotFound) {
+        return @"";
+    }
+    return trimmed;
+}
+
+static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *> *config,
+                                             NSString *language) {
+    NSString *rawTarget = [config[@"GDRIVE_BACKUP_TARGET"] ?: @"apfs" lowercaseString];
+    BOOL isNAS = [@[@"nas", @"network", @"smb", @"afp", @"nfs"] containsObject:rawTarget];
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+
+    NSString *profileName = GDTSafeDestinationLabelComponent(config[@"GDRIVE_BACKUP_PROFILE_NAME"]);
+    if (profileName.length && profileName.length <= 80 &&
+        [profileName caseInsensitiveCompare:@"Default"] != NSOrderedSame) {
+        [parts addObject:profileName];
+    }
+    [parts addObject:T(language, isNAS ? @"nas" : @"externalVolume")];
+
+    if (isNAS) {
+        NSURLComponents *components = [NSURLComponents
+            componentsWithString:config[@"GDRIVE_BACKUP_NAS_URL"] ?: @""];
+        // Reading only the parsed host keeps SMB user names and passwords out of
+        // the status UI even when the saved URL contains legacy credentials.
+        NSString *host = GDTSafeDestinationLabelComponent(components.host);
+        if (host.length) {
+            [parts addObject:host];
+        }
+
+        NSString *share = GDTSafeDestinationLabelComponent(components.URL.path);
+        while ([share hasPrefix:@"/"]) {
+            share = [share substringFromIndex:1];
+        }
+        if (!share.length) {
+            share = GDTSafeDestinationLabelComponent(config[@"GDRIVE_BACKUP_NAS_MOUNT"].lastPathComponent);
+        }
+        NSString *subdirectory = GDTSafeDestinationLabelComponent(
+            config[@"GDRIVE_BACKUP_NAS_SUBDIR"] ?: @"GoogleDrive-Backup");
+        NSString *folder = share;
+        if (subdirectory.length) {
+            folder = folder.length ? [folder stringByAppendingPathComponent:subdirectory] : subdirectory;
+        }
+        if (folder.length) {
+            [parts addObject:folder];
+        }
+    } else {
+        NSString *destination = GDTBackupDestinationForConfig(config);
+        NSString *volumeRoot = GDTBackupCapacityPathForConfig(config);
+        NSString *volumeName = GDTSafeDestinationLabelComponent(volumeRoot.lastPathComponent);
+        if (!volumeName.length) {
+            volumeName = GDTSafeDestinationLabelComponent(destination.lastPathComponent);
+        }
+        if (volumeName.length) {
+            [parts addObject:volumeName];
+        }
+
+        NSString *rootPrefix = volumeRoot.length ? [volumeRoot stringByAppendingString:@"/"] : @"";
+        if (rootPrefix.length && [destination hasPrefix:rootPrefix]) {
+            NSString *subpath = GDTSafeDestinationLabelComponent(
+                [destination substringFromIndex:rootPrefix.length]);
+            if (subpath.length) {
+                [parts addObject:subpath];
+            }
+        }
+    }
+
+    return parts.count ? [parts componentsJoinedByString:@" · "] : T(language, @"overviewUnavailable");
+}
+
 @implementation AppDelegate
 
 - (void)prepareProfileStore {
@@ -1550,18 +1624,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
         nextRun = T(language, @"scheduleManual");
     }
 
-    NSString *destination = GDTBackupDestinationForConfig(config);
-    NSString *target = destination.length
-        ? [NSString stringWithFormat:@"%@ — %@", destination.lastPathComponent, destination]
-        : T(language, @"overviewUnavailable");
-    NSString *profileName = config[@"GDRIVE_BACKUP_PROFILE_NAME"] ?: @"";
-    if (profileName.length <= 80 &&
-        [profileName rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location == NSNotFound &&
-        [profileName rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location == NSNotFound) {
-        NSString *trimmed = [profileName
-            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-        if (trimmed.length) target = [NSString stringWithFormat:@"%@ · %@", trimmed, target];
-    }
+    NSString *target = GDTBackupTargetOverviewText(config, language);
 
     NSDictionary<NSString *, NSNumber *> *capacity =
         GDTStorageCapacityForPath(GDTBackupCapacityPathForConfig(config));
