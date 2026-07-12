@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v2.3.1 - 2026-07-12
+
+- Keep **Check backup** visibly busy while its no-copy process runs and prevent duplicate starts.
+- Show a localized success, unavailable-destination, or generic failure result when the check finishes instead of leaving the setup window at “started.”
+- Restore setup actions after every terminal check result while keeping concurrent system checks and real backup starts mutually exclusive.
+
 ## v2.3.0 - 2026-07-12
 
 - Require a configured NAS destination to be an actual SMB, AFP, or NFS mount before setup reports it ready or the backup engine writes anything.

@@ -11,6 +11,7 @@
 @property(nonatomic) NSInteger launchCalls;
 @property(nonatomic) NSInteger dismissCalls;
 @property(nonatomic) BOOL launchSucceeds;
+@property(nonatomic, copy) void (^dryRunCompletion)(NSInteger status);
 @end
 
 @implementation SetupSafetyDelegate
@@ -35,6 +36,16 @@
     return self.launchSucceeds;
 }
 
+- (BOOL)launchBackupWithArgument:(NSString *)argument
+                       assumeYes:(BOOL)assumeYes
+                      completion:(void (^)(NSInteger status))completion {
+    (void)argument;
+    (void)assumeYes;
+    self.launchCalls++;
+    self.dryRunCompletion = completion;
+    return self.launchSucceeds;
+}
+
 - (void)dismissSetupAfterBackupLaunch {
     self.dismissCalls++;
 }
@@ -52,10 +63,19 @@ static void Assert(BOOL condition, NSString *name) {
     failures++;
 }
 
+static BOOL DryRunPending(AppDelegate *delegate) {
+    SEL selector = NSSelectorFromString(@"dryRunPending");
+    if (![delegate respondsToSelector:selector]) return NO;
+    typedef BOOL (*BoolMethod)(id, SEL);
+    return ((BoolMethod)[delegate methodForSelector:selector])(delegate, selector);
+}
+
 static SetupSafetyDelegate *Delegate(NSDictionary *saved, NSDictionary *updates) {
     SetupSafetyDelegate *delegate = [[SetupSafetyDelegate alloc] init];
     delegate.language = @"en";
     delegate.statusField = [[NSTextField alloc] init];
+    delegate.setupBackupButton = [[NSButton alloc] init];
+    delegate.setupDryRunButton = [[NSButton alloc] init];
     delegate.testSavedConfig = saved;
     delegate.testUpdates = updates;
     delegate.launchSucceeds = YES;
@@ -102,18 +122,52 @@ int main(void) {
         Assert(failedDelegate.launchCalls == 2 && failedDelegate.dismissCalls == 0,
                @"failed launch keeps setup open and allows an explicit retry");
 
+        SetupSafetyDelegate *dryRun = Delegate(saved, saved);
+        [dryRun startDryRun:nil];
+        BOOL visibleRunningState = dryRun.launchCalls == 1 && DryRunPending(dryRun) &&
+            !dryRun.setupBackupButton.enabled && !dryRun.setupDryRunButton.enabled &&
+            [dryRun.statusField.stringValue isEqualToString:T(@"en", @"statusDryRunStarted")] &&
+            [dryRun.setupDryRunButton.title isEqualToString:T(@"en", @"dryRunRunning")];
+        if (dryRun.dryRunCompletion) dryRun.dryRunCompletion(0);
+        Assert(visibleRunningState && !DryRunPending(dryRun) &&
+               dryRun.setupBackupButton.enabled && dryRun.setupDryRunButton.enabled &&
+               [dryRun.statusField.stringValue isEqualToString:T(@"en", @"statusDryRunSucceeded")],
+               @"check run visibly transitions from running to successful and restores actions");
+
+        SetupSafetyDelegate *unavailableDryRun = Delegate(saved, saved);
+        [unavailableDryRun startDryRun:nil];
+        if (unavailableDryRun.dryRunCompletion) unavailableDryRun.dryRunCompletion(69);
+        Assert([unavailableDryRun.statusField.stringValue
+                   isEqualToString:T(@"en", @"statusDryRunTargetUnavailable")],
+               @"check run explains an unavailable destination instead of staying at started");
+
+        SetupSafetyDelegate *failedDryRun = Delegate(saved, saved);
+        [failedDryRun startDryRun:nil];
+        if (failedDryRun.dryRunCompletion) failedDryRun.dryRunCompletion(1);
+        Assert([failedDryRun.statusField.stringValue isEqualToString:T(@"en", @"statusDryRunFailed")],
+               @"check run publishes a terminal generic failure state");
+
         BOOL translated = YES;
         for (NSString *language in SupportedLanguageCodes()) {
             NSString *value = T(language, @"statusUnsavedChanges");
             NSString *preparing = T(language, @"statusBackupPreparing");
             NSString *incompatibleEncryption = T(language, @"statusEncryptionIncompatible");
             NSString *invalidCryptRemote = T(language, @"statusCryptRemoteInvalid");
+            NSString *dryRunRunning = T(language, @"dryRunRunning");
+            NSString *dryRunSucceeded = T(language, @"statusDryRunSucceeded");
+            NSString *dryRunUnavailable = T(language, @"statusDryRunTargetUnavailable");
+            NSString *dryRunFailed = T(language, @"statusDryRunFailed");
             translated = translated && value.length > 0 && ![value isEqualToString:@"statusUnsavedChanges"] &&
                 preparing.length > 0 && ![preparing isEqualToString:@"statusBackupPreparing"] &&
                 incompatibleEncryption.length > 0 &&
                 ![incompatibleEncryption isEqualToString:@"statusEncryptionIncompatible"] &&
                 invalidCryptRemote.length > 0 &&
-                ![invalidCryptRemote isEqualToString:@"statusCryptRemoteInvalid"];
+                ![invalidCryptRemote isEqualToString:@"statusCryptRemoteInvalid"] &&
+                dryRunRunning.length > 0 && ![dryRunRunning isEqualToString:@"dryRunRunning"] &&
+                dryRunSucceeded.length > 0 && ![dryRunSucceeded isEqualToString:@"statusDryRunSucceeded"] &&
+                dryRunUnavailable.length > 0 &&
+                ![dryRunUnavailable isEqualToString:@"statusDryRunTargetUnavailable"] &&
+                dryRunFailed.length > 0 && ![dryRunFailed isEqualToString:@"statusDryRunFailed"];
         }
         Assert(translated, @"backup start feedback is localized in all supported languages");
 

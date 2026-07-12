@@ -19,7 +19,7 @@ backup_method="$(method_body '- (void)startBackupNow:')"
 dry_run_method="$(method_body '- (void)startDryRun:')"
 launch_method="$(/usr/bin/awk '
   /^- \(BOOL\)launchBackupWithArgument:/ { occurrence++ }
-  occurrence == 2 { in_method = 1 }
+  occurrence == 4 { in_method = 1 }
   in_method { print }
   in_method && /^}$/ { exit }
 ' "$MAIN_SOURCE")"
@@ -34,11 +34,13 @@ else
   failures=$((failures + 1))
 fi
 
-if [[ "$dry_run_method" == *'if ([self launchBackupWithArgument:@"--dry-run" assumeYes:YES]) {'* &&
-      "$dry_run_method" == *'self.statusField.stringValue = T(self.language, @"statusDryRunStarted");'* ]]; then
-  printf '%s\n' 'ok - check run reports started only after a successful launch'
+if [[ "$dry_run_method" == *'completion:^(NSInteger terminationStatus)'* &&
+      "$dry_run_method" == *'statusDryRunSucceeded'* &&
+      "$dry_run_method" == *'statusDryRunTargetUnavailable'* &&
+      "$dry_run_method" == *'statusDryRunFailed'* ]]; then
+  printf '%s\n' 'ok - check run publishes a visible terminal result'
 else
-  printf '%s\n' 'not ok - check run overwrites a launch failure'
+  printf '%s\n' 'not ok - check run never publishes its terminal result'
   failures=$((failures + 1))
 fi
 

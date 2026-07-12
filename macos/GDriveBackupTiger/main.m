@@ -1455,6 +1455,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic) BOOL setupHealthCheckInFlight;
 @property(nonatomic) NSUInteger setupHealthGeneration;
 @property(nonatomic) BOOL manualLaunchPending;
+@property(nonatomic) BOOL dryRunPending;
 @property(nonatomic, copy) NSString *configuredAPFSVolumePath;
 @property(nonatomic, strong) NSStatusItem *statusItem;
 @property(nonatomic, strong) NSWindow *restoreWindow;
@@ -3412,8 +3413,7 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
         [self.setupHealthView applySnapshot:[self unknownSetupHealthSnapshot]];
         self.statusField.stringValue = T(self.language ?: @"en", @"setupCheckNotRun");
     }
-    self.setupBackupButton.enabled = !self.manualLaunchPending;
-    self.setupDryRunButton.enabled = !self.manualLaunchPending;
+    [self updateSetupActionAvailability];
 }
 
 - (void)completeSetupHealthCheck:(NSDictionary<NSString *, id> *)snapshot {
@@ -3427,8 +3427,7 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     }
     self.setupHealthCheckInFlight = YES;
     self.setupHealthView.checking = YES;
-    self.setupBackupButton.enabled = NO;
-    self.setupDryRunButton.enabled = NO;
+    [self updateSetupActionAvailability];
 
     if (!self.setupHealthChecker) {
         self.setupHealthChecker = [GDTSetupHealthChecker productionChecker];
@@ -3457,13 +3456,11 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
         return;
     }
     self.manualLaunchPending = YES;
-    self.setupBackupButton.enabled = NO;
-    self.setupDryRunButton.enabled = NO;
+    [self updateSetupActionAvailability];
     self.statusField.stringValue = T(self.language, @"statusBackupPreparing");
     if (![self launchBackupWithArgument:@"--run" assumeYes:YES]) {
         self.manualLaunchPending = NO;
-        self.setupBackupButton.enabled = YES;
-        self.setupDryRunButton.enabled = YES;
+        [self updateSetupActionAvailability];
         return;
     }
     [self dismissSetupAfterBackupLaunch];
@@ -3476,22 +3473,72 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
 
 - (void)startDryRun:(id)sender {
     (void)sender;
+    if (self.dryRunPending) {
+        return;
+    }
     if ([self hasUnsavedSetupChanges]) {
         self.statusField.stringValue = T(self.language, @"statusUnsavedChanges");
         return;
     }
-    if ([self launchBackupWithArgument:@"--dry-run" assumeYes:YES]) {
-        self.statusField.stringValue = T(self.language, @"statusDryRunStarted");
+    self.dryRunPending = YES;
+    self.statusField.stringValue = T(self.language, @"statusDryRunStarted");
+    [self updateSetupActionAvailability];
+    __weak typeof(self) weakSelf = self;
+    if (![self launchBackupWithArgument:@"--dry-run"
+                              assumeYes:YES
+                             completion:^(NSInteger terminationStatus) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.dryRunPending = NO;
+        NSString *resultKey = terminationStatus == 0
+            ? @"statusDryRunSucceeded"
+            : (terminationStatus == 69
+                ? @"statusDryRunTargetUnavailable" : @"statusDryRunFailed");
+        strongSelf.statusField.stringValue = T(strongSelf.language ?: @"en", resultKey);
+        [strongSelf updateSetupActionAvailability];
+    }]) {
+        self.dryRunPending = NO;
+        [self updateSetupActionAvailability];
     }
 }
 
+- (void)updateSetupActionAvailability {
+    BOOL busy = self.manualLaunchPending || self.dryRunPending || self.setupHealthCheckInFlight;
+    self.setupBackupButton.enabled = !busy;
+    self.setupDryRunButton.enabled = !busy;
+    self.setupDryRunButton.title = T(self.language ?: @"en",
+        self.dryRunPending ? @"dryRunRunning" : @"dryRun");
+}
+
 - (BOOL)launchBackupWithArgument:(NSString *)argument assumeYes:(BOOL)assumeYes {
-    return [self launchBackupWithArgument:argument trigger:@"manual" assumeYes:assumeYes];
+    return [self launchBackupWithArgument:argument
+                                  trigger:@"manual"
+                                assumeYes:assumeYes
+                               completion:nil];
+}
+
+- (BOOL)launchBackupWithArgument:(NSString *)argument
+                       assumeYes:(BOOL)assumeYes
+                      completion:(void (^)(NSInteger status))completion {
+    return [self launchBackupWithArgument:argument
+                                  trigger:@"manual"
+                                assumeYes:assumeYes
+                               completion:completion];
 }
 
 - (BOOL)launchBackupWithArgument:(NSString *)argument
                          trigger:(NSString *)trigger
                        assumeYes:(BOOL)assumeYes {
+    return [self launchBackupWithArgument:argument
+                                  trigger:trigger
+                                assumeYes:assumeYes
+                               completion:nil];
+}
+
+- (BOOL)launchBackupWithArgument:(NSString *)argument
+                         trigger:(NSString *)trigger
+                       assumeYes:(BOOL)assumeYes
+                      completion:(void (^)(NSInteger status))completion {
     NSTask *task = [[NSTask alloc] init];
     task.launchPath = @"/bin/bash";
     task.arguments = @[@"/usr/local/bin/backup-google-drive.sh", argument];
@@ -3505,6 +3552,14 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
         environment[@"BACKUP_ASSUME_YES"] = @"1";
     }
     task.environment = environment;
+    if (completion) {
+        task.terminationHandler = ^(NSTask *finishedTask) {
+            NSInteger status = finishedTask.terminationStatus;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(status);
+            });
+        };
+    }
     @try {
         [task launch];
         return YES;
