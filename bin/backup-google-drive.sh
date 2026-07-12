@@ -1417,7 +1417,12 @@ start_animation() {
   fi
   write_run_state "running"
 
-  if "$OPEN_BIN" -n "$ANIMATION_APP" --args "$ANIMATION_SENTINEL" "$PROGRESS_FILE" "$RUN_STATE_FILE" >/dev/null 2>&1; then
+  local -a animation_arguments=("$ANIMATION_SENTINEL" "$PROGRESS_FILE" "$RUN_STATE_FILE")
+  if [[ "${BACKUP_PROGRESS_FOREGROUND:-0}" == "1" ]]; then
+    animation_arguments+=("--foreground")
+  fi
+
+  if "$OPEN_BIN" -n "$ANIMATION_APP" --args "${animation_arguments[@]}" >/dev/null 2>&1; then
     log "Backup-Animation gestartet."
   else
     log "WARNUNG: Backup-Animation konnte nicht gestartet werden."

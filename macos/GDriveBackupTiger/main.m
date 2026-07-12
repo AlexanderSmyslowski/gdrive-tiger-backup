@@ -242,8 +242,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, copy) NSString *progressTitle;
 @property(nonatomic, copy) NSString *progressDetail;
 @property(nonatomic, copy) void (^confirmHandler)(BOOL approved);
+@property(nonatomic, copy) void (^cancelHandler)(void);
 @property(nonatomic, strong) NSButton *primaryButton;
 @property(nonatomic, strong) NSButton *secondaryButton;
+@property(nonatomic, strong) NSButton *cancelButton;
 @property(nonatomic, strong) NSTextField *titleLabel;
 @property(nonatomic, strong) NSTextField *statusLabel;
 @property(nonatomic, strong) NSTextField *detailLabel;
@@ -311,6 +313,16 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
         self.primaryButton.action = @selector(confirmPrimary:);
         self.primaryButton.hidden = YES;
         [self addSubview:self.primaryButton];
+
+        self.cancelButton = [[NSButton alloc] initWithFrame:NSMakeRect(242, 158, 120, 27)];
+        self.cancelButton.bezelStyle = NSBezelStyleRounded;
+        self.cancelButton.font = [NSFont fontWithName:@"Lucida Grande Bold" size:11] ?: [NSFont boldSystemFontOfSize:11];
+        self.cancelButton.keyEquivalent = @"\e";
+        self.cancelButton.accessibilityRole = NSAccessibilityButtonRole;
+        self.cancelButton.target = self;
+        self.cancelButton.action = @selector(cancelBackup:);
+        self.cancelButton.hidden = YES;
+        [self addSubview:self.cancelButton];
 
         self.secondaryButton.nextKeyView = self.primaryButton;
         self.primaryButton.nextKeyView = self.secondaryButton;
@@ -401,12 +413,15 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.statusLabel.accessibilityLabel = self.statusLabel.stringValue;
     self.detailLabel.accessibilityLabel = self.detailLabel.stringValue;
     self.progressIndicator.accessibilityLabel = T(language, @"backupProgress");
+    self.cancelButton.title = T(language, @"cancelBackup");
+    self.cancelButton.accessibilityLabel = self.cancelButton.title;
 }
 
 - (void)setConfirmMode:(BOOL)confirmMode {
     _confirmMode = confirmMode;
     self.primaryButton.hidden = !confirmMode;
     self.secondaryButton.hidden = !confirmMode;
+    self.cancelButton.hidden = confirmMode || self.terminalStatus.length;
     self.progressIndicator.hidden = confirmMode;
     [self updateNativeLabels];
     self.needsDisplay = YES;
@@ -478,6 +493,13 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     }
 }
 
+- (void)cancelBackup:(id)sender {
+    (void)sender;
+    if (self.cancelHandler) {
+        self.cancelHandler();
+    }
+}
+
 - (void)dealloc {
     [self.timer invalidate];
 }
@@ -489,6 +511,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
         [self.timer invalidate];
         self.timer = nil;
     }
+    self.cancelButton.hidden = _terminalStatus.length || self.confirmMode;
     [self updateNativeLabels];
     self.needsDisplay = YES;
 }
@@ -1393,6 +1416,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic) BOOL setupMode;
 @property(nonatomic) BOOL overviewMode;
 @property(nonatomic) BOOL menubarOnlyMode;
+@property(nonatomic) BOOL progressForegroundMode;
 @property(nonatomic, copy) NSString *language;
 @property(nonatomic, copy) NSString *confirmTitle;
 @property(nonatomic, copy) NSString *confirmDetail;
@@ -1451,6 +1475,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, copy) NSString *lastMountTriggerPath;
 @property(nonatomic, strong) NSDate *lastMountTriggerDate;
 @property(nonatomic, copy) NSString *terminalFailureReason;
+- (void)requestCancelBackup:(id)sender;
+- (BOOL)cancelRunningBackup;
 @end
 
 static NSString *GDTSafeDestinationLabelComponent(NSString *value) {
@@ -1560,6 +1586,10 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
         return @"menubar";
     }
     return @"progress";
+}
+
+- (BOOL)shouldForegroundProgressForArguments:(NSArray<NSString *> *)arguments {
+    return [arguments containsObject:@"--foreground"];
 }
 
 - (BOOL)shouldInstallStatusItemForMode:(NSString *)mode {
@@ -2449,21 +2479,32 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     if (self.overviewLaunchPending) {
         return;
     }
+    NSDictionary<NSString *, NSString *> *previousSnapshot = self.lastOverviewSnapshot;
     self.overviewLaunchPending = YES;
-    if (![self launchBackupWithArgument:@"--run" assumeYes:YES]) {
-        self.overviewLaunchPending = NO;
-        return;
-    }
     NSMutableDictionary<NSString *, NSString *> *snapshot =
-        [self.lastOverviewSnapshot mutableCopy] ?: [NSMutableDictionary dictionary];
+        [previousSnapshot mutableCopy] ?: [NSMutableDictionary dictionary];
     snapshot[@"status"] = @"running";
-    snapshot[@"lastRun"] = T(self.language ?: @"en", @"statusBackupStarted");
+    snapshot[@"lastRun"] = T(self.language ?: @"en", @"statusBackupPreparing");
     snapshot[@"lastRunDetail"] = @"";
     self.lastOverviewSnapshot = snapshot;
     if ([self.window.contentView isKindOfClass:TigerOverviewView.class]) {
         [self applyOverviewSnapshot:snapshot toView:(TigerOverviewView *)self.window.contentView];
     }
     [self updateOverviewRefreshTimerForStatus:@"running"];
+    if (![self launchBackupWithArgument:@"--run" assumeYes:YES]) {
+        self.overviewLaunchPending = NO;
+        self.lastOverviewSnapshot = previousSnapshot;
+        if (previousSnapshot && [self.window.contentView isKindOfClass:TigerOverviewView.class]) {
+            [self applyOverviewSnapshot:previousSnapshot toView:(TigerOverviewView *)self.window.contentView];
+        }
+        [self refreshOverviewStatus:nil];
+        return;
+    }
+    snapshot[@"lastRun"] = T(self.language ?: @"en", @"statusBackupStarted");
+    self.lastOverviewSnapshot = snapshot;
+    if ([self.window.contentView isKindOfClass:TigerOverviewView.class]) {
+        [self applyOverviewSnapshot:snapshot toView:(TigerOverviewView *)self.window.contentView];
+    }
 }
 
 - (CGFloat)animationDuration:(CGFloat)duration {
@@ -3433,6 +3474,8 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     environment[@"HOME"] = NSHomeDirectory();
     environment[@"PATH"] = @"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
     environment[@"GDRIVE_BACKUP_TRIGGER"] = trigger.length ? trigger : @"manual";
+    environment[@"BACKUP_PROGRESS_FOREGROUND"] =
+        self.overviewMode && [trigger isEqualToString:@"manual"] ? @"1" : @"0";
     if (assumeYes) {
         environment[@"BACKUP_ASSUME_YES"] = @"1";
     }
@@ -3553,6 +3596,7 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
              object:nil];
     NSArray<NSString *> *arguments = NSProcessInfo.processInfo.arguments;
     NSString *mode = [self applicationModeForArguments:arguments];
+    self.progressForegroundMode = [self shouldForegroundProgressForArguments:arguments];
     if ([self shouldInstallStatusItemForMode:mode] || [mode isEqualToString:@"setup"]) {
         [self prepareProfileStore];
     }
@@ -3620,9 +3664,10 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     }
 
     [NSApp setApplicationIconImage:CreateApplicationIcon()];
-    [NSApp setActivationPolicy:self.confirmMode ? NSApplicationActivationPolicyRegular : NSApplicationActivationPolicyAccessory];
+    [NSApp setActivationPolicy:self.confirmMode || self.progressForegroundMode
+        ? NSApplicationActivationPolicyRegular : NSApplicationActivationPolicyAccessory];
 
-    NSSize size = NSMakeSize(392, 162);
+    NSSize size = self.confirmMode ? NSMakeSize(392, 162) : NSMakeSize(392, 198);
     NSRect screenFrame = NSScreen.mainScreen ? NSScreen.mainScreen.visibleFrame : NSMakeRect(0, 0, 1200, 800);
     NSPoint origin = NSMakePoint(NSMidX(screenFrame) - size.width / 2, NSMidY(screenFrame) - size.height / 2);
 
@@ -3652,6 +3697,9 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     contentView.confirmHandler = ^(BOOL approved) {
         [weakSelf finishConfirmation:approved];
     };
+    contentView.cancelHandler = ^{
+        [weakSelf requestCancelBackup:nil];
+    };
     self.window.contentView = contentView;
     self.window.alphaValue = 0;
     [self.window makeKeyAndOrderFront:nil];
@@ -3662,7 +3710,7 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
         self.window.animator.alphaValue = 1;
     } completionHandler:nil];
 
-    if (self.confirmMode) {
+    if (self.confirmMode || self.progressForegroundMode) {
         [NSApp activateIgnoringOtherApps:YES];
     }
 
@@ -3857,6 +3905,60 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
         ![NSFileManager.defaultManager fileExistsAtPath:self.sentinelPath]) {
         [self showTerminalStateAndQuit:@"failure"];
     }
+}
+
+- (void)requestCancelBackup:(id)sender {
+    (void)sender;
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.alertStyle = NSAlertStyleWarning;
+    alert.messageText = T(self.language ?: @"en", @"cancelBackupConfirm");
+    alert.informativeText = T(self.language ?: @"en", @"cancelBackupDetail");
+    [alert addButtonWithTitle:T(self.language ?: @"en", @"cancelBackupAction")];
+    [alert addButtonWithTitle:T(self.language ?: @"en", @"cancel")];
+    __weak typeof(self) weakSelf = self;
+    [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+        if (response == NSAlertFirstButtonReturn) {
+            [weakSelf cancelRunningBackup];
+        }
+    }];
+}
+
+- (BOOL)cancelRunningBackup {
+    NSString *sentinel = [NSString stringWithContentsOfFile:self.sentinelPath
+                                                   encoding:NSUTF8StringEncoding
+                                                      error:nil];
+    NSString *pidText = [sentinel
+        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!pidText.length ||
+        [pidText rangeOfCharacterFromSet:NSCharacterSet.decimalDigitCharacterSet.invertedSet].location != NSNotFound ||
+        pidText.integerValue <= 0) {
+        return NO;
+    }
+
+    NSDictionary<NSString *, NSString *> *state = [self parseProgressContent:
+        [NSString stringWithContentsOfFile:self.runStatePath encoding:NSUTF8StringEncoding error:nil] ?: @""];
+    if (![state[@"protocol"] isEqualToString:@"1"] ||
+        ![state[@"status"] isEqualToString:@"running"] ||
+        state[@"exit_code"].length ||
+        ![state[@"pid"] isEqualToString:pidText]) {
+        return NO;
+    }
+
+    pid_t pid = (pid_t)pidText.intValue;
+    errno = 0;
+    if (getpgid(pid) != pid || (kill(pid, 0) != 0 && errno != EPERM)) {
+        return NO;
+    }
+    if (kill(-pid, SIGTERM) != 0) {
+        return NO;
+    }
+
+    if ([self.window.contentView isKindOfClass:TigerBackupView.class]) {
+        TigerBackupView *contentView = (TigerBackupView *)self.window.contentView;
+        contentView.cancelButton.enabled = NO;
+        contentView.progressTitle = T(self.language ?: @"en", @"cancellingBackup");
+    }
+    return YES;
 }
 
 - (BOOL)processIdentifierAtPathIsAlive:(NSString *)path {

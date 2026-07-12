@@ -31,11 +31,16 @@ int main(void) {
                 [buttons addObject:(NSButton *)subview];
             }
         }
-        Assert(buttons.count == 2, @"confirmation exposes two native buttons");
+        NSArray<NSButton *> *visibleConfirmationButtons = [buttons filteredArrayUsingPredicate:
+            [NSPredicate predicateWithBlock:^BOOL(NSButton *button, NSDictionary *bindings) {
+                (void)bindings;
+                return !button.hidden;
+            }]];
+        Assert(visibleConfirmationButtons.count == 2, @"confirmation exposes two native buttons");
 
         NSButton *primary = nil;
         NSButton *secondary = nil;
-        for (NSButton *button in buttons) {
+        for (NSButton *button in visibleConfirmationButtons) {
             if ([button.keyEquivalent isEqualToString:@"\r"]) {
                 primary = button;
             } else if ([button.keyEquivalent isEqualToString:@"\e"]) {
@@ -105,8 +110,32 @@ int main(void) {
         Assert([progress.accessibilityRole isEqualToString:NSAccessibilityProgressIndicatorRole] &&
                progress.accessibilityLabel.length > 0,
                @"VoiceOver receives progress role, label, and value");
-        Assert(primary.hidden && secondary.hidden,
-               @"confirmation buttons leave the accessibility tree while running");
+        NSButton *cancelBackup = nil;
+        for (NSView *subview in view.subviews) {
+            if ([subview isKindOfClass:NSButton.class]) {
+                NSButton *button = (NSButton *)subview;
+                if (!button.hidden && [button.title isEqualToString:T(@"en", @"cancelBackup")]) {
+                    cancelBackup = button;
+                }
+            }
+        }
+        Assert(primary.hidden && secondary.hidden && cancelBackup != nil &&
+               [cancelBackup.keyEquivalent isEqualToString:@"\e"] &&
+               [cancelBackup.accessibilityRole isEqualToString:NSAccessibilityButtonRole],
+               @"running backup exposes one native keyboard-accessible cancel action");
+
+        BOOL cancelWorkflowLocalized = YES;
+        for (NSString *language in SupportedLanguageCodes()) {
+            for (NSString *key in @[@"cancelBackup", @"cancelBackupConfirm",
+                                    @"cancelBackupDetail", @"cancelBackupAction",
+                                    @"cancellingBackup"]) {
+                NSString *localized = T(language, key);
+                cancelWorkflowLocalized = cancelWorkflowLocalized && localized.length > 0 &&
+                    ![localized isEqualToString:key];
+            }
+        }
+        Assert(cancelWorkflowLocalized,
+               @"cancel workflow is localized in every supported language");
 
         BOOL progressLabelLocalized = YES;
         for (NSString *language in SupportedLanguageCodes()) {

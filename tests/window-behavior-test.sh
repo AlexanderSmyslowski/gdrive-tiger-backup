@@ -80,15 +80,23 @@ check_absent \
   'self.window.level = NSFloatingWindowLevel;' \
   'normal progress startup does not unconditionally float the window'
 
-confirmation_activation=$'if (self.confirmMode) {\n        [NSApp activateIgnoringOtherApps:YES];\n    }'
-check_contains "$confirmation_activation" \
-  'forced activation is limited to confirmation startup'
+foreground_activation=$'if (self.confirmMode || self.progressForegroundMode) {\n        [NSApp activateIgnoringOtherApps:YES];\n    }'
+check_contains "$foreground_activation" \
+  'forced activation is limited to confirmation and explicit manual progress startup'
 
 activation_count="$(/usr/bin/grep -Fc '[NSApp activateIgnoringOtherApps:YES];' <<<"$startup_method")"
 if [[ "$activation_count" == "1" ]]; then
-  printf '%s\n' 'ok - progress startup has no second unconditional activation'
+  printf '%s\n' 'ok - progress startup has no unconditional duplicate activation'
 else
   printf 'not ok - expected one guarded startup activation, found %s\n' "$activation_count"
+  failures=$((failures + 1))
+fi
+
+if [[ "$startup_method" == *'self.progressForegroundMode = [self shouldForegroundProgressForArguments:arguments];'* &&
+      "$startup_method" == *'self.confirmMode || self.progressForegroundMode'* ]]; then
+  printf '%s\n' 'ok - only explicitly requested manual progress receives a Dock presence'
+else
+  printf '%s\n' 'not ok - manual progress cannot reliably appear from the Dock'
   failures=$((failures + 1))
 fi
 

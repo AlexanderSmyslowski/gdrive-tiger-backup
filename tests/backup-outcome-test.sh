@@ -198,13 +198,33 @@ test_animation_receives_run_state_file() {
       "GDRIVE_BACKUP_ANIMATION_APP=$TEST_HOME/GDrive Backup Tiger.app" \
       "GDRIVE_BACKUP_OPEN_BIN=$FAKE_BIN/open"
   status=$?
-  state_path="$(tail -n 1 "$OPEN_LOG" 2>/dev/null || true)"
+  state_path="$(sed -n '6p' "$OPEN_LOG" 2>/dev/null || true)"
   state="$(cat "$state_path" 2>/dev/null || true)"
 
   if [[ "$status" == "0" && -n "$state_path" && "$state" == *'status=success'* ]]; then
     pass "$name"
   else
     fail "$name (exit=$status path=$state_path state=${state//$'\n'/,})"
+  fi
+}
+
+test_manual_progress_requests_foreground_activation() {
+  local name="manual progress requests one foreground activation"
+  local status
+  prepare_test_environment
+
+  mkdir -p "$TEST_HOME/GDrive Backup Tiger.app"
+  BACKUP_DISABLE_ANIMATION=0 \
+    run_backup \
+      "GDRIVE_BACKUP_ANIMATION_APP=$TEST_HOME/GDrive Backup Tiger.app" \
+      "GDRIVE_BACKUP_OPEN_BIN=$FAKE_BIN/open" \
+      "BACKUP_PROGRESS_FOREGROUND=1"
+  status=$?
+
+  if [[ "$status" == "0" ]] && grep -Fxq -- '--foreground' "$OPEN_LOG"; then
+    pass "$name"
+  else
+    fail "$name (exit=$status open=${OPEN_LOG//$'\n'/,})"
   fi
 }
 
@@ -564,6 +584,7 @@ test_concurrent_start_preserves_previous_summary() {
 test_failed_backup_publishes_failure
 test_successful_backup_publishes_success
 test_animation_receives_run_state_file
+test_manual_progress_requests_foreground_activation
 test_early_configuration_error_publishes_failure
 test_existing_backup_is_skipped_not_successful
 test_state_is_versioned_and_identifies_the_process

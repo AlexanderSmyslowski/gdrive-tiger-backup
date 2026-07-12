@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v2.2.2 - 2026-07-12
+
+- Show preparation and disable repeated clicks before macOS can block process launch on a first network-volume permission prompt.
+- Bring the existing Tiger progress window and its Dock presence forward exactly once for manual backups while scheduled and mount-triggered runs stay passive.
+- Add a localized, keyboard- and VoiceOver-accessible **Cancel backup…** action to the progress window.
+- Cancel only after the sentinel and versioned run state agree on one live process-group leader, then send `TERM` to that isolated backup group so `rclone` children stop and the durable result becomes `cancelled`.
+
 ## v2.2.1 - 2026-07-12
 
 - Identify menu bar and overview destinations by device type, NAS host, and backup folder instead of relying on an ambiguous mounted-volume path.

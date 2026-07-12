@@ -1,4 +1,5 @@
 #import <Cocoa/Cocoa.h>
+#include <sys/wait.h>
 
 #define main GDTApplicationMain
 #import "../macos/GDriveBackupTiger/main.m"
@@ -74,6 +75,56 @@ int main(void) {
         AssertEqual(RunStatus(delegate, @"/path/that/does/not/exist"),
                     @"pending",
                     @"transiently missing run state remains pending");
+
+        pid_t cancellableChild = fork();
+        if (cancellableChild == 0) {
+            setpgid(0, 0);
+            signal(SIGTERM, SIG_DFL);
+            for (;;) pause();
+        }
+        BOOL childBecameGroupLeader = NO;
+        for (NSUInteger attempt = 0; cancellableChild > 0 && attempt < 100; attempt++) {
+            if (getpgid(cancellableChild) == cancellableChild) {
+                childBecameGroupLeader = YES;
+                break;
+            }
+            usleep(10000);
+        }
+        NSString *cancelSentinel = [NSTemporaryDirectory()
+            stringByAppendingPathComponent:[NSString stringWithFormat:@"gdrive-cancel-sentinel-%@", NSUUID.UUID.UUIDString]];
+        NSString *cancelState = [NSTemporaryDirectory()
+            stringByAppendingPathComponent:[NSString stringWithFormat:@"gdrive-cancel-state-%@", NSUUID.UUID.UUIDString]];
+        [[NSString stringWithFormat:@"%d\n", cancellableChild]
+            writeToFile:cancelSentinel atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        [[NSString stringWithFormat:@"protocol=1\nstatus=running\npid=%d\n", cancellableChild]
+            writeToFile:cancelState atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        AppDelegate *cancelDelegate = [[AppDelegate alloc] init];
+        cancelDelegate.sentinelPath = cancelSentinel;
+        cancelDelegate.runStatePath = cancelState;
+        SEL cancelSelector = NSSelectorFromString(@"cancelRunningBackup");
+        BOOL cancellationSent = NO;
+        if (childBecameGroupLeader && [cancelDelegate respondsToSelector:cancelSelector]) {
+            typedef BOOL (*CancelMethod)(id, SEL);
+            CancelMethod method = (CancelMethod)[cancelDelegate methodForSelector:cancelSelector];
+            cancellationSent = method(cancelDelegate, cancelSelector);
+        }
+        if (!cancellationSent && cancellableChild > 0) {
+            kill(-cancellableChild, SIGKILL);
+        }
+        int cancelledStatus = 0;
+        if (cancellableChild > 0) {
+            waitpid(cancellableChild, &cancelledStatus, 0);
+        }
+        if (cancellationSent && WIFSIGNALED(cancelledStatus) && WTERMSIG(cancelledStatus) == SIGTERM) {
+            printf("ok - cancel action terminates only the validated running process group\n");
+        } else {
+            printf("not ok - cancel action did not safely terminate the validated process group\n");
+            failures++;
+        }
+        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:cancelSentinel]
+                                   resultingItemURL:nil error:nil];
+        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:cancelState]
+                                   resultingItemURL:nil error:nil];
 
         NSString *malformedPath = [NSTemporaryDirectory()
             stringByAppendingPathComponent:[NSString stringWithFormat:@"gdrive-malformed-%@", NSUUID.UUID.UUIDString]];

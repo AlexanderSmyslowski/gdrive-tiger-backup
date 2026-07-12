@@ -7,6 +7,7 @@
 @interface OverviewLaunchDelegate : AppDelegate
 @property(nonatomic) NSInteger launchCalls;
 @property(nonatomic) BOOL launchSucceeds;
+@property(nonatomic) BOOL sawImmediatePreparingState;
 @end
 
 @implementation OverviewLaunchDelegate
@@ -15,6 +16,11 @@
     (void)argument;
     (void)assumeYes;
     self.launchCalls++;
+    TigerOverviewView *view = [self.window.contentView isKindOfClass:TigerOverviewView.class]
+        ? (TigerOverviewView *)self.window.contentView : nil;
+    self.sawImmediatePreparingState = view &&
+        [view.lastRunValueLabel.stringValue isEqualToString:T(self.language ?: @"en", @"statusBackupPreparing")] &&
+        !view.backupButton.enabled;
     return self.launchSucceeds;
 }
 
@@ -117,13 +123,32 @@ int main(void) {
                ![delegate shouldInstallStatusItemForMode:@"progress"],
                @"menu bar status exists only in the persistent controller modes");
 
+        SEL foregroundSelector = NSSelectorFromString(@"shouldForegroundProgressForArguments:");
+        BOOL manualProgressComesForward = NO;
+        BOOL scheduledProgressStaysPassive = NO;
+        if ([delegate respondsToSelector:foregroundSelector]) {
+            typedef BOOL (*ForegroundMethod)(id, SEL, NSArray<NSString *> *);
+            ForegroundMethod method = (ForegroundMethod)[delegate methodForSelector:foregroundSelector];
+            manualProgressComesForward = method(delegate, foregroundSelector,
+                @[@"app", @"/tmp/sentinel", @"/tmp/progress", @"/tmp/state", @"--foreground"]);
+            scheduledProgressStaysPassive = !method(delegate, foregroundSelector,
+                @[@"app", @"/tmp/sentinel", @"/tmp/progress", @"/tmp/state"]);
+        }
+        Assert(manualProgressComesForward && scheduledProgressStaysPassive,
+               @"only explicitly foregrounded progress windows activate on launch");
+
         OverviewLaunchDelegate *guardedLaunch = [[OverviewLaunchDelegate alloc] init];
         guardedLaunch.language = @"en";
         guardedLaunch.launchSucceeds = YES;
+        guardedLaunch.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 620, 420)
+                                                           styleMask:NSWindowStyleMaskTitled
+                                                             backing:NSBackingStoreBuffered
+                                                               defer:NO];
+        guardedLaunch.window.contentView = [[TigerOverviewView alloc] initWithFrame:NSMakeRect(0, 0, 620, 420)];
         [guardedLaunch startOverviewBackup:nil];
         [guardedLaunch startOverviewBackup:nil];
-        Assert(guardedLaunch.launchCalls == 1,
-               @"overview blocks repeated clicks while a backup launch is pending");
+        Assert(guardedLaunch.launchCalls == 1 && guardedLaunch.sawImmediatePreparingState,
+               @"overview shows preparation and disables repeat clicks before process launch");
 
         OverviewLaunchDelegate *failedLaunch = [[OverviewLaunchDelegate alloc] init];
         failedLaunch.language = @"en";
