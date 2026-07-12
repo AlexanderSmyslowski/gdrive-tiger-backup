@@ -296,6 +296,75 @@ int main(void) {
                    isEqualToString:@"setupCheckEncryptedAPFSReady"],
                @"encrypted APFS readiness is explicit instead of implied by writability");
 
+        NSString *validCryptConfig = [NSString stringWithFormat:
+            @"[backup-crypt]\n"
+             "type = crypt\nremote = %@\npassword = *** ENCRYPTED ***\n"
+             "password2 = *** ENCRYPTED ***\nfilename_encryption = standard\n"
+             "directory_name_encryption = true\nno_data_encryption = false\nshow_mapping = false\n",
+             destination];
+        __block NSMutableArray<NSString *> *cryptCommands = [NSMutableArray array];
+        NSDictionary<NSString *, id> *cryptReady = Snapshot(
+            @{
+                @"GDRIVE_BACKUP_TARGET": @"apfs",
+                @"GDRIVE_BACKUP_VOLUME": destination,
+                @"GDRIVE_BACKUP_ENCRYPTION": @"rclone-crypt",
+                @"GDRIVE_BACKUP_CRYPT_REMOTE": @"backup-crypt",
+                @"RCLONE_REMOTE": @"gdrive"
+            },
+            ^BOOL(NSString *command) { (void)command; return YES; },
+            ^NSDictionary<NSString *, id> *(NSString *command, NSArray<NSString *> *arguments) {
+                [cryptCommands addObject:[NSString stringWithFormat:@"%@ %@", command,
+                    [arguments componentsJoinedByString:@" "]]];
+                if ([arguments.firstObject isEqualToString:@"listremotes"]) {
+                    return @{ @"status": @0, @"output": @"gdrive:\nbackup-crypt:\n" };
+                }
+                if ([arguments.firstObject isEqualToString:@"about"]) {
+                    return @{ @"status": @0, @"output": @"{}" };
+                }
+                if ([arguments.firstObject isEqualToString:@"config"]) {
+                    return @{ @"status": @0, @"output": validCryptConfig };
+                }
+                return @{ @"status": @64, @"output": @"" };
+            },
+            fileManager
+        );
+        Assert([cryptReady[@"overall"] isEqualToString:@"ready"] &&
+               [cryptReady[@"destination"][@"detailKey"]
+                   isEqualToString:@"setupCheckRcloneCryptReady"] &&
+               [cryptCommands containsObject:@"rclone config show backup-crypt"],
+               @"setup verifies the exact rclone crypt policy before reporting ready");
+        Assert(![cryptReady.description containsString:@"ENCRYPTED"] &&
+               !cryptReady[@"password"] && !cryptReady[@"output"],
+               @"crypt health snapshots never expose masked or real key material");
+
+        NSDictionary<NSString *, id> *weakCrypt = Snapshot(
+            @{
+                @"GDRIVE_BACKUP_TARGET": @"apfs",
+                @"GDRIVE_BACKUP_VOLUME": destination,
+                @"GDRIVE_BACKUP_ENCRYPTION": @"rclone-crypt",
+                @"GDRIVE_BACKUP_CRYPT_REMOTE": @"backup-crypt",
+                @"RCLONE_REMOTE": @"gdrive"
+            },
+            ^BOOL(NSString *command) { (void)command; return YES; },
+            ^NSDictionary<NSString *, id> *(NSString *command, NSArray<NSString *> *arguments) {
+                (void)command;
+                if ([arguments.firstObject isEqualToString:@"listremotes"]) {
+                    return @{ @"status": @0, @"output": @"gdrive:\nbackup-crypt:\n" };
+                }
+                if ([arguments.firstObject isEqualToString:@"about"]) {
+                    return @{ @"status": @0, @"output": @"{}" };
+                }
+                return @{ @"status": @0, @"output":
+                    [validCryptConfig stringByReplacingOccurrencesOfString:@"no_data_encryption = false"
+                                                                withString:@"no_data_encryption = true"] };
+            },
+            fileManager
+        );
+        Assert([weakCrypt[@"overall"] isEqualToString:@"failure"] &&
+               [weakCrypt[@"destination"][@"detailKey"]
+                   isEqualToString:@"setupCheckRcloneCryptInvalid"],
+               @"setup fails closed when a crypt remote weakens content encryption");
+
         NSString *fakeBin = [destination stringByAppendingPathComponent:@"bin"];
         [fileManager createDirectoryAtPath:fakeBin
                withIntermediateDirectories:YES

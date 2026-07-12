@@ -57,16 +57,90 @@ Mount-triggered jobs intentionally treat a missing configured volume as a
 no-op because unrelated disk events must never select a NAS target. Manual and
 scheduled runs report a missing or locked encrypted volume as an error.
 
-`rclone crypt` is also a strong fit for NAS storage: it can encrypt file data
-and file and directory names. It is not wired into this release because copy,
-versioning, restore, and retention must all address the same crypt remote; only
-changing the copy destination would make retention incomplete and unsafe.
+## rclone crypt
 
-When a future crypt-remote mode is enabled, protect `rclone.conf` as well.
-Rclone's normal password obscuring is reversible. Rclone supports encrypting
-the whole config and retrieving its password from macOS Keychain with
-`RCLONE_PASSWORD_COMMAND`, so no cleartext password needs to live in a launchd
-plist or this project's config.
+`rclone crypt` encrypts file contents plus file and directory names and works
+with either a local APFS destination or a mounted NAS. The app uses the same
+crypt remote for the live backup, sparse version deltas, retention merges, and
+restore. It stores only the remote name; password creation and storage remain
+entirely inside rclone.
+
+Choose one dedicated physical destination. It must exactly match the path shown
+as **Exact destination** in setup. Examples:
+
+```text
+/Volumes/GoogleDrive-Backup
+/Volumes/Backups/GoogleDrive-Backup
+```
+
+Create the remote interactively so rclone, not the app, receives the password
+and salt:
+
+```bash
+rclone config
+```
+
+Create a remote such as `backup-crypt`, choose backend `crypt`, and set its
+underlying remote to the absolute physical destination above. Use standard file
+name encryption, directory name encryption, data encryption, a password, and a
+second password/salt. Then make every required policy value explicit:
+
+```bash
+rclone config update backup-crypt \
+  filename_encryption standard \
+  directory_name_encryption true \
+  no_data_encryption false \
+  show_mapping false
+```
+
+Verify that rclone can open it:
+
+```bash
+rclone lsd backup-crypt:
+```
+
+In GDrive Backup Tiger, choose **rclone crypt** and enter only
+`backup-crypt` as the Crypt remote. The system check fails closed unless the
+remote is type `crypt`, wraps the exact selected destination, has both password
+values, encrypts data and names, and keeps mapping output disabled. The backup
+also rejects source/crypt name reuse, symbolic links, and nested foreign file
+systems in the physical ciphertext tree, and rechecks the policy immediately
+before every copy phase.
+
+Equivalent profile values are:
+
+```bash
+GDRIVE_BACKUP_ENCRYPTION=rclone-crypt
+GDRIVE_BACKUP_CRYPT_REMOTE=backup-crypt
+```
+
+Do not point the crypt remote at an existing cleartext backup and expect it to
+become encrypted. Start with a dedicated empty destination or migrate data
+through rclone after independently verifying the result. Do not mix cleartext
+files with the physical ciphertext tree.
+
+Retention lists logical version runs through the crypt remote and first merges
+the newest missing per-file deltas into the daily or weekly keeper. It then asks
+the crypt backend for the exact encoded directory and moves only that physical
+ciphertext directory to macOS Trash or a ciphertext-only quarantine. It never
+uses `rclone delete`, `purge`, or `rmdirs` for retention.
+
+Restore also stays inside the crypt abstraction: the browser lists logical
+names, `rclone copyto` decrypts the chosen file into a private temporary
+directory, `rclone cryptcheck` compares it with the encrypted source, and a
+local SHA-256 is recorded before the collision-safe final file is published.
+
+Protect `rclone.conf`. Rclone's normal password obscuring is reversible.
+Rclone supports encrypting the whole config and obtaining its password through
+`RCLONE_PASSWORD_COMMAND`, which can be connected to macOS Keychain without
+putting a cleartext password into this app's profile or a launchd plist. Keep a
+separate tested recovery copy of the config password, crypt password, and salt.
+If they are lost, the encrypted backup cannot be recovered.
+
+The local operational log may contain logical file names from rclone. The
+backup engine enforces owner-only mode `0600` on that log; treat it as sensitive.
+The optional in-app safe diagnostics report never includes log contents, paths,
+remote names, credentials, or file names.
 
 Useful upstream references:
 

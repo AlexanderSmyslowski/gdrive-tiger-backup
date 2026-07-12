@@ -32,6 +32,8 @@ prepare_test_environment() {
   DISKUTIL_LOG="$TEST_HOME/diskutil.log"
   DISKUTIL_COUNT_FILE="$TEST_HOME/diskutil-count"
   RCLONE_LOG="$TEST_HOME/rclone.log"
+  CRYPT_CONFIG_COUNT="$TEST_HOME/crypt-config-count"
+  RETENTION_TRASH="$TEST_HOME/retention-trash"
   mkdir -p "$FAKE_BIN"
 
   cat >"$FAKE_BIN/rclone" <<'SH'
@@ -39,11 +41,60 @@ prepare_test_environment() {
 set -u
 printf '%s\n' "$*" >>"${FAKE_RCLONE_LOG:?}"
 case "${1:-}" in
-  config) exit 0 ;;
-  backend) printf '[]\n'; exit 0 ;;
-  copy) exit 0 ;;
+  config)
+    if [[ "${2:-}" == "show" && "${3:-}" == "${FAKE_CRYPT_REMOTE:-backup-crypt}" ]]; then
+      count=1
+      if [[ -f "${FAKE_CRYPT_CONFIG_COUNT:?}" ]]; then
+        count="$(( $(<"$FAKE_CRYPT_CONFIG_COUNT") + 1 ))"
+      fi
+      printf '%s\n' "$count" >"$FAKE_CRYPT_CONFIG_COUNT"
+      no_data_encryption="${FAKE_CRYPT_NO_DATA_ENCRYPTION:-false}"
+      if (( ${FAKE_CRYPT_WEAKEN_AFTER:-0} > 0 && count > FAKE_CRYPT_WEAKEN_AFTER )); then
+        no_data_encryption=true
+      fi
+      printf '[%s]\n' "${FAKE_CRYPT_REMOTE:-backup-crypt}"
+      printf 'type = %s\n' "${FAKE_CRYPT_TYPE:-crypt}"
+      printf 'remote = %s\n' "${FAKE_CRYPT_ROOT:-/missing-crypt-root}"
+      printf 'password = %s\n' "${FAKE_CRYPT_PASSWORD-*** ENCRYPTED ***}"
+      if [[ "${FAKE_CRYPT_PASSWORD2_PRESENT:-1}" == "1" ]]; then
+        printf 'password2 = %s\n' "${FAKE_CRYPT_PASSWORD2-*** ENCRYPTED ***}"
+      fi
+      printf 'filename_encryption = %s\n' "${FAKE_CRYPT_FILENAME_ENCRYPTION:-standard}"
+      printf 'directory_name_encryption = %s\n' "${FAKE_CRYPT_DIRECTORY_ENCRYPTION:-true}"
+      printf 'no_data_encryption = %s\n' "$no_data_encryption"
+      printf 'show_mapping = %s\n' "${FAKE_CRYPT_SHOW_MAPPING:-false}"
+    fi
+    exit 0
+    ;;
+  backend)
+    if [[ "${2:-}" == "encode" ]]; then
+      logical="${*: -1}"
+      case "$logical" in
+        *"${FAKE_CRYPT_OLD_VERSION:-never-old}") printf '["cipher-versions/cipher-old"]\n' ;;
+        *"${FAKE_CRYPT_KEEPER_VERSION:-never-keeper}") printf '["cipher-versions/cipher-keeper"]\n' ;;
+        *) printf '[]\n' ;;
+      esac
+    else
+      printf '[]\n'
+    fi
+    exit 0
+    ;;
+  lsf)
+    printf '%s' "${FAKE_CRYPT_VERSION_NAMES-}"
+    exit "${FAKE_CRYPT_LSF_STATUS:-0}"
+    ;;
+  copy) exit "${FAKE_RCLONE_COPY_STATUS:-0}" ;;
 esac
 exit 64
+SH
+
+  cat >"$FAKE_BIN/trash" <<'SH'
+#!/bin/bash
+set -u
+mkdir -p "${FAKE_RETENTION_TRASH:?}"
+for path in "$@"; do
+  /bin/mv "$path" "$FAKE_RETENTION_TRASH/${path##*/}" || exit $?
+done
 SH
 
   cat >"$FAKE_BIN/jq" <<'SH'
@@ -104,7 +155,8 @@ fi
 exit 64
 SH
 
-  chmod +x "$FAKE_BIN/rclone" "$FAKE_BIN/jq" "$FAKE_BIN/flock" "$FAKE_BIN/diskutil"
+  chmod +x "$FAKE_BIN/rclone" "$FAKE_BIN/jq" "$FAKE_BIN/flock" "$FAKE_BIN/diskutil" \
+    "$FAKE_BIN/trash"
 }
 
 run_backup_command() {
@@ -117,6 +169,23 @@ run_backup_command() {
     FAKE_DISKUTIL_LOG="$DISKUTIL_LOG" \
     FAKE_DISKUTIL_COUNT_FILE="$DISKUTIL_COUNT_FILE" \
     FAKE_RCLONE_LOG="$RCLONE_LOG" \
+    FAKE_CRYPT_CONFIG_COUNT="$CRYPT_CONFIG_COUNT" \
+    FAKE_CRYPT_REMOTE="${FAKE_CRYPT_REMOTE:-backup-crypt}" \
+    FAKE_CRYPT_TYPE="${FAKE_CRYPT_TYPE:-crypt}" \
+    FAKE_CRYPT_ROOT="${FAKE_CRYPT_ROOT:-$VOLUME}" \
+    FAKE_CRYPT_PASSWORD="${FAKE_CRYPT_PASSWORD-*** ENCRYPTED ***}" \
+    FAKE_CRYPT_PASSWORD2="${FAKE_CRYPT_PASSWORD2-*** ENCRYPTED ***}" \
+    FAKE_CRYPT_PASSWORD2_PRESENT="${FAKE_CRYPT_PASSWORD2_PRESENT:-1}" \
+    FAKE_CRYPT_FILENAME_ENCRYPTION="${FAKE_CRYPT_FILENAME_ENCRYPTION:-standard}" \
+    FAKE_CRYPT_DIRECTORY_ENCRYPTION="${FAKE_CRYPT_DIRECTORY_ENCRYPTION:-true}" \
+    FAKE_CRYPT_NO_DATA_ENCRYPTION="${FAKE_CRYPT_NO_DATA_ENCRYPTION:-false}" \
+    FAKE_CRYPT_SHOW_MAPPING="${FAKE_CRYPT_SHOW_MAPPING:-false}" \
+    FAKE_CRYPT_WEAKEN_AFTER="${FAKE_CRYPT_WEAKEN_AFTER:-0}" \
+    FAKE_CRYPT_VERSION_NAMES="${FAKE_CRYPT_VERSION_NAMES-}" \
+    FAKE_CRYPT_OLD_VERSION="${FAKE_CRYPT_OLD_VERSION-never-old}" \
+    FAKE_CRYPT_KEEPER_VERSION="${FAKE_CRYPT_KEEPER_VERSION-never-keeper}" \
+    FAKE_CRYPT_LSF_STATUS="${FAKE_CRYPT_LSF_STATUS:-0}" \
+    FAKE_RETENTION_TRASH="$RETENTION_TRASH" \
     MOUNT_SETTLE_SECONDS=0 \
     GDRIVE_BACKUP_TARGET=apfs \
     GDRIVE_BACKUP_VOLUME="$VOLUME" \
@@ -125,6 +194,7 @@ run_backup_command() {
     GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1 \
     GDRIVE_BACKUP_VERSIONING=0 \
     GDRIVE_BACKUP_RETENTION=0 \
+    GDRIVE_BACKUP_RETENTION_TRASH_BIN="$FAKE_BIN/trash" \
     GDRIVE_BACKUP_LOCK="$TEST_HOME/backup.lock" \
     GDRIVE_BACKUP_LOG="$TEST_HOME/backup.log" \
     BACKUP_DISABLE_ANIMATION=1 \
@@ -406,6 +476,172 @@ test_volume_identity_is_revalidated_after_confirmation() {
   fi
 }
 
+test_rclone_crypt_requires_a_safe_remote_name() {
+  local name="rclone crypt requires one safe explicit destination remote"
+  local value status rejected=0
+
+  for value in '' '../../outside' 'source:remote'; do
+    prepare_test_environment
+    mkdir -p "$VOLUME"
+    run_backup GDRIVE_BACKUP_ENCRYPTION=rclone-crypt \
+      "GDRIVE_BACKUP_CRYPT_REMOTE=$value"
+    status=$?
+    if [[ "$status" == "64" ]] &&
+      [[ ! -e "$RCLONE_LOG" || ! $(grep -Ec '^copy( |$)' "$RCLONE_LOG") -gt 0 ]]; then
+      rejected=$((rejected + 1))
+    fi
+  done
+
+  if [[ "$rejected" == "3" ]]; then
+    pass "$name"
+  else
+    fail "$name ($rejected of 3 rejected)"
+  fi
+}
+
+test_rclone_crypt_configuration_fails_closed() {
+  local name="rclone crypt rejects wrong roots and weakened encryption settings"
+  local mode status rejected=0
+
+  for mode in type root password salt filename directories data mapping; do
+    prepare_test_environment
+    mkdir -p "$VOLUME"
+    case "$mode" in
+      type) FAKE_CRYPT_TYPE=local run_backup GDRIVE_BACKUP_ENCRYPTION=rclone-crypt GDRIVE_BACKUP_CRYPT_REMOTE=backup-crypt ;;
+      root) FAKE_CRYPT_ROOT="$TEST_HOME/outside" run_backup GDRIVE_BACKUP_ENCRYPTION=rclone-crypt GDRIVE_BACKUP_CRYPT_REMOTE=backup-crypt ;;
+      password) FAKE_CRYPT_PASSWORD='' run_backup GDRIVE_BACKUP_ENCRYPTION=rclone-crypt GDRIVE_BACKUP_CRYPT_REMOTE=backup-crypt ;;
+      salt) FAKE_CRYPT_PASSWORD2_PRESENT=0 run_backup GDRIVE_BACKUP_ENCRYPTION=rclone-crypt GDRIVE_BACKUP_CRYPT_REMOTE=backup-crypt ;;
+      filename) FAKE_CRYPT_FILENAME_ENCRYPTION=off run_backup GDRIVE_BACKUP_ENCRYPTION=rclone-crypt GDRIVE_BACKUP_CRYPT_REMOTE=backup-crypt ;;
+      directories) FAKE_CRYPT_DIRECTORY_ENCRYPTION=false run_backup GDRIVE_BACKUP_ENCRYPTION=rclone-crypt GDRIVE_BACKUP_CRYPT_REMOTE=backup-crypt ;;
+      data) FAKE_CRYPT_NO_DATA_ENCRYPTION=true run_backup GDRIVE_BACKUP_ENCRYPTION=rclone-crypt GDRIVE_BACKUP_CRYPT_REMOTE=backup-crypt ;;
+      mapping) FAKE_CRYPT_SHOW_MAPPING=true run_backup GDRIVE_BACKUP_ENCRYPTION=rclone-crypt GDRIVE_BACKUP_CRYPT_REMOTE=backup-crypt ;;
+    esac
+    status=$?
+    if [[ "$status" == "78" ]] &&
+      grep -Fq 'config show backup-crypt' "$RCLONE_LOG" &&
+      ! grep -Eq '^copy( |$)' "$RCLONE_LOG"; then
+      rejected=$((rejected + 1))
+    fi
+  done
+
+  if [[ "$rejected" == "8" ]]; then
+    pass "$name"
+  else
+    fail "$name ($rejected of 8 rejected)"
+  fi
+}
+
+test_rclone_crypt_copy_and_versions_share_one_remote() {
+  local name="rclone crypt encrypts copy and backup-dir paths on one remote"
+  local status
+  prepare_test_environment
+  mkdir -p "$VOLUME"
+
+  run_backup GDRIVE_BACKUP_ENCRYPTION=rclone-crypt \
+    GDRIVE_BACKUP_CRYPT_REMOTE=backup-crypt \
+    GDRIVE_BACKUP_VERSIONING=1 GDRIVE_BACKUP_RETENTION=0
+  status=$?
+
+  if [[ "$status" == "0" ]] &&
+    grep -Fq 'copy tdd-remote: backup-crypt:My Drive' "$RCLONE_LOG" &&
+    grep -Fq -- '--backup-dir backup-crypt:.gdrive-versions/' "$RCLONE_LOG" &&
+    [[ ! -e "$VOLUME/My Drive" ]]; then
+    pass "$name"
+  else
+    fail "$name (status $status)"
+  fi
+}
+
+test_rclone_crypt_retention_merges_then_trashes_physical_ciphertext() {
+  local name="rclone crypt retention merges sparse history before trashing only ciphertext"
+  local old keeper status merge_line encode_line
+  prepare_test_environment
+  mkdir -p "$VOLUME/cipher-versions/cipher-old" "$VOLUME/cipher-active"
+  old="2026-07-09T08-00-00+0200-00000000-0000-4000-8000-000000000041"
+  keeper="2026-07-09T20-00-00+0200-00000000-0000-4000-8000-000000000042"
+
+  FAKE_CRYPT_VERSION_NAMES="$old/"$'\n'"$keeper/"$'\n' \
+    FAKE_CRYPT_OLD_VERSION="$old" \
+    FAKE_CRYPT_KEEPER_VERSION="$keeper" \
+    run_backup GDRIVE_BACKUP_ENCRYPTION=rclone-crypt \
+      GDRIVE_BACKUP_CRYPT_REMOTE=backup-crypt \
+      GDRIVE_BACKUP_VERSIONING=1 GDRIVE_BACKUP_RETENTION=1
+  status=$?
+
+  merge_line="$(grep -nF "copy backup-crypt:.gdrive-versions/$old backup-crypt:.gdrive-versions/$keeper" "$RCLONE_LOG" | cut -d: -f1)"
+  encode_line="$(grep -nF 'backend encode backup-crypt:' "$RCLONE_LOG" | cut -d: -f1)"
+  if [[ "$status" == "0" && -n "$merge_line" && -n "$encode_line" &&
+        "$merge_line" -lt "$encode_line" &&
+        -d "$RETENTION_TRASH/cipher-old" &&
+        ! -e "$VOLUME/cipher-versions/cipher-old" &&
+        -d "$VOLUME/cipher-active" ]] &&
+    ! grep -Eq '^(delete|deletefile|purge|rmdirs)( |$)' "$RCLONE_LOG"; then
+    pass "$name"
+  else
+    fail "$name (status $status)"
+  fi
+}
+
+test_rclone_crypt_rejects_physical_symlink_redirection() {
+  local name="rclone crypt rejects symlinks at or below its physical ciphertext root"
+  local mode status rejected=0
+  for mode in root nested; do
+    prepare_test_environment
+    mkdir -p "$TEST_HOME/outside"
+    if [[ "$mode" == "root" ]]; then
+      ln -s "$TEST_HOME/outside" "$VOLUME"
+    else
+      mkdir -p "$VOLUME/cipher-tree"
+      ln -s "$TEST_HOME/outside" "$VOLUME/cipher-tree/redirect"
+    fi
+    run_backup GDRIVE_BACKUP_ENCRYPTION=rclone-crypt \
+      GDRIVE_BACKUP_CRYPT_REMOTE=backup-crypt
+    status=$?
+    if [[ "$status" == "78" ]] && ! grep -Eq '^copy( |$)' "$RCLONE_LOG"; then
+      rejected=$((rejected + 1))
+    fi
+  done
+  if [[ "$rejected" == "2" ]]; then
+    pass "$name"
+  else
+    fail "$name ($rejected of 2 redirections rejected)"
+  fi
+}
+
+test_rclone_crypt_revalidates_policy_before_copy() {
+  local name="rclone crypt revalidates its policy immediately before copying plaintext"
+  local status checks
+  prepare_test_environment
+  mkdir -p "$VOLUME"
+  FAKE_CRYPT_WEAKEN_AFTER=1 run_backup \
+    GDRIVE_BACKUP_ENCRYPTION=rclone-crypt \
+    GDRIVE_BACKUP_CRYPT_REMOTE=backup-crypt
+  status=$?
+  checks="$(grep -Fc 'config show backup-crypt' "$RCLONE_LOG")"
+  if [[ "$status" == "1" && "$checks" -ge 2 ]] &&
+    ! grep -Eq '^copy( |$)' "$RCLONE_LOG"; then
+    pass "$name"
+  else
+    fail "$name (status $status, checks $checks)"
+  fi
+}
+
+test_rclone_crypt_keeps_local_log_owner_only() {
+  local name="rclone crypt keeps its local operational log owner-only"
+  local status permissions
+  prepare_test_environment
+  mkdir -p "$VOLUME"
+  run_backup GDRIVE_BACKUP_ENCRYPTION=rclone-crypt \
+    GDRIVE_BACKUP_CRYPT_REMOTE=backup-crypt
+  status=$?
+  permissions="$(/usr/bin/stat -f '%Lp' "$TEST_HOME/backup.log" 2>/dev/null || true)"
+  if [[ "$status" == "0" && "$permissions" == "600" ]]; then
+    pass "$name"
+  else
+    fail "$name (status $status, mode $permissions)"
+  fi
+}
+
 test_invalid_encryption_mode_is_rejected
 test_apfs_encryption_mode_rejects_nas_target
 test_encrypted_mode_never_auto_creates_plain_volume
@@ -418,6 +654,13 @@ test_destination_symlink_escape_is_rejected
 test_dry_run_checks_encryption
 test_deep_destination_symlink_is_rejected
 test_volume_identity_is_revalidated_after_confirmation
+test_rclone_crypt_requires_a_safe_remote_name
+test_rclone_crypt_configuration_fails_closed
+test_rclone_crypt_copy_and_versions_share_one_remote
+test_rclone_crypt_retention_merges_then_trashes_physical_ciphertext
+test_rclone_crypt_rejects_physical_symlink_redirection
+test_rclone_crypt_revalidates_policy_before_copy
+test_rclone_crypt_keeps_local_log_owner_only
 
 if (( failures > 0 )); then
   printf '%s encryption test(s) failed.\n' "$failures"

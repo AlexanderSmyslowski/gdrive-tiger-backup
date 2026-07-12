@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## v2.2.0 - 2026-07-12
+
+- Add an optional `rclone crypt` mode that encrypts contents plus file and directory names while keeping all passwords inside rclone.
+- Require one safe named crypt remote bound to the exact physical app destination, with password, salt, standard name encryption, directory encryption, content encryption, and mapping output disabled.
+- Revalidate the crypt policy and physical ciphertext tree before each copy, rejecting source-remote reuse, symbolic links, nested file systems, path redirection, and weakened settings.
+- Send live backups and `--backup-dir` version deltas through the same crypt remote without creating cleartext backup-area directories.
+- Thin encrypted history with the existing hourly/daily/weekly cadence, merging sparse deltas first and then moving only the deterministically mapped ciphertext directory to recoverable Trash or quarantine.
+- Browse current and sparse historical encrypted copies through logical names and publish a restore only after `rclone cryptcheck` plus a local SHA-256 succeeds.
+- Replace the APFS-only checkbox with one native encryption-mode popup and a conditional crypt-remote field, localized and accessible in all seven languages.
+- Verify crypt readiness in the setup health check without returning remote names, command output, or key material in diagnostics.
+- Make every compiled test recipe fail fast so compiler or test failures can no longer be reported as a successful suite.
+
 ## v2.1.0 - 2026-07-12
 
 - Add a manual **Check for Updates…** action to the application menu and menu bar in all seven supported languages.

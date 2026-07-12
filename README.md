@@ -4,7 +4,7 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window. “Tiger” describes the visual style; the app requires macOS 13 Ventura or later and does not run on Mac OS X 10.4 Tiger.
 
-Current release: `v2.1.0` with manual safe update checks, named backup profiles, in-app diagnostics, verified file recovery, a guided system check, a persistent backup overview, and a menu bar status.
+Current release: `v2.2.0` with optional end-to-end `rclone crypt` backups, Time Machine-like encrypted retention, verified encrypted recovery, manual safe update checks, named profiles, diagnostics, and a persistent menu bar overview.
 
 It backs up:
 
@@ -33,6 +33,7 @@ The backup is read-only from Google Drive's perspective. It uses `rclone copy`, 
 - Native close and minimize controls behave like standard macOS controls; closing the overview leaves its menu bar status available.
 - The overview and menu bar open a native restore browser that combines the live backup with every actually available retained per-file version.
 - A restored file is copied to a user-selected folder outside the backup, never silently overwrites an existing file, and is published only after its SHA-256 digest matches the selected backup copy.
+- Optional `rclone crypt` mode encrypts file contents plus file and directory names. Active data, version deltas, thinning, and restore all address the same checked crypt remote; the app stores only its name and never reads a crypt password.
 - The app and menu bar open one native diagnostics window for tools, Google Drive, destination, schedule, services, and the last run. Its optional support report omits paths, credentials, file names, and log contents and is copied or saved only after an explicit click.
 - When the backup finishes, the helper briefly shows completion without taking
   focus from the app currently in use.
@@ -76,7 +77,7 @@ rclone lsd gdrive:
 For most users, download the latest installer from the GitHub releases page:
 
 1. Open <https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/latest>
-2. Download `GDrive-Backup-Tiger-2.1.0.pkg` from `Assets`.
+2. Download `GDrive-Backup-Tiger-2.2.0.pkg` from `Assets`.
 3. Double-click the package and follow the macOS Installer.
 4. Open `/Applications/GDrive Backup Tiger.app` to choose language, external disk, NAS, and schedule settings.
 
@@ -90,13 +91,13 @@ The package is currently unsigned because the project does not yet have an Apple
 
 1. Click `Done`, not `Move to Trash`.
 2. Open `System Settings > Privacy & Security`.
-3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-2.1.0.pkg`.
+3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-2.2.0.pkg`.
 4. Confirm with `Open Anyway`, then install the package.
 
 Advanced users can also remove the download quarantine flag before opening:
 
 ```bash
-xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-2.1.0.pkg"
+xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-2.2.0.pkg"
 ```
 
 ### Install from source
@@ -207,6 +208,10 @@ Set `GDRIVE_BACKUP_AUTO_CREATE_VOLUME=0` if you want to create the backup volume
 Set `GDRIVE_BACKUP_NAS_START_ON_MOUNT=1` only if mount events should also start the configured NAS backup; the default `0` reserves mount-triggered runs for the external APFS target.
 Set `GDRIVE_BACKUP_VERSIONING=0` only if overwritten destination files should not be preserved. Versioning is enabled by default and moves the previous content into `.gdrive-versions/<timestamp>/<backup area>` through rclone's `--backup-dir` support.
 `GDRIVE_BACKUP_VERSIONS_SUBDIR` must remain a safe relative path outside `My Drive`, `Shared with me`, and `Shared Drives`.
+Supported values for `GDRIVE_BACKUP_ENCRYPTION` are `none`, `apfs`, and
+`rclone-crypt`. Crypt mode also requires a safe remote name in
+`GDRIVE_BACKUP_CRYPT_REMOTE`; the remote must wrap the exact physical app
+destination. It must not be the Google Drive source remote.
 
 ## Backup profiles
 
@@ -254,6 +259,12 @@ overwriting newer entries. The trees remain space-efficient deltas, not complete
 point-in-time snapshots like Time Machine. Restoring a file means selecting its
 newest suitable copy from the live backup or the retained version trees.
 
+In `rclone crypt` mode, the same cadence is evaluated through the logical crypt
+remote. Sparse deltas are merged through that remote first. Only then is the
+exact encoded physical version directory resolved and moved to recoverable
+Trash or a ciphertext-only quarantine; active encrypted directories are never
+removed by a destructive rclone command.
+
 ## Restore files
 
 Open **Restore files** from the overview or the menu bar. Browse the backup
@@ -268,6 +279,11 @@ overwriting it. The selected source is hashed before and after copying, the
 temporary restored copy is hashed again, and the file receives its final name
 only when all SHA-256 values match. Symbolic links, traversal paths, quarantine
 data, outside sources, and restore destinations inside the backup are rejected.
+
+For `rclone crypt`, the browser reads logical names through the crypt remote.
+The selected file is decrypted into a private temporary directory, checked
+against the encrypted source with `rclone cryptcheck`, hashed locally with
+SHA-256, and only then published under its collision-safe final name.
 
 ## Safe diagnostics
 
@@ -299,15 +315,16 @@ and installation remain separate manual user actions.
 
 ## Encryption
 
-Set `GDRIVE_BACKUP_ENCRYPTION=apfs` to require an already unlocked, encrypted
-APFS destination. The backup fails closed before rclone writes anything if the
-volume is missing, non-APFS, or not encrypted. The app never reads or stores the
-volume passphrase and will not auto-create an unencrypted volume in this mode.
-The same setting is available in the setup window as **Require encrypted APFS
-(already unlocked)** and is disabled for NAS targets.
+The setup window offers three modes: no encryption requirement, an already
+unlocked encrypted APFS destination, or `rclone crypt`. APFS mode fails closed
+if the volume is missing, non-APFS, locked, or unencrypted. Crypt mode requires
+a separately configured crypt remote whose physical root exactly matches the
+selected app destination and whose content, file-name, and directory-name
+encryption options satisfy the app's policy. The app saves only the remote name;
+it never reads or stores either kind of password.
 
-For setup steps, encrypted disk images on a NAS, and the separate `rclone crypt`
-design considerations, see [`docs/encryption.md`](docs/encryption.md).
+For exact setup steps, NAS layouts, rclone config protection, migration limits,
+and recovery cautions, see [`docs/encryption.md`](docs/encryption.md).
 
 The app includes setup UI translations for Deutsch, English, Français, Español, 日本語, 粵語, and 한국어. Open `/Applications/GDrive Backup Tiger.app`, then use `GDrive Backup Tiger > Settings` to change the language.
 

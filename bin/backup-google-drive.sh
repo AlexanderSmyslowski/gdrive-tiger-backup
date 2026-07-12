@@ -173,6 +173,7 @@ RETENTION="${GDRIVE_BACKUP_RETENTION-1}"
 RETENTION_TRASH_BIN="${GDRIVE_BACKUP_RETENTION_TRASH_BIN-}"
 RETENTION_APP_TRASH_BIN="${GDRIVE_BACKUP_APP_TRASH_BIN-${ANIMATION_APP%/}/Contents/MacOS/GDriveBackupTiger}"
 ENCRYPTION="$(lowercase "${GDRIVE_BACKUP_ENCRYPTION-none}")"
+CRYPT_REMOTE="${GDRIVE_BACKUP_CRYPT_REMOTE-}"
 DISKUTIL_BIN="${GDRIVE_BACKUP_DISKUTIL-/usr/sbin/diskutil}"
 ENCRYPTED_VOLUME_REAL=""
 ENCRYPTED_VOLUME_DEVICE=""
@@ -184,6 +185,23 @@ COPY_INDEX=0
 COPY_TOTAL=0
 
 mkdir -p "$HOME/Library/Logs"
+if [[ -L "$LOG" || ( -e "$LOG" && ! -f "$LOG" ) ||
+      ( -e "$LOG" && ! -O "$LOG" ) ]]; then
+  printf '%s\n' 'FEHLER: Backup-Protokoll ist kein sicherer eigener Dateipfad.' >&2
+  exit 73
+fi
+previous_umask="$(umask)"
+umask 077
+if ! : >>"$LOG"; then
+  umask "$previous_umask"
+  printf '%s\n' 'FEHLER: Backup-Protokoll kann nicht sicher angelegt werden.' >&2
+  exit 73
+fi
+umask "$previous_umask"
+if ! /bin/chmod 600 "$LOG"; then
+  printf '%s\n' 'FEHLER: Backup-Protokoll kann nicht auf den Benutzer beschraenkt werden.' >&2
+  exit 73
+fi
 exec >>"$LOG" 2>&1
 
 log() {
@@ -254,16 +272,135 @@ validate_encryption_config() {
         return 1
       fi
       ;;
+    rclone-crypt)
+      if [[ -z "$CRYPT_REMOTE" ||
+            ! "$CRYPT_REMOTE" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]]; then
+        log "FEHLER: GDRIVE_BACKUP_CRYPT_REMOTE muss ein sicherer rclone-Remote-Name ohne Doppelpunkt sein."
+        return 1
+      fi
+      if [[ "$CRYPT_REMOTE" == "$REMOTE" ]]; then
+        log "FEHLER: Quell- und Verschluesselungs-Remote muessen verschieden sein."
+        return 1
+      fi
+      ;;
     *)
-      log "FEHLER: GDRIVE_BACKUP_ENCRYPTION muss 'none' oder 'apfs' sein."
+      log "FEHLER: GDRIVE_BACKUP_ENCRYPTION muss 'none', 'apfs' oder 'rclone-crypt' sein."
       return 1
       ;;
   esac
 }
 
+rclone_config_value() {
+  local config="$1"
+  local requested_key="$2"
+  printf '%s\n' "$config" | /usr/bin/awk -F= -v requested_key="$requested_key" '
+    {
+      key=$1
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+      if (key == requested_key) {
+        value=substr($0, index($0, "=") + 1)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+        print value
+      }
+    }
+  '
+}
+
+validate_rclone_crypt_physical_tree() {
+  local root_real root_device symlink_path device_listing device
+
+  [[ "$ENCRYPTION" == "rclone-crypt" ]] || return 0
+  if [[ ! -d "$DEST_ROOT" || -L "$DEST_ROOT" ]] ||
+     ! root_real="$(canonical_existing_directory "$DEST_ROOT")" ||
+     ! root_device="$(/usr/bin/stat -f '%d' "$root_real" 2>/dev/null)" ||
+     [[ -z "$root_device" ]]; then
+    log "FEHLER: Der physische Crypt-Zielordner ist nicht sicher."
+    return 1
+  fi
+  if ! symlink_path="$(/usr/bin/find -x "$root_real" -type l -print -quit 2>/dev/null)" ||
+     [[ -n "$symlink_path" ]]; then
+    log "FEHLER: Der physische Crypt-Zielbaum enthaelt einen symbolischen Link."
+    return 1
+  fi
+  if ! device_listing="$(/usr/bin/find -x "$root_real" -type d \
+      -exec /usr/bin/stat -f '%d' {} + 2>/dev/null)"; then
+    log "FEHLER: Der physische Crypt-Zielbaum kann nicht sicher geprueft werden."
+    return 1
+  fi
+  while IFS= read -r device; do
+    [[ -n "$device" ]] || continue
+    if [[ "$device" != "$root_device" ]]; then
+      log "FEHLER: Ein fremdes Dateisystem liegt im physischen Crypt-Zielbaum."
+      return 1
+    fi
+  done <<<"$device_listing"
+}
+
+validate_rclone_crypt_config() {
+  local config type root password password2 filename_encryption
+  local directory_name_encryption no_data_encryption show_mapping
+  local root_real destination_real
+
+  [[ "$ENCRYPTION" == "rclone-crypt" ]] || return 0
+
+  if ! config="$(rclone config show "$CRYPT_REMOTE" 2>/dev/null)" || [[ -z "$config" ]]; then
+    log "FEHLER: Das rclone-Crypt-Remote ist nicht konfiguriert."
+    return 1
+  fi
+
+  type="$(rclone_config_value "$config" type)"
+  root="$(rclone_config_value "$config" remote)"
+  password="$(rclone_config_value "$config" password)"
+  password2="$(rclone_config_value "$config" password2)"
+  filename_encryption="$(lowercase "$(rclone_config_value "$config" filename_encryption)")"
+  directory_name_encryption="$(lowercase "$(rclone_config_value "$config" directory_name_encryption)")"
+  no_data_encryption="$(lowercase "$(rclone_config_value "$config" no_data_encryption)")"
+  show_mapping="$(lowercase "$(rclone_config_value "$config" show_mapping)")"
+
+  if [[ "$type" != "crypt" || -z "$password" || -z "$password2" ||
+        "$filename_encryption" != "standard" ||
+        "$directory_name_encryption" != "true" ||
+        "$no_data_encryption" != "false" || "$show_mapping" != "false" ]]; then
+    log "FEHLER: Das rclone-Crypt-Remote erfuellt die Verschluesselungsrichtlinie nicht."
+    return 1
+  fi
+  if [[ "$root" != /* || "$root" =~ [[:cntrl:]] || "$root" == *:* ]]; then
+    log "FEHLER: Das rclone-Crypt-Remote muss direkt auf das lokale oder gemountete Backup-Ziel zeigen."
+    return 1
+  fi
+  if ! root_real="$(canonical_existing_directory "$root")" ||
+     ! destination_real="$(canonical_existing_directory "$DEST_ROOT")" ||
+     [[ "$root_real" != "$destination_real" ]]; then
+    log "FEHLER: Das rclone-Crypt-Remote zeigt nicht exakt auf das konfigurierte Backup-Ziel."
+    return 1
+  fi
+  validate_rclone_crypt_physical_tree
+}
+
+backup_destination_for() {
+  local relative_destination="$1"
+  if [[ "$ENCRYPTION" == "rclone-crypt" ]]; then
+    printf '%s:%s' "$CRYPT_REMOTE" "$relative_destination"
+  else
+    printf '%s/%s' "${DEST_ROOT%/}" "$relative_destination"
+  fi
+}
+
 version_backup_dir_for() {
   local destination="$1"
-  local relative_destination="${destination#"$DEST_ROOT"/}"
+  local relative_destination
+
+  if [[ "$ENCRYPTION" == "rclone-crypt" ]]; then
+    relative_destination="${destination#"$CRYPT_REMOTE":}"
+    if [[ -z "$relative_destination" || "$relative_destination" == "$destination" ||
+          "$relative_destination" == /* ]]; then
+      return 1
+    fi
+    printf '%s:%s/%s/%s' "$CRYPT_REMOTE" "$VERSIONS_SUBDIR" "$VERSION_RUN_ID" "$relative_destination"
+    return 0
+  fi
+
+  relative_destination="${destination#"$DEST_ROOT"/}"
 
   if [[ -z "$relative_destination" || "$relative_destination" == "$destination" ]]; then
     return 1
@@ -475,6 +612,93 @@ retention_timestamp_for_name() {
   return 1
 }
 
+crypt_retention_remote_path_is_safe() {
+  local path="$1"
+  local prefix="${CRYPT_REMOTE}:${VERSIONS_SUBDIR}/"
+  local name="${path#"$prefix"}"
+
+  [[ "$ENCRYPTION" == "rclone-crypt" && "$name" != "$path" && -n "$name" &&
+     "$name" != */* && ! "$name" =~ [[:cntrl:]] ]] || return 1
+  retention_timestamp_for_name "$name" >/dev/null
+}
+
+crypt_physical_path_for_logical() {
+  local logical_path="$1"
+  local prefix="${CRYPT_REMOTE}:"
+  local relative="${logical_path#"$prefix"}"
+  local encoded_json encoded physical root_real physical_real
+  local root_device physical_device
+
+  [[ "$relative" != "$logical_path" && -n "$relative" && "$relative" != /* &&
+     ! "$relative" =~ [[:cntrl:]] ]] || return 1
+  case "/$relative/" in
+    *"//"*|*"/./"*|*"/../"*) return 1 ;;
+  esac
+
+  if ! encoded_json="$(rclone backend encode "$CRYPT_REMOTE:" --json "$relative" 2>/dev/null)" ||
+     ! encoded="$(printf '%s' "$encoded_json" | /usr/bin/plutil -extract 0 raw -o - - 2>/dev/null)" ||
+     printf '%s' "$encoded_json" | /usr/bin/plutil -extract 1 raw -o - - >/dev/null 2>&1; then
+    return 1
+  fi
+  [[ -n "$encoded" && "$encoded" != /* && ! "$encoded" =~ [[:cntrl:]] ]] || return 1
+  case "/$encoded/" in
+    *"//"*|*"/./"*|*"/../"*) return 1 ;;
+  esac
+
+  physical="${DEST_ROOT%/}/$encoded"
+  [[ -d "$physical" && ! -L "$physical" ]] || return 1
+  if ! root_real="$(canonical_existing_directory "$DEST_ROOT")" ||
+     ! physical_real="$(canonical_existing_directory "$physical")"; then
+    return 1
+  fi
+  case "$physical_real/" in
+    "$root_real/"*) ;;
+    *) return 1 ;;
+  esac
+  if ! root_device="$(/usr/bin/stat -f '%d' "$root_real" 2>/dev/null)" ||
+     ! physical_device="$(/usr/bin/stat -f '%d' "$physical_real" 2>/dev/null)" ||
+     [[ -z "$root_device" || "$root_device" != "$physical_device" ]]; then
+    return 1
+  fi
+
+  printf '%s' "$physical_real"
+}
+
+retry_crypt_retention_quarantine() {
+  local quarantine="${DEST_ROOT%/}/.retention-trash"
+  local root_real path path_real name remaining=0 moved=0
+
+  [[ -e "$quarantine" || -L "$quarantine" ]] || return 0
+  if [[ ! -d "$quarantine" || -L "$quarantine" ]] ||
+     ! root_real="$(canonical_existing_directory "$DEST_ROOT")"; then
+    log "WARNUNG: Verschluesselte Aufbewahrungs-Quarantaene ist unsicher und bleibt unangetastet."
+    return 0
+  fi
+  for path in "$quarantine"/* "$quarantine"/.[!.]* "$quarantine"/..?*; do
+    [[ -d "$path" && ! -L "$path" ]] || continue
+    if ! path_real="$(canonical_existing_directory "$path")"; then
+      remaining=$((remaining + 1))
+      continue
+    fi
+    case "$path_real/" in
+      "$root_real/"*) ;;
+      *) remaining=$((remaining + 1)); continue ;;
+    esac
+    name="${path##*/}"
+    if [[ "$DRY_RUN" == "1" ]]; then
+      log "DRY-RUN verschluesselte Quarantaene-Papierkorb: $(safe_name "$name")"
+      remaining=$((remaining + 1))
+    elif trash_retention_path "$path"; then
+      moved=$((moved + 1))
+    else
+      remaining=$((remaining + 1))
+    fi
+  done
+  if (( moved > 0 || remaining > 0 )); then
+    log "Aufbewahrung: verschluesselte Quarantaene nachgeprueft, papierkorb=$moved verbleibend=$remaining"
+  fi
+}
+
 merge_retention_candidate_into_keeper() {
   local source="$1"
   local keeper="$2"
@@ -485,6 +709,22 @@ merge_retention_candidate_into_keeper() {
   [[ "$source" != "$keeper" ]] || return 0
   if [[ "$DRY_RUN" == "1" ]]; then
     log "DRY-RUN Aufbewahrung wuerde Dateiversionen zusammenfuehren: ${source##*/} -> ${keeper##*/} ($bucket)"
+    return 0
+  fi
+
+  if [[ "$ENCRYPTION" == "rclone-crypt" ]]; then
+    if ! crypt_retention_remote_path_is_safe "$source" ||
+       ! crypt_retention_remote_path_is_safe "$keeper" ||
+       ! validate_rclone_crypt_config; then
+      log "FEHLER: Verschluesselte Versionsstaende koennen nicht sicher zusammengefuehrt werden."
+      return 1
+    fi
+    merge_options=(--ignore-existing --create-empty-src-dirs --log-level INFO)
+    if ! rclone copy "$source" "$keeper" "${merge_options[@]}"; then
+      log "FEHLER: Verschluesselte Dateiversionen konnten nicht zusammengefuehrt werden."
+      return 1
+    fi
+    log "Aufbewahrung: verschluesselte Dateiversionen zusammengefuehrt: ${source##*/} -> ${keeper##*/} ($bucket)"
     return 0
   fi
 
@@ -517,9 +757,44 @@ move_retention_candidate() {
   local name="${path##*/}"
   local quarantine="$versions_root/.retention-trash"
   local quarantine_target="$quarantine/$name"
+  local physical_path physical_name root_real quarantine_real
 
   if [[ "$DRY_RUN" == "1" ]]; then
     log "DRY-RUN Aufbewahrungskandidat: $name ($reason)"
+    return 0
+  fi
+
+  if [[ "$ENCRYPTION" == "rclone-crypt" ]]; then
+    if ! crypt_retention_remote_path_is_safe "$path" ||
+       ! validate_rclone_crypt_config ||
+       ! physical_path="$(crypt_physical_path_for_logical "$path")"; then
+      log "FEHLER: Verschluesselter Aufbewahrungskandidat kann nicht sicher zugeordnet werden: $name"
+      return 1
+    fi
+    if trash_retention_path "$physical_path"; then
+      log "Aufbewahrung: verschluesselter Stand in den Papierkorb verschoben: $name ($reason)."
+      return 0
+    fi
+
+    physical_name="${physical_path##*/}"
+    quarantine="${DEST_ROOT%/}/.retention-trash"
+    quarantine_target="$quarantine/$physical_name"
+    if ! root_real="$(canonical_existing_directory "$DEST_ROOT")" ||
+       ! mkdir -p "$quarantine" ||
+       ! quarantine_real="$(canonical_existing_directory "$quarantine")"; then
+      log "FEHLER: Verschluesselte Aufbewahrungs-Quarantaene kann nicht sicher angelegt werden."
+      return 1
+    fi
+    case "$quarantine_real/" in
+      "$root_real/"*) ;;
+      *) log "FEHLER: Verschluesselte Aufbewahrungs-Quarantaene verlaesst das Backup-Ziel."; return 1 ;;
+    esac
+    if [[ -e "$quarantine_target" || -L "$quarantine_target" ]] ||
+       ! /bin/mv "$physical_path" "$quarantine_target"; then
+      log "FEHLER: Verschluesselter Aufbewahrungskandidat bleibt erhalten: $name"
+      return 1
+    fi
+    log "Aufbewahrung: verschluesselter Stand in Quarantaene verschoben: $name ($reason)."
     return 0
   fi
 
@@ -607,7 +882,7 @@ retry_retention_quarantine() {
 
 prune_version_history() {
   local versions_root="${DEST_ROOT%/}/$VERSIONS_SUBDIR"
-  local now_epoch path name timestamp epoch age tier bucket day
+  local now_epoch path name timestamp epoch age tier bucket day listing listed_name
   local calendar_value normalized_calendar timezone_hours timezone_minutes
   local entry_count=0 daily_count=0 weekly_count=0
   local recent_count=0 unknown_count=0 future_count=0 candidate_count=0 prune_errors=0
@@ -615,30 +890,65 @@ prune_version_history() {
   local -a entry_paths entry_tiers entry_buckets entry_epochs entry_processed
   local -a daily_buckets daily_keeper_epochs daily_keeper_paths
   local -a weekly_buckets weekly_keeper_epochs weekly_keeper_paths
+  local -a retention_paths
 
-  if ! validate_encrypted_apfs_destination; then
-    log "FEHLER: Verschluesseltes Volume konnte vor der Aufbewahrung nicht erneut bestaetigt werden."
-    return 1
-  fi
-  if ! path_is_on_encrypted_volume "$versions_root"; then
-    log "FEHLER: Versionsaufbewahrung verlaesst das verschluesselte Volume."
-    return 1
-  fi
+  if [[ "$ENCRYPTION" == "rclone-crypt" ]]; then
+    if ! validate_rclone_crypt_config; then
+      log "FEHLER: Crypt-Konfiguration konnte vor der Aufbewahrung nicht erneut bestaetigt werden."
+      return 1
+    fi
+    retry_crypt_retention_quarantine
+    if ! listing="$(rclone lsf "${CRYPT_REMOTE}:${VERSIONS_SUBDIR}" --dirs-only --max-depth 1 2>/dev/null)"; then
+      log "FEHLER: Verschluesselte Versionsstaende konnten nicht sicher aufgelistet werden."
+      return 1
+    fi
+    while IFS= read -r listed_name; do
+      [[ -n "$listed_name" ]] || continue
+      if [[ "$listed_name" != */ ]]; then
+        log "FEHLER: Unerwarteter Eintrag in der verschluesselten Versionsliste."
+        return 1
+      fi
+      listed_name="${listed_name%/}"
+      if [[ -z "$listed_name" || "$listed_name" == */* ||
+            "$listed_name" =~ [[:cntrl:]] ]]; then
+        log "FEHLER: Unsicherer Eintrag in der verschluesselten Versionsliste."
+        return 1
+      fi
+      retention_paths[${#retention_paths[@]}]="${CRYPT_REMOTE}:${VERSIONS_SUBDIR}/$listed_name"
+    done <<<"$listing"
+    if (( ${#retention_paths[@]} == 0 )); then
+      log "Aufbewahrung: Noch kein verschluesselter Versionsstand vorhanden."
+      return 0
+    fi
+  else
+    if ! validate_encrypted_apfs_destination; then
+      log "FEHLER: Verschluesseltes Volume konnte vor der Aufbewahrung nicht erneut bestaetigt werden."
+      return 1
+    fi
+    if ! path_is_on_encrypted_volume "$versions_root"; then
+      log "FEHLER: Versionsaufbewahrung verlaesst das verschluesselte Volume."
+      return 1
+    fi
 
-  if [[ ! -d "$versions_root" ]]; then
-    log "Aufbewahrung: Noch kein Versionsbaum vorhanden."
-    return 0
-  fi
-  if [[ -L "$versions_root" ]]; then
-    log "FEHLER: Versionsbaum ist ein symbolischer Link und bleibt unangetastet."
-    return 1
-  fi
+    if [[ ! -d "$versions_root" ]]; then
+      log "Aufbewahrung: Noch kein Versionsbaum vorhanden."
+      return 0
+    fi
+    if [[ -L "$versions_root" ]]; then
+      log "FEHLER: Versionsbaum ist ein symbolischer Link und bleibt unangetastet."
+      return 1
+    fi
 
-  retry_retention_quarantine "$versions_root"
+    retry_retention_quarantine "$versions_root"
 
-  if ! validate_encrypted_destination_tree "$versions_root"; then
-    log "FEHLER: Versionsbaum enthaelt einen unsicheren Link oder Mount."
-    return 1
+    if ! validate_encrypted_destination_tree "$versions_root"; then
+      log "FEHLER: Versionsbaum enthaelt einen unsicheren Link oder Mount."
+      return 1
+    fi
+    for path in "$versions_root"/* "$versions_root"/.[!.]* "$versions_root"/..?*; do
+      [[ -d "$path" ]] || continue
+      retention_paths[${#retention_paths[@]}]="$path"
+    done
   fi
 
   now_epoch="$(date '+%s')"
@@ -647,11 +957,10 @@ prune_version_history() {
     return 1
   fi
 
-  for path in "$versions_root"/* "$versions_root"/.[!.]* "$versions_root"/..?*; do
-    [[ -d "$path" ]] || continue
+  for path in "${retention_paths[@]}"; do
     name="${path##*/}"
     [[ "$name" != ".retention-trash" ]] || continue
-    if [[ -L "$path" ]]; then
+    if [[ "$ENCRYPTION" != "rclone-crypt" && -L "$path" ]]; then
       log "Aufbewahrung: Symbolischer Versionsordner bleibt erhalten: $(safe_name "$name")"
       unknown_count=$((unknown_count + 1))
       continue
@@ -1571,6 +1880,10 @@ if [[ "$DRY_RUN" == "0" ]]; then
   fi
 fi
 
+if ! validate_rclone_crypt_config; then
+  exit 78
+fi
+
 if ! validate_all_encrypted_active_trees; then
   log "FEHLER: Der vorhandene Zielbaum erfuellt die Verschluesselungsrichtlinie nicht."
   exit 69
@@ -1585,7 +1898,11 @@ if [[ "$VERSIONING" == "1" ]]; then
     log "FEHLER: Zeitstempel fuer den Versionsordner konnte nicht sicher erzeugt werden."
     exit 70
   fi
-  log "Dateiversionierung aktiv: ${DEST_ROOT%/}/$VERSIONS_SUBDIR/$VERSION_RUN_ID"
+  if [[ "$ENCRYPTION" == "rclone-crypt" ]]; then
+    log "Dateiversionierung aktiv: ${CRYPT_REMOTE}:$VERSIONS_SUBDIR/$VERSION_RUN_ID"
+  else
+    log "Dateiversionierung aktiv: ${DEST_ROOT%/}/$VERSIONS_SUBDIR/$VERSION_RUN_ID"
+  fi
 else
   log "Dateiversionierung ist deaktiviert."
 fi
@@ -1655,18 +1972,23 @@ copy_one() {
     errors=$((errors + 1))
     return
   fi
+  if [[ "$ENCRYPTION" == "rclone-crypt" ]] && ! validate_rclone_crypt_config; then
+    log "FEHLER: Crypt-Ziel konnte vor '$label' nicht erneut bestaetigt werden."
+    errors=$((errors + 1))
+    return
+  fi
   if ! validate_encrypted_apfs_destination; then
     log "FEHLER: Verschluesseltes Volume konnte vor '$label' nicht erneut bestaetigt werden."
     errors=$((errors + 1))
     return
   fi
-  if ! path_is_on_encrypted_volume "$dest"; then
+  if [[ "$ENCRYPTION" != "rclone-crypt" ]] && ! path_is_on_encrypted_volume "$dest"; then
     log "FEHLER: Kopierziel liegt nicht sicher auf dem verschluesselten Volume: $dest"
     errors=$((errors + 1))
     return
   fi
 
-  if [[ "$DRY_RUN" == "0" ]]; then
+  if [[ "$DRY_RUN" == "0" && "$ENCRYPTION" != "rclone-crypt" ]]; then
     mkdir -p "$dest" || {
       log "FEHLER: Zielordner kann nicht angelegt werden: $dest"
       errors=$((errors + 1))
@@ -1674,7 +1996,7 @@ copy_one() {
     }
   fi
 
-  if ! validate_encrypted_destination_tree "$dest"; then
+  if [[ "$ENCRYPTION" != "rclone-crypt" ]] && ! validate_encrypted_destination_tree "$dest"; then
     log "FEHLER: Kopierziel enthaelt einen unsicheren Link oder Mount: $dest"
     errors=$((errors + 1))
     return
@@ -1686,7 +2008,7 @@ copy_one() {
       errors=$((errors + 1))
       return
     fi
-    if ! path_is_on_encrypted_volume "$backup_dir"; then
+    if [[ "$ENCRYPTION" != "rclone-crypt" ]] && ! path_is_on_encrypted_volume "$backup_dir"; then
       log "FEHLER: Versionsziel liegt nicht sicher auf dem verschluesselten Volume: $backup_dir"
       errors=$((errors + 1))
       return
@@ -1725,15 +2047,15 @@ if rclone backend --json drives "${REMOTE}:" >"$drives_json"; then
   log "$drive_count Shared Drive(s) gefunden."
   COPY_TOTAL=$((2 + drive_count))
 
-  copy_one "My Drive" "${REMOTE}:" "$DEST_ROOT/My Drive"
-  copy_one "Shared with me" "${REMOTE}:" "$DEST_ROOT/Shared with me" --drive-shared-with-me
+  copy_one "My Drive" "${REMOTE}:" "$(backup_destination_for 'My Drive')"
+  copy_one "Shared with me" "${REMOTE}:" "$(backup_destination_for 'Shared with me')" --drive-shared-with-me
 
   while IFS=$'\t' read -r drive_id drive_name; do
     [[ -n "$drive_id" ]] || continue
     safe="$(safe_name "$drive_name")"
 
     copy_one "Shared Drive: $drive_name" "${REMOTE}:" \
-      "$DEST_ROOT/Shared Drives/${safe} (${drive_id})" \
+      "$(backup_destination_for "Shared Drives/${safe} (${drive_id})")" \
       --drive-team-drive "$drive_id"
   done < <(jq -r '.[] | [.id, .name] | @tsv' "$drives_json")
 else
@@ -1741,8 +2063,8 @@ else
   errors=$((errors + 1))
 
   COPY_TOTAL=2
-  copy_one "My Drive" "${REMOTE}:" "$DEST_ROOT/My Drive"
-  copy_one "Shared with me" "${REMOTE}:" "$DEST_ROOT/Shared with me" --drive-shared-with-me
+  copy_one "My Drive" "${REMOTE}:" "$(backup_destination_for 'My Drive')"
+  copy_one "Shared with me" "${REMOTE}:" "$(backup_destination_for 'Shared with me')" --drive-shared-with-me
 fi
 cleanup_temp_file "$drives_json"
 

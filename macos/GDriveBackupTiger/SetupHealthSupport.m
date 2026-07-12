@@ -59,6 +59,63 @@ static BOOL GDTEncryptedAPFSDestinationIsValid(NSDictionary<NSString *, id> *res
         [plist[@"DeviceIdentifier"] length] > 0;
 }
 
+static BOOL GDTSetupRemoteNameIsSafe(NSString *remoteName) {
+    if (!remoteName.length || remoteName.length > 64) return NO;
+    NSRegularExpression *expression = [NSRegularExpression
+        regularExpressionWithPattern:@"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+                             options:0 error:nil];
+    return [expression numberOfMatchesInString:remoteName options:0
+                                          range:NSMakeRange(0, remoteName.length)] == 1;
+}
+
+static BOOL GDTRcloneCryptConfigIsValid(NSDictionary<NSString *, id> *result,
+                                        NSString *remoteName,
+                                        NSString *destinationPath) {
+    if ([result[@"status"] integerValue] != 0 ||
+        ![result[@"output"] isKindOfClass:NSString.class] ||
+        [result[@"output"] length] > 64 * 1024 ||
+        !GDTSetupRemoteNameIsSafe(remoteName) || !destinationPath.length) {
+        return NO;
+    }
+    NSMutableDictionary<NSString *, NSString *> *values = [NSMutableDictionary dictionary];
+    BOOL sawExpectedSection = NO;
+    for (NSString *rawLine in [result[@"output"]
+            componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+        NSString *line = [rawLine stringByTrimmingCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (!line.length || [line hasPrefix:@"#"] || [line hasPrefix:@";"]) continue;
+        if ([line hasPrefix:@"["] && [line hasSuffix:@"]"]) {
+            NSString *section = [line substringWithRange:NSMakeRange(1, line.length - 2)];
+            if (sawExpectedSection || ![section isEqualToString:remoteName]) return NO;
+            sawExpectedSection = YES;
+            continue;
+        }
+        NSRange separator = [line rangeOfString:@"="];
+        if (!sawExpectedSection || separator.location == NSNotFound) return NO;
+        NSString *key = [[line substringToIndex:separator.location]
+            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        NSString *value = [[line substringFromIndex:NSMaxRange(separator)]
+            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        if (!key.length || values[key]) return NO;
+        values[key] = value ?: @"";
+    }
+    NSString *configuredRoot = [values[@"remote"] stringByStandardizingPath];
+    NSString *expectedRoot = destinationPath.stringByStandardizingPath;
+    if ([NSFileManager.defaultManager fileExistsAtPath:configuredRoot]) {
+        configuredRoot = configuredRoot.stringByResolvingSymlinksInPath;
+    }
+    if ([NSFileManager.defaultManager fileExistsAtPath:expectedRoot]) {
+        expectedRoot = expectedRoot.stringByResolvingSymlinksInPath;
+    }
+    return sawExpectedSection && [values[@"type"] isEqualToString:@"crypt"] &&
+        [configuredRoot isEqualToString:expectedRoot] && values[@"password"].length > 0 &&
+        values[@"password2"].length > 0 &&
+        [[values[@"filename_encryption"] lowercaseString] isEqualToString:@"standard"] &&
+        [[values[@"directory_name_encryption"] lowercaseString] isEqualToString:@"true"] &&
+        [[values[@"no_data_encryption"] lowercaseString] isEqualToString:@"false"] &&
+        [[values[@"show_mapping"] lowercaseString] isEqualToString:@"false"];
+}
+
 static NSString *GDTExecutablePath(NSString *command) {
     if (!command.length ||
         [command rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location != NSNotFound) {
@@ -225,6 +282,25 @@ static NSDictionary<NSString *, id> *GDTRunSetupCommand(NSString *command,
         } else {
             destination = GDTSetupRow(@"ready", @"setupCheckEncryptedAPFSReady", @{});
         }
+    } else if ([encryption isEqualToString:@"rclone-crypt"]) {
+        NSString *cryptRemote = config[@"GDRIVE_BACKUP_CRYPT_REMOTE"] ?: @"";
+        NSString *cryptDestination = destinationPath ?: @"";
+        if ([target isEqualToString:@"nas"] && cryptDestination.length) {
+            NSString *subdirectory = config[@"GDRIVE_BACKUP_NAS_SUBDIR"].length
+                ? config[@"GDRIVE_BACKUP_NAS_SUBDIR"] : @"GoogleDrive-Backup";
+            cryptDestination = [cryptDestination stringByAppendingPathComponent:subdirectory];
+        }
+        BOOL cryptReady = accessible && self.commandRunner &&
+            GDTSetupRemoteNameIsSafe(cryptRemote) &&
+            GDTRcloneCryptConfigIsValid(
+                self.commandRunner(@"rclone", @[@"config", @"show", cryptRemote]),
+                cryptRemote,
+                cryptDestination
+            );
+        destination = cryptReady
+            ? GDTSetupRow(@"ready", @"setupCheckRcloneCryptReady", @{})
+            : GDTSetupRow(@"failure", @"setupCheckRcloneCryptInvalid",
+                          @{@"action": @"configureEncryption"});
     }
 
     BOOL ready = [dependencies[@"status"] isEqualToString:@"ready"] &&

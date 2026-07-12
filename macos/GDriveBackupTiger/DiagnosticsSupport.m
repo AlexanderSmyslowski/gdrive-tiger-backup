@@ -63,7 +63,7 @@ static NSDictionary<NSString *, id> *GDTHealthRow(NSDictionary<NSString *, id> *
     NSString *scheduleMode = GDTAllowedString([config[@"GDRIVE_BACKUP_SCHEDULE"] lowercaseString],
         [NSSet setWithArray:@[@"manual", @"login", @"hourly", @"daily"]]);
     NSString *encryption = GDTAllowedString([config[@"GDRIVE_BACKUP_ENCRYPTION"] lowercaseString],
-        [NSSet setWithArray:@[@"none", @"apfs"]]);
+        [NSSet setWithArray:@[@"none", @"apfs", @"rclone-crypt"]]);
 
     BOOL validSummary = [summary[@"protocol"] isEqualToString:@"1"];
     NSString *lastStatus = validSummary
@@ -172,7 +172,7 @@ static NSDictionary<NSString *, id> *GDTHealthRow(NSDictionary<NSString *, id> *
     NSString *destinationKind = GDTAllowedString(destination[@"kind"],
         [NSSet setWithArray:@[@"apfs", @"nas"]]);
     NSString *destinationEncryption = GDTAllowedString(destination[@"encryption"],
-        [NSSet setWithArray:@[@"none", @"apfs"]]);
+        [NSSet setWithArray:@[@"none", @"apfs", @"rclone-crypt"]]);
     NSString *scheduleMode = GDTAllowedString(schedule[@"mode"],
         [NSSet setWithArray:@[@"manual", @"login", @"hourly", @"daily"]]);
     NSString *lastStatus = GDTAllowedString(lastRun[@"status"],

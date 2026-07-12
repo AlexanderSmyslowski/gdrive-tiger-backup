@@ -135,6 +135,22 @@ int main(void) {
                    ![readySnapshot[@"schedule"][@"loaded"] boolValue],
                    @"manual setup can be healthy without a loaded schedule agent");
 
+            NSDictionary *cryptSnapshot = snapshotMethod(builderClass, snapshotSelector,
+                @{@"GDRIVE_BACKUP_TARGET": @"nas", @"GDRIVE_BACKUP_SCHEDULE": @"daily",
+                  @"GDRIVE_BACKUP_ENCRYPTION": @"rclone-crypt",
+                  @"GDRIVE_BACKUP_CRYPT_REMOTE": @"private-customer-crypt"},
+                @{@"protocol": @"1", @"status": @"success", @"trigger": @"schedule"},
+                @{@"overall": @"ready", @"dependencies": @{@"status": @"ready"},
+                  @"remote": @{@"status": @"ready"},
+                  @"destination": @{@"status": @"ready"}},
+                appInfo, @{@"controllerLoaded": @YES, @"scheduleLoaded": @YES},
+                @{@"installed": @YES, @"executable": @YES});
+            NSString *cryptReport = reportMethod(builderClass, reportSelector, cryptSnapshot);
+            Assert([cryptSnapshot[@"destination"][@"encryption"] isEqualToString:@"rclone-crypt"] &&
+                   [cryptReport containsString:@"destination.encryption=rclone-crypt"] &&
+                   ![cryptReport containsString:@"private-customer-crypt"],
+                   @"diagnostics identify crypt protection without exposing its remote name");
+
             NSDictionary *malformed = snapshotMethod(builderClass, snapshotSelector,
                 @{@"GDRIVE_BACKUP_TARGET": @"../../secret", @"GDRIVE_BACKUP_SCHEDULE": @"evil"},
                 @{@"status": @"success\ncredential=secret", @"reason": @"token-secret"},

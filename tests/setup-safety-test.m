@@ -106,8 +106,14 @@ int main(void) {
         for (NSString *language in SupportedLanguageCodes()) {
             NSString *value = T(language, @"statusUnsavedChanges");
             NSString *preparing = T(language, @"statusBackupPreparing");
+            NSString *incompatibleEncryption = T(language, @"statusEncryptionIncompatible");
+            NSString *invalidCryptRemote = T(language, @"statusCryptRemoteInvalid");
             translated = translated && value.length > 0 && ![value isEqualToString:@"statusUnsavedChanges"] &&
-                preparing.length > 0 && ![preparing isEqualToString:@"statusBackupPreparing"];
+                preparing.length > 0 && ![preparing isEqualToString:@"statusBackupPreparing"] &&
+                incompatibleEncryption.length > 0 &&
+                ![incompatibleEncryption isEqualToString:@"statusEncryptionIncompatible"] &&
+                invalidCryptRemote.length > 0 &&
+                ![invalidCryptRemote isEqualToString:@"statusCryptRemoteInvalid"];
         }
         Assert(translated, @"backup start feedback is localized in all supported languages");
 
@@ -121,7 +127,10 @@ int main(void) {
         previewDelegate.schedulePopup = [[NSPopUpButton alloc] init];
         [previewDelegate.schedulePopup addItemWithTitle:@"Manual"];
         previewDelegate.schedulePopup.lastItem.representedObject = @"manual";
-        previewDelegate.encryptionCheckbox = [[NSButton alloc] init];
+        previewDelegate.encryptionPopup = [[NSPopUpButton alloc] init];
+        [previewDelegate.encryptionPopup addItemWithTitle:@"None"];
+        previewDelegate.encryptionPopup.lastItem.representedObject = @"none";
+        previewDelegate.cryptRemoteField = [[NSTextField alloc] init];
         previewDelegate.nasMountField = [[NSTextField alloc] init];
         previewDelegate.nasURLField = [[NSTextField alloc] init];
         previewDelegate.nasSubdirField = [[NSTextField alloc] init];
@@ -148,6 +157,25 @@ int main(void) {
         }
         Assert(destinationLabelTranslated,
                @"exact destination label is localized in all supported languages");
+
+        SEL validationSelector = NSSelectorFromString(@"setupValidationErrorKeyForUpdates:");
+        typedef NSString *(*ValidationMethod)(id, SEL, NSDictionary *);
+        ValidationMethod validate = [previewDelegate respondsToSelector:validationSelector]
+            ? (ValidationMethod)[previewDelegate methodForSelector:validationSelector] : NULL;
+        NSString *incompatible = validate ? validate(previewDelegate, validationSelector, @{
+            @"GDRIVE_BACKUP_TARGET": @"nas", @"GDRIVE_BACKUP_ENCRYPTION": @"apfs"
+        }) : nil;
+        NSString *unsafeCrypt = validate ? validate(previewDelegate, validationSelector, @{
+            @"GDRIVE_BACKUP_TARGET": @"nas", @"GDRIVE_BACKUP_ENCRYPTION": @"rclone-crypt",
+            @"GDRIVE_BACKUP_CRYPT_REMOTE": @"../../unsafe"
+        }) : nil;
+        NSString *validCrypt = validate ? validate(previewDelegate, validationSelector, @{
+            @"GDRIVE_BACKUP_TARGET": @"nas", @"GDRIVE_BACKUP_ENCRYPTION": @"rclone-crypt",
+            @"GDRIVE_BACKUP_CRYPT_REMOTE": @"backup-crypt"
+        }) : @"missing";
+        Assert([incompatible isEqualToString:@"statusEncryptionIncompatible"] &&
+               [unsafeCrypt isEqualToString:@"statusCryptRemoteInvalid"] && !validCrypt,
+               @"setup refuses incompatible encryption and unsafe crypt remotes before saving");
     }
 
     if (failures > 0) {

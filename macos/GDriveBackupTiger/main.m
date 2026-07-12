@@ -1408,7 +1408,9 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic) BOOL reduceMotion;
 @property(nonatomic) BOOL voiceOverEnabled;
 @property(nonatomic, strong) NSPopUpButton *targetPopup;
-@property(nonatomic, strong) NSButton *encryptionCheckbox;
+@property(nonatomic, strong) NSPopUpButton *encryptionPopup;
+@property(nonatomic, strong) NSTextField *cryptRemoteLabel;
+@property(nonatomic, strong) NSTextField *cryptRemoteField;
 @property(nonatomic, strong) NSPopUpButton *mountedNasPopup;
 @property(nonatomic, strong) NSPopUpButton *discoveredNasPopup;
 @property(nonatomic, strong) NSPopUpButton *schedulePopup;
@@ -1433,8 +1435,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, strong) NSStatusItem *statusItem;
 @property(nonatomic, strong) NSWindow *restoreWindow;
 @property(nonatomic, strong) GDTRestoreBrowserView *restoreView;
-@property(nonatomic, strong) GDTRestoreCatalog *restoreCatalog;
-@property(nonatomic, strong) GDTRestoreCopier *restoreCopier;
+@property(nonatomic, strong) id restoreCatalog;
+@property(nonatomic, strong) id restoreCopier;
 @property(nonatomic) NSUInteger restoreLoadGeneration;
 @property(nonatomic, strong) NSWindow *diagnosticsWindow;
 @property(nonatomic, strong) GDTDiagnosticsView *diagnosticsView;
@@ -1956,7 +1958,12 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 - (void)beginRestoreForVersion:(NSDictionary<NSString *, id> *)version {
     NSURL *sourceURL = [version[@"sourceURL"] isKindOfClass:NSURL.class]
         ? version[@"sourceURL"] : nil;
-    if (!sourceURL || !self.restoreWindow || !self.restoreCopier) {
+    NSString *remotePath = [version[@"remotePath"] isKindOfClass:NSString.class]
+        ? version[@"remotePath"] : nil;
+    NSString *sourceName = [version[@"name"] isKindOfClass:NSString.class]
+        ? version[@"name"] : remotePath.lastPathComponent;
+    if ((!sourceURL && !remotePath.length) || !sourceName.length ||
+        !self.restoreWindow || !self.restoreCopier) {
         [self.restoreView showRestoreError:T(self.language ?: @"en", @"restoreFailed")];
         return;
     }
@@ -1974,14 +1981,19 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
             return;
         }
         strongSelf.restoreView.loading = YES;
-        GDTRestoreCopier *copier = strongSelf.restoreCopier;
+        id copier = strongSelf.restoreCopier;
         NSURL *destinationDirectory = panel.URL;
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             NSError *error = nil;
-            NSDictionary<NSString *, id> *restoreResult =
-                [copier restoreSourceURL:sourceURL
-                          toDirectoryURL:destinationDirectory
-                                   error:&error];
+            NSDictionary<NSString *, id> *restoreResult = nil;
+            if (remotePath.length && [copier isKindOfClass:GDTCryptRestoreCopier.class]) {
+                restoreResult = [(GDTCryptRestoreCopier *)copier
+                    restoreRemotePath:remotePath name:sourceName
+                    toDirectoryURL:destinationDirectory error:&error];
+            } else if (sourceURL && [copier isKindOfClass:GDTRestoreCopier.class]) {
+                restoreResult = [(GDTRestoreCopier *)copier
+                    restoreSourceURL:sourceURL toDirectoryURL:destinationDirectory error:&error];
+            }
             dispatch_async(dispatch_get_main_queue(), ^{
                 typeof(self) innerSelf = weakSelf;
                 if (!innerSelf) {
@@ -2010,6 +2022,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     }
     NSDictionary<NSString *, NSString *> *config = [self savedSetupConfig];
     NSString *destination = GDTBackupDestinationForConfig(config);
+    NSString *encryption = [config[@"GDRIVE_BACKUP_ENCRYPTION"] ?: @"none" lowercaseString];
+    BOOL usesRcloneCrypt = [encryption isEqualToString:@"rclone-crypt"];
+    NSString *cryptRemote = config[@"GDRIVE_BACKUP_CRYPT_REMOTE"] ?: @"";
+    NSString *versionsSubdirectory = config[@"GDRIVE_BACKUP_VERSIONS_SUBDIR"] ?: @".gdrive-versions";
     NSURL *rootURL = destination.length
         ? [NSURL fileURLWithPath:destination isDirectory:YES] : nil;
 
@@ -2054,16 +2070,25 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     };
 
     BOOL isDirectory = NO;
-    if (!rootURL || ![NSFileManager.defaultManager fileExistsAtPath:rootURL.path
-                                                        isDirectory:&isDirectory] || !isDirectory) {
+    if (!rootURL || (usesRcloneCrypt && !cryptRemote.length) ||
+        ![NSFileManager.defaultManager fileExistsAtPath:rootURL.path
+                                             isDirectory:&isDirectory] || !isDirectory) {
         self.restoreView.entries = @[];
         self.restoreView.statusText = T(self.language ?: @"en", @"restoreTargetUnavailable");
     } else {
         NSFileManager *fileManager = [[NSFileManager alloc] init];
-        self.restoreCatalog = [[GDTRestoreCatalog alloc] initWithBackupRootURL:rootURL
-                                                                  fileManager:fileManager];
-        self.restoreCopier = [[GDTRestoreCopier alloc] initWithBackupRootURL:rootURL
-                                                                 fileManager:fileManager];
+        if (usesRcloneCrypt) {
+            self.restoreCatalog = [GDTCryptRestoreCatalog productionCatalogWithRemoteName:cryptRemote
+                                                                      versionsSubdirectory:versionsSubdirectory];
+            self.restoreCopier = [GDTCryptRestoreCopier productionCopierWithRemoteName:cryptRemote
+                                                                           backupRootURL:rootURL
+                                                                             fileManager:fileManager];
+        } else {
+            self.restoreCatalog = [[GDTRestoreCatalog alloc] initWithBackupRootURL:rootURL
+                                                                      fileManager:fileManager];
+            self.restoreCopier = [[GDTRestoreCopier alloc] initWithBackupRootURL:rootURL
+                                                                     fileManager:fileManager];
+        }
         [self loadRestoreDirectory:@""];
     }
     [self.restoreWindow makeFirstResponder:self.restoreView.itemsTable];
@@ -2812,16 +2837,33 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.destinationPreviewField.accessibilityRole = NSAccessibilityStaticTextRole;
     [content addSubview:self.destinationPreviewField];
 
-    self.encryptionCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(164, 340, 440, 24)];
-    self.encryptionCheckbox.buttonType = NSButtonTypeSwitch;
-    self.encryptionCheckbox.title = T(self.language, @"encryptionAPFS");
-    self.encryptionCheckbox.toolTip = T(self.language, @"encryptionAPFSTip");
-    self.encryptionCheckbox.accessibilityHelp = self.encryptionCheckbox.toolTip;
-    self.encryptionCheckbox.state = [encryption isEqualToString:@"apfs"] ? NSControlStateValueOn : NSControlStateValueOff;
-    self.encryptionCheckbox.font = [NSFont fontWithName:@"Lucida Grande" size:12] ?: [NSFont systemFontOfSize:12];
-    self.encryptionCheckbox.target = self;
-    self.encryptionCheckbox.action = @selector(setupControlChanged:);
-    [content addSubview:self.encryptionCheckbox];
+    [content addSubview:[self label:T(self.language, @"encryptionLabel") frame:NSMakeRect(34, 342, 124, 22)]];
+    self.encryptionPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 338, 190, 28)];
+    NSArray<NSArray<NSString *> *> *encryptionItems = @[
+        @[T(self.language, @"encryptionNone"), @"none"],
+        @[T(self.language, @"encryptionAPFS"), @"apfs"],
+        @[T(self.language, @"encryptionRcloneCrypt"), @"rclone-crypt"]
+    ];
+    for (NSArray<NSString *> *item in encryptionItems) {
+        [self.encryptionPopup addItemWithTitle:item[0]];
+        self.encryptionPopup.lastItem.representedObject = item[1];
+        if ([encryption isEqualToString:item[1]]) {
+            [self.encryptionPopup selectItem:self.encryptionPopup.lastItem];
+        }
+    }
+    self.encryptionPopup.target = self;
+    self.encryptionPopup.action = @selector(setupControlChanged:);
+    [content addSubview:self.encryptionPopup];
+
+    self.cryptRemoteLabel = [self label:T(self.language, @"cryptRemoteLabel")
+                                      frame:NSMakeRect(362, 342, 98, 22)];
+    [content addSubview:self.cryptRemoteLabel];
+    self.cryptRemoteField = [self fieldWithFrame:NSMakeRect(466, 338, 138, 26)];
+    self.cryptRemoteField.stringValue = config[@"GDRIVE_BACKUP_CRYPT_REMOTE"] ?: @"";
+    self.cryptRemoteField.delegate = self;
+    self.cryptRemoteField.toolTip = T(self.language, @"encryptionRcloneTip");
+    self.cryptRemoteField.accessibilityHelp = self.cryptRemoteField.toolTip;
+    [content addSubview:self.cryptRemoteField];
 
     [content addSubview:[self label:T(self.language, @"mountedNas") frame:NSMakeRect(34, 376, 124, 22)]];
     self.mountedNasPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 372, 300, 28)];
@@ -2900,14 +2942,35 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 
 - (void)setupControlChanged:(id)sender {
     (void)sender;
+    [self updateEncryptionControls];
     [self updateDestinationPreview];
     [self invalidateSetupHealth:nil];
 }
 
-- (void)updateTargetControls {
+- (void)updateEncryptionControls {
     NSString *target = self.targetPopup.selectedItem.representedObject ?: @"apfs";
+    NSString *encryption = self.encryptionPopup.selectedItem.representedObject ?: @"none";
     BOOL isAPFSTarget = [target isEqualToString:@"apfs"];
-    self.encryptionCheckbox.enabled = isAPFSTarget;
+    BOOL usesRcloneCrypt = [encryption isEqualToString:@"rclone-crypt"];
+    NSMenuItem *apfsItem = nil;
+    for (NSMenuItem *item in self.encryptionPopup.itemArray) {
+        if ([item.representedObject isEqualToString:@"apfs"]) {
+            apfsItem = item;
+            break;
+        }
+    }
+    apfsItem.enabled = isAPFSTarget;
+    self.cryptRemoteLabel.hidden = !usesRcloneCrypt;
+    self.cryptRemoteField.hidden = !usesRcloneCrypt;
+    self.cryptRemoteField.enabled = usesRcloneCrypt;
+    self.encryptionPopup.toolTip = [encryption isEqualToString:@"apfs"]
+        ? T(self.language ?: @"en", @"encryptionAPFSTip")
+        : (usesRcloneCrypt ? T(self.language ?: @"en", @"encryptionRcloneTip") : @"");
+    self.encryptionPopup.accessibilityHelp = self.encryptionPopup.toolTip;
+}
+
+- (void)updateTargetControls {
+    [self updateEncryptionControls];
     [self updateDestinationPreview];
     [self invalidateSetupHealth:nil];
 }
@@ -3077,11 +3140,12 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 - (NSDictionary<NSString *, NSString *> *)currentSetupUpdates {
     NSString *target = self.targetPopup.selectedItem.representedObject ?: @"apfs";
     NSString *schedule = self.schedulePopup.selectedItem.representedObject ?: @"manual";
+    NSString *encryption = self.encryptionPopup.selectedItem.representedObject ?: @"none";
     NSMutableDictionary<NSString *, NSString *> *updates = [NSMutableDictionary dictionary];
     updates[@"GDRIVE_BACKUP_TARGET"] = target;
     updates[@"GDRIVE_BACKUP_SCHEDULE"] = schedule;
-    BOOL requiresEncryptedAPFS = [target isEqualToString:@"apfs"] && self.encryptionCheckbox.state == NSControlStateValueOn;
-    updates[@"GDRIVE_BACKUP_ENCRYPTION"] = requiresEncryptedAPFS ? @"apfs" : @"none";
+    updates[@"GDRIVE_BACKUP_ENCRYPTION"] = encryption;
+    updates[@"GDRIVE_BACKUP_CRYPT_REMOTE"] = self.cryptRemoteField.stringValue ?: @"";
 
     if ([target isEqualToString:@"nas"]) {
         updates[@"GDRIVE_BACKUP_NAS_MOUNT"] = self.nasMountField.stringValue ?: @"";
@@ -3106,6 +3170,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
         @"GDRIVE_BACKUP_TARGET": @"apfs",
         @"GDRIVE_BACKUP_SCHEDULE": @"manual",
         @"GDRIVE_BACKUP_ENCRYPTION": @"none",
+        @"GDRIVE_BACKUP_CRYPT_REMOTE": @"",
         @"GDRIVE_BACKUP_NAS_MOUNT": @"",
         @"GDRIVE_BACKUP_NAS_URL": @"",
         @"GDRIVE_BACKUP_NAS_SUBDIR": @"GoogleDrive-Backup",
@@ -3134,9 +3199,44 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
                                    savedConfig:[self savedSetupConfig]];
 }
 
+- (NSString *)setupValidationErrorKeyForUpdates:
+    (NSDictionary<NSString *, NSString *> *)updates {
+    NSString *target = [updates[@"GDRIVE_BACKUP_TARGET"] ?: @"apfs" lowercaseString];
+    NSString *encryption = [updates[@"GDRIVE_BACKUP_ENCRYPTION"] ?: @"none" lowercaseString];
+    if (![@[@"apfs", @"nas"] containsObject:target] ||
+        ![@[@"none", @"apfs", @"rclone-crypt"] containsObject:encryption] ||
+        ([encryption isEqualToString:@"apfs"] && ![target isEqualToString:@"apfs"])) {
+        return @"statusEncryptionIncompatible";
+    }
+    if ([encryption isEqualToString:@"rclone-crypt"]) {
+        NSString *remote = updates[@"GDRIVE_BACKUP_CRYPT_REMOTE"] ?: @"";
+        NSRegularExpression *expression = [NSRegularExpression
+            regularExpressionWithPattern:@"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+                                 options:0 error:nil];
+        BOOL safeRemote = [expression numberOfMatchesInString:remote options:0
+            range:NSMakeRange(0, remote.length)] == 1;
+        NSString *sourceRemote = updates[@"RCLONE_REMOTE"] ?: @"";
+        while ([sourceRemote hasSuffix:@":"]) {
+            sourceRemote = [sourceRemote substringToIndex:sourceRemote.length - 1];
+        }
+        if (!safeRemote || (sourceRemote.length && [remote isEqualToString:sourceRemote])) {
+            return @"statusCryptRemoteInvalid";
+        }
+    }
+    return nil;
+}
+
 - (BOOL)saveSetupValues {
+    NSDictionary<NSString *, NSString *> *updates = [self currentSetupUpdates];
+    NSMutableDictionary<NSString *, NSString *> *validationUpdates = [updates mutableCopy];
+    validationUpdates[@"RCLONE_REMOTE"] = [self savedSetupConfig][@"RCLONE_REMOTE"] ?: @"gdrive";
+    NSString *validationErrorKey = [self setupValidationErrorKeyForUpdates:validationUpdates];
+    if (validationErrorKey.length) {
+        self.statusField.stringValue = T(self.language ?: @"en", validationErrorKey);
+        return NO;
+    }
     NSError *error = nil;
-    if (!GDTWriteConfigUpdates([self currentSetupUpdates], &error)) {
+    if (!GDTWriteConfigUpdates(updates, &error)) {
         self.statusField.stringValue = error.localizedDescription ?: @"Save failed.";
         return NO;
     }
