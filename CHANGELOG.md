@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v2.3.2 - 2026-07-12
+
+- Let the persistent overview controller yield its Dock presence after a successful manual start so the foreground progress window is the app’s only Dock icon.
+- Keep the overview’s Dock icon when process launch fails, preserving a reliable retry path.
+
 ## v2.3.1 - 2026-07-12
 
 - Keep **Check backup** visibly busy while its no-copy process runs and prevent duplicate starts.

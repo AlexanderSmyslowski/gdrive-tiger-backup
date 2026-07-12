@@ -2531,6 +2531,14 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     if ([self.window.contentView isKindOfClass:TigerOverviewView.class]) {
         [self applyOverviewSnapshot:snapshot toView:(TigerOverviewView *)self.window.contentView];
     }
+    [self handoffOverviewDockPresenceToManualProgress];
+}
+
+- (void)handoffOverviewDockPresenceToManualProgress {
+    // Manual progress is a separate foreground process so its Dock icon can
+    // reliably reactivate the small status window. The persistent controller
+    // yields its own icon here to keep one coherent app presence in the Dock.
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 }
 
 - (CGFloat)animationDuration:(CGFloat)duration {

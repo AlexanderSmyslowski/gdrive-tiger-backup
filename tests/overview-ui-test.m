@@ -8,6 +8,7 @@
 @property(nonatomic) NSInteger launchCalls;
 @property(nonatomic) BOOL launchSucceeds;
 @property(nonatomic) BOOL sawImmediatePreparingState;
+@property(nonatomic) NSInteger progressHandoffCalls;
 @end
 
 @implementation OverviewLaunchDelegate
@@ -22,6 +23,10 @@
         [view.lastRunValueLabel.stringValue isEqualToString:T(self.language ?: @"en", @"statusBackupPreparing")] &&
         !view.backupButton.enabled;
     return self.launchSucceeds;
+}
+
+- (void)handoffOverviewDockPresenceToManualProgress {
+    self.progressHandoffCalls++;
 }
 
 @end
@@ -147,16 +152,17 @@ int main(void) {
         guardedLaunch.window.contentView = [[TigerOverviewView alloc] initWithFrame:NSMakeRect(0, 0, 620, 420)];
         [guardedLaunch startOverviewBackup:nil];
         [guardedLaunch startOverviewBackup:nil];
-        Assert(guardedLaunch.launchCalls == 1 && guardedLaunch.sawImmediatePreparingState,
-               @"overview shows preparation and disables repeat clicks before process launch");
+        Assert(guardedLaunch.launchCalls == 1 && guardedLaunch.sawImmediatePreparingState &&
+               guardedLaunch.progressHandoffCalls == 1,
+               @"overview shows preparation, disables repeats, and yields its Dock icon after launch");
 
         OverviewLaunchDelegate *failedLaunch = [[OverviewLaunchDelegate alloc] init];
         failedLaunch.language = @"en";
         failedLaunch.launchSucceeds = NO;
         [failedLaunch startOverviewBackup:nil];
         [failedLaunch startOverviewBackup:nil];
-        Assert(failedLaunch.launchCalls == 2,
-               @"overview launch failures remain explicitly retryable");
+        Assert(failedLaunch.launchCalls == 2 && failedLaunch.progressHandoffCalls == 0,
+               @"overview launch failures remain retryable without surrendering their Dock icon");
 
         NSArray<NSString *> *overviewKeys = @[
             @"overviewSubtitle", @"overviewLastRun", @"overviewNextRun",
