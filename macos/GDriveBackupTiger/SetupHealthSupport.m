@@ -59,6 +59,34 @@ static BOOL GDTEncryptedAPFSDestinationIsValid(NSDictionary<NSString *, id> *res
         [plist[@"DeviceIdentifier"] length] > 0;
 }
 
+static BOOL GDTNetworkMountIsValid(NSDictionary<NSString *, id> *result,
+                                   NSString *destinationPath) {
+    if ([result[@"status"] integerValue] != 0 ||
+        ![result[@"output"] isKindOfClass:NSString.class] ||
+        [result[@"output"] length] > 64 * 1024 || !destinationPath.length) {
+        return NO;
+    }
+    NSString *expected = destinationPath.stringByStandardizingPath;
+    for (NSString *line in [result[@"output"]
+            componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+        NSRange optionsStart = [line rangeOfString:@" (" options:NSBackwardsSearch];
+        NSRange on = optionsStart.location == NSNotFound
+            ? NSMakeRange(NSNotFound, 0)
+            : [line rangeOfString:@" on " options:NSBackwardsSearch
+                            range:NSMakeRange(0, optionsStart.location)];
+        if (on.location == NSNotFound || optionsStart.location == NSNotFound) continue;
+        NSString *mountPath = [[line substringWithRange:NSMakeRange(
+            NSMaxRange(on), optionsStart.location - NSMaxRange(on))] stringByStandardizingPath];
+        NSString *options = [line substringFromIndex:NSMaxRange(optionsStart)];
+        NSString *filesystem = [[options componentsSeparatedByString:@","] firstObject];
+        if ([mountPath isEqualToString:expected] &&
+            [@[@"smbfs", @"afpfs", @"nfs"] containsObject:filesystem]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
 static BOOL GDTSetupRemoteNameIsSafe(NSString *remoteName) {
     if (!remoteName.length || remoteName.length > 64) return NO;
     NSRegularExpression *expression = [NSRegularExpression
@@ -265,6 +293,11 @@ static NSDictionary<NSString *, id> *GDTRunSetupCommand(NSString *command,
     BOOL accessible = exists && isDirectory &&
         [self.fileManager isReadableFileAtPath:destinationPath] &&
         [self.fileManager isWritableFileAtPath:destinationPath];
+    if ([target isEqualToString:@"nas"]) {
+        accessible = accessible && self.commandRunner && GDTNetworkMountIsValid(
+            self.commandRunner(@"mount", @[]), destinationPath
+        );
+    }
     NSDictionary<NSString *, id> *destination = accessible
         ? GDTSetupRow(@"ready", @"setupCheckDestinationReady", @{})
         : GDTSetupRow(@"failure", @"setupCheckDestinationUnavailable",

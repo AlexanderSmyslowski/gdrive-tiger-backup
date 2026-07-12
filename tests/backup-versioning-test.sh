@@ -97,6 +97,11 @@ for path in "$@"; do
 done
 SH
 
+  cat >"$FAKE_BIN/mount" <<'SH'
+#!/bin/bash
+printf '%s on %s (smbfs, nodev, nosuid)\n' '//backup.test/share' "${FAKE_NAS_MOUNT:?}"
+SH
+
   local tool
   for tool in flock diskutil plutil; do
     cat >"$FAKE_BIN/$tool" <<'SH'
@@ -106,7 +111,7 @@ SH
   done
 
   chmod +x "$FAKE_BIN/rclone" "$FAKE_BIN/jq" "$FAKE_BIN/date" "$FAKE_BIN/trash" \
-    "$FAKE_BIN/flock" "$FAKE_BIN/diskutil" "$FAKE_BIN/plutil"
+    "$FAKE_BIN/mount" "$FAKE_BIN/flock" "$FAKE_BIN/diskutil" "$FAKE_BIN/plutil"
 }
 
 run_backup_with_mode() {
@@ -120,9 +125,11 @@ run_backup_with_mode() {
     MOUNT_SETTLE_SECONDS=0 \
     GDRIVE_BACKUP_TARGET=nas \
     GDRIVE_BACKUP_NAS_MOUNT="$NAS_MOUNT" \
+    GDRIVE_BACKUP_MOUNT_BIN="$FAKE_BIN/mount" \
     GDRIVE_BACKUP_DEST_ROOT="$DEST_ROOT" \
     GDRIVE_BACKUP_CONFIRM=0 \
     GDRIVE_BACKUP_LOCK="$TEST_HOME/backup.lock" \
+    FAKE_NAS_MOUNT="$NAS_MOUNT" \
     BACKUP_DISABLE_ANIMATION=1 \
     RCLONE_REMOTE=tdd-remote \
     GDRIVE_BACKUP_RETENTION_TRASH_BIN="$FAKE_BIN/trash" \

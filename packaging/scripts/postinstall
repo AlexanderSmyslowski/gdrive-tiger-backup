@@ -56,8 +56,12 @@ if [[ ! -f "$config_file" ]]; then
     printf 'GDRIVE_BACKUP_VERSIONS_SUBDIR=.gdrive-versions\n'
     printf 'GDRIVE_BACKUP_RETENTION=1\n'
     printf 'GDRIVE_BACKUP_ENCRYPTION=none\n'
+    printf 'GDRIVE_BACKUP_PAUSED=0\n'
     printf 'GDRIVE_BACKUP_SCHEDULE=manual\n'
   } >"$config_file"
+fi
+if [[ -f "$config_file" ]] && ! /usr/bin/grep -q '^GDRIVE_BACKUP_PAUSED=' "$config_file"; then
+  printf 'GDRIVE_BACKUP_PAUSED=0\n' >>"$config_file"
 fi
 /bin/chmod 600 "$config_file"
 /usr/sbin/chown "$console_uid:$console_gid" "$config_file"

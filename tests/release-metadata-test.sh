@@ -30,10 +30,14 @@ check_contains "$ROOT/install.sh" "GDRIVE_BACKUP_RETENTION=1" \
   "source installer enables retention explicitly"
 check_contains "$ROOT/install.sh" "GDRIVE_BACKUP_ENCRYPTION=none" \
   "source installer keeps encryption opt-in"
+check_contains "$ROOT/install.sh" "GDRIVE_BACKUP_PAUSED=0" \
+  "source installer enables automatic backups explicitly"
 check_contains "$ROOT/packaging/scripts/postinstall" "GDRIVE_BACKUP_RETENTION=1" \
   "package installer enables retention explicitly"
 check_contains "$ROOT/packaging/scripts/postinstall" "GDRIVE_BACKUP_ENCRYPTION=none" \
   "package installer keeps encryption opt-in"
+check_contains "$ROOT/packaging/scripts/postinstall" "GDRIVE_BACKUP_PAUSED=0" \
+  "package installer enables automatic backups explicitly"
 
 if (( failures > 0 )); then
   printf '%s release metadata check(s) failed.\n' "$failures"

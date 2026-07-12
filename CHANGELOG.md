@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v2.3.0 - 2026-07-12
+
+- Require a configured NAS destination to be an actual SMB, AFP, or NFS mount before setup reports it ready or the backup engine writes anything.
+- Revalidate the network mount before each copy phase so a disconnected share cannot fall back to a plain folder on the internal disk.
+- Add a localized menu-bar action to pause or resume schedule and mount-triggered backups without changing the saved schedule or blocking manual backups.
+- Keep paused automatic attempts silent, preserve the last real backup result, and reject damaged pause settings instead of silently enabling automation.
+
 ## v2.2.2 - 2026-07-12
 
 - Show preparation and disable repeated clicks before macOS can block process launch on a first network-volume permission prompt.

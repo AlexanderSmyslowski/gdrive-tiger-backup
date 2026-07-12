@@ -162,7 +162,8 @@ int main(void) {
             @"overviewSubtitle", @"overviewLastRun", @"overviewNextRun",
             @"overviewTarget", @"overviewStorage", @"overviewSettings",
             @"overviewOpen", @"overviewNeverRun", @"overviewUnavailable",
-            @"overviewFreeOf", @"overviewStatusInterrupted", @"overviewStatusUnknown"
+            @"overviewFreeOf", @"overviewStatusInterrupted", @"overviewStatusUnknown",
+            @"automaticBackupsPaused", @"pauseAutomaticBackups", @"resumeAutomaticBackups"
         ];
         BOOL allOverviewTextLocalized = YES;
         for (NSString *language in SupportedLanguageCodes()) {
@@ -262,6 +263,20 @@ int main(void) {
                    @"External disk · GoogleDrive-Backup"],
                @"local target is explicitly identified as an external disk");
 
+        NSDictionary<NSString *, NSString *> *pausedSnapshot =
+            [delegate overviewSnapshotForConfig:@{
+                @"GDRIVE_BACKUP_TARGET": @"apfs",
+                @"GDRIVE_BACKUP_VOLUME": @"/Volumes/GoogleDrive-Backup",
+                @"GDRIVE_BACKUP_SCHEDULE": @"daily",
+                @"GDRIVE_BACKUP_PAUSED": @"1"
+            }
+                                     summaryPath:@"/path/that/does/not/exist"
+                                             now:now
+                                        calendar:calendar];
+        Assert([pausedSnapshot[@"nextRun"] isEqualToString:T(@"en", @"automaticBackupsPaused")] &&
+               [pausedSnapshot[@"automaticBackupsPaused"] isEqualToString:@"1"],
+               @"overview says automatic backups are paused instead of inventing a next run");
+
         NSDictionary<NSString *, NSString *> *menuSnapshot = @{
             @"status": @"success",
             @"lastRun": @"Successful",
@@ -274,6 +289,7 @@ int main(void) {
         NSArray<NSString *> *menuTitles = [statusMenu.itemArray valueForKey:@"title"];
         Assert([menuTitles containsObject:T(@"en", @"overviewOpen")] &&
                [menuTitles containsObject:T(@"en", @"backupNow")] &&
+               [menuTitles containsObject:T(@"en", @"pauseAutomaticBackups")] &&
                [menuTitles containsObject:T(@"en", @"restoreTitle")] &&
                [menuTitles containsObject:T(@"en", @"overviewSettings")] &&
                [[menuTitles componentsJoinedByString:@" "] containsString:@"Successful"] &&
@@ -281,6 +297,28 @@ int main(void) {
                [[menuTitles componentsJoinedByString:@" "] containsString:@"/Volumes/Archive"] &&
                [[menuTitles componentsJoinedByString:@" "] containsString:@"812 GB"],
                @"menu bar exposes the same status, schedule, target, storage, and actions");
+
+        NSMenu *pausedMenu = [delegate statusMenuForSnapshot:pausedSnapshot];
+        Assert([pausedMenu itemWithTitle:T(@"en", @"resumeAutomaticBackups")] != nil,
+               @"paused menu offers one explicit way to resume automatic backups");
+
+        NSString *pauseConfigPath = [NSTemporaryDirectory() stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"gdrive-overview-pause-%@", NSUUID.UUID.UUIDString]];
+        [@"GDRIVE_BACKUP_PAUSED=0\n" writeToFile:pauseConfigPath atomically:YES
+                                        encoding:NSUTF8StringEncoding error:nil];
+        setenv("GDRIVE_BACKUP_CONFIG", pauseConfigPath.UTF8String, 1);
+        SEL toggleSelector = NSSelectorFromString(@"toggleAutomaticBackupsPaused:");
+        if ([delegate respondsToSelector:toggleSelector]) {
+            typedef void (*ToggleMethod)(id, SEL, id);
+            ToggleMethod toggle = (ToggleMethod)[delegate methodForSelector:toggleSelector];
+            toggle(delegate, toggleSelector, nil);
+        }
+        NSDictionary *pausedConfig = GDTReadConfigDictionaryAtPath(pauseConfigPath);
+        Assert([pausedConfig[@"GDRIVE_BACKUP_PAUSED"] isEqualToString:@"1"],
+               @"pause action persists the automatic-backup guard without changing the schedule");
+        unsetenv("GDRIVE_BACKUP_CONFIG");
+        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:pauseConfigPath]
+                                    resultingItemURL:nil error:nil];
         Assert([delegate respondsToSelector:NSSelectorFromString(@"showRestoreBrowser:")],
                @"overview and menu bar route to one restore browser workflow");
 

@@ -174,6 +174,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
     LC_ALL=C printf 'GDRIVE_BACKUP_VERSIONS_SUBDIR=%q\n' '.gdrive-versions'
     printf 'GDRIVE_BACKUP_RETENTION=1\n'
     printf 'GDRIVE_BACKUP_ENCRYPTION=none\n'
+    printf 'GDRIVE_BACKUP_PAUSED=0\n'
   } >"$CONFIG_FILE"
 elif ! grep -q '^GDRIVE_BACKUP_LANG=' "$CONFIG_FILE"; then
   LC_ALL=C printf 'GDRIVE_BACKUP_LANG=%q\n' "$CONFIG_LANG" >>"$CONFIG_FILE"
@@ -186,6 +187,9 @@ if [[ -f "$CONFIG_FILE" ]] && ! grep -q '^GDRIVE_BACKUP_ENCRYPTION=' "$CONFIG_FI
 fi
 if [[ -f "$CONFIG_FILE" ]] && ! grep -q '^GDRIVE_BACKUP_RETENTION=' "$CONFIG_FILE"; then
   printf 'GDRIVE_BACKUP_RETENTION=1\n' >>"$CONFIG_FILE"
+fi
+if [[ -f "$CONFIG_FILE" ]] && ! grep -q '^GDRIVE_BACKUP_PAUSED=' "$CONFIG_FILE"; then
+  printf 'GDRIVE_BACKUP_PAUSED=0\n' >>"$CONFIG_FILE"
 fi
 if [[ -f "$CONFIG_FILE" && "$BACKUP_TARGET" == "nas" ]]; then
   if [[ -n "$NAS_MOUNT" ]] && ! grep -q '^GDRIVE_BACKUP_NAS_MOUNT=' "$CONFIG_FILE"; then

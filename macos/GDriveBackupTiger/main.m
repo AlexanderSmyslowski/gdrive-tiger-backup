@@ -1640,8 +1640,11 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     }
 
     NSString *schedule = [config[@"GDRIVE_BACKUP_SCHEDULE"] ?: @"manual" lowercaseString];
+    BOOL automaticBackupsPaused = [config[@"GDRIVE_BACKUP_PAUSED"] isEqualToString:@"1"];
     NSString *nextRun = nil;
-    if ([schedule isEqualToString:@"daily"]) {
+    if (automaticBackupsPaused) {
+        nextRun = T(language, @"automaticBackupsPaused");
+    } else if ([schedule isEqualToString:@"daily"]) {
         NSDate *nextDate = GDTNextDailyRunAfterDate(now, calendar);
         nextRun = [[self overviewDateFormatterWithCalendar:calendar] stringFromDate:nextDate];
     } else if ([schedule isEqualToString:@"login"]) {
@@ -1672,6 +1675,7 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
         @"lastRun": lastRun ?: @"",
         @"lastRunDetail": lastRunDetail,
         @"nextRun": nextRun ?: T(language, @"overviewUnavailable"),
+        @"automaticBackupsPaused": automaticBackupsPaused ? @"1" : @"0",
         @"target": target,
         @"storage": storage
     };
@@ -1729,6 +1733,14 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     backup.enabled = !self.overviewLaunchPending &&
         ![snapshot[@"status"] isEqualToString:@"running"];
     [menu addItem:backup];
+    BOOL automaticBackupsPaused = [snapshot[@"automaticBackupsPaused"] isEqualToString:@"1"];
+    NSMenuItem *pause = [[NSMenuItem alloc]
+        initWithTitle:T(language, automaticBackupsPaused
+            ? @"resumeAutomaticBackups" : @"pauseAutomaticBackups")
+                 action:@selector(toggleAutomaticBackupsPaused:)
+          keyEquivalent:@""];
+    pause.target = self;
+    [menu addItem:pause];
     NSMenuItem *restore = [[NSMenuItem alloc] initWithTitle:T(language, @"restoreTitle")
                                                       action:@selector(showRestoreBrowser:)
                                                keyEquivalent:@""];
@@ -1754,6 +1766,19 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     [menu addItem:[NSMenuItem separatorItem]];
     [menu addItemWithTitle:T(language, @"quitMenu") action:@selector(terminate:) keyEquivalent:@"q"];
     return menu;
+}
+
+- (void)toggleAutomaticBackupsPaused:(id)sender {
+    (void)sender;
+    NSDictionary<NSString *, NSString *> *config = GDTReadConfigDictionary();
+    BOOL paused = [config[@"GDRIVE_BACKUP_PAUSED"] isEqualToString:@"1"];
+    NSError *error = nil;
+    if (!GDTWriteConfigUpdates(@{@"GDRIVE_BACKUP_PAUSED": paused ? @"0" : @"1"}, &error)) {
+        [NSApp presentError:error ?: [NSError errorWithDomain:@"com.commcats.gdrivebackup"
+                                                         code:1 userInfo:nil]];
+        return;
+    }
+    [self refreshOverviewStatus:nil];
 }
 
 - (void)updateStatusItemPresentationForSnapshot:(NSDictionary<NSString *, NSString *> *)snapshot {

@@ -103,6 +103,7 @@ if [[ -f "$CONFIG_FILE" ]]; then
 fi
 
 BACKUP_TRIGGER="${GDRIVE_BACKUP_TRIGGER:-manual}"
+AUTOMATIC_BACKUPS_PAUSED="${GDRIVE_BACKUP_PAUSED:-0}"
 NAS_START_ON_MOUNT="${GDRIVE_BACKUP_NAS_START_ON_MOUNT:-0}"
 if [[ "$BACKUP_TRIGGER" == "mount" && "$NAS_START_ON_MOUNT" != "1" ]]; then
   REQUESTED_BACKUP_TARGET="apfs"
@@ -175,6 +176,7 @@ RETENTION_APP_TRASH_BIN="${GDRIVE_BACKUP_APP_TRASH_BIN-${ANIMATION_APP%/}/Conten
 ENCRYPTION="$(lowercase "${GDRIVE_BACKUP_ENCRYPTION-none}")"
 CRYPT_REMOTE="${GDRIVE_BACKUP_CRYPT_REMOTE-}"
 DISKUTIL_BIN="${GDRIVE_BACKUP_DISKUTIL-/usr/sbin/diskutil}"
+MOUNT_BIN="${GDRIVE_BACKUP_MOUNT_BIN-/sbin/mount}"
 ENCRYPTED_VOLUME_REAL=""
 ENCRYPTED_VOLUME_DEVICE=""
 ENCRYPTED_VOLUME_UUID=""
@@ -1746,7 +1748,7 @@ ensure_nas_destination() {
     return 1
   fi
 
-  if [[ ! -d "$NAS_MOUNT" && -n "$NAS_URL" ]]; then
+  if ! nas_mount_is_verified && [[ -n "$NAS_URL" ]]; then
     if [[ "$DRY_RUN" == "1" ]]; then
       log "DRY-RUN: NAS-Freigabe wuerde bei Bedarf gemountet: $NAS_URL"
       return 1
@@ -1755,14 +1757,16 @@ ensure_nas_destination() {
     fi
   fi
 
-  local waited=0
-  while [[ ! -d "$NAS_MOUNT" && "$waited" -lt 30 ]]; do
-    sleep 1
-    waited=$((waited + 1))
-  done
+  if [[ -n "$NAS_URL" ]]; then
+    local waited=0
+    while ! nas_mount_is_verified && [[ "$waited" -lt 30 ]]; do
+      sleep 1
+      waited=$((waited + 1))
+    done
+  fi
 
-  if [[ ! -d "$NAS_MOUNT" ]]; then
-    log "NAS-Ziel ist nicht gemountet: $NAS_MOUNT"
+  if ! nas_mount_is_verified; then
+    log "NAS-Ziel ist kein verifiziertes Netzwerklaufwerk: $NAS_MOUNT"
     return 1
   fi
 
@@ -1773,6 +1777,24 @@ ensure_nas_destination() {
 
   log "NAS-Ziel bereit: mount=$NAS_MOUNT ziel=$DEST_ROOT"
   return 0
+}
+
+nas_mount_is_verified() {
+  local line mount_path filesystem
+
+  [[ -d "$NAS_MOUNT" && ! -L "$NAS_MOUNT" && -x "$MOUNT_BIN" ]] || return 1
+  while IFS= read -r line; do
+    [[ "$line" == *" on "* && "$line" == *" ("* ]] || continue
+    mount_path="${line#* on }"
+    mount_path="${mount_path% (*}"
+    [[ "$mount_path" == "$NAS_MOUNT" ]] || continue
+    filesystem="${line##* (}"
+    filesystem="${filesystem%%,*}"
+    case "$filesystem" in
+      smbfs|afpfs|nfs) return 0 ;;
+    esac
+  done < <("$MOUNT_BIN" 2>/dev/null)
+  return 1
 }
 
 ensure_backup_target() {
@@ -1806,6 +1828,20 @@ trap on_exit EXIT
 trap 'cancel_run 129 HUP' HUP
 trap 'cancel_run 130 INT' INT
 trap 'cancel_run 143 TERM' TERM
+
+case "$AUTOMATIC_BACKUPS_PAUSED" in
+  0|1) ;;
+  *)
+    log "FEHLER: GDRIVE_BACKUP_PAUSED muss 0 oder 1 sein."
+    exit 64
+    ;;
+esac
+if [[ "$AUTOMATIC_BACKUPS_PAUSED" == "1" && "$BACKUP_TRIGGER" != "manual" ]]; then
+  log "Automatische Backups sind pausiert; Lauf wird still uebersprungen."
+  RUN_OUTCOME="skipped"
+  RUN_STATE_REASON="automatic_backups_paused"
+  exit 0
+fi
 
 if ! validate_versioning_config; then
   exit 64
@@ -1946,7 +1982,7 @@ errors=0
 validate_live_nas_destination() {
   [[ "$BACKUP_TARGET" == "nas" ]] || return 0
 
-  if [[ ! -d "$NAS_MOUNT" ]]; then
+  if ! nas_mount_is_verified; then
     RUN_STATE_REASON="nas_connection_lost"
     log "FEHLER: NAS-Verbindung wurde waehrend des Backups getrennt."
     return 1

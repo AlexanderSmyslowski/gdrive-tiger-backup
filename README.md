@@ -4,7 +4,7 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window. “Tiger” describes the visual style; the app requires macOS 13 Ventura or later and does not run on Mac OS X 10.4 Tiger.
 
-Current release: `v2.2.2` with immediate manual-start feedback, a foreground Tiger progress window with safe cancellation, clearly identified disk and NAS destinations, optional end-to-end `rclone crypt` backups, Time Machine-like encrypted retention, verified encrypted recovery, manual safe update checks, named profiles, diagnostics, and a persistent menu bar overview.
+Current release: `v2.3.0` with verified network-mount safety, pausable automatic backups, immediate manual-start feedback, a foreground Tiger progress window with safe cancellation, clearly identified disk and NAS destinations, optional end-to-end `rclone crypt` backups, Time Machine-like encrypted retention, verified encrypted recovery, manual safe update checks, named profiles, diagnostics, and a persistent menu bar overview.
 
 It backs up:
 
@@ -18,11 +18,12 @@ The backup is read-only from Google Drive's perspective. It uses `rclone copy`, 
 ## How It Works
 
 - A user LaunchAgent starts the lightweight menu bar controller at login.
+- Automatic schedule and mount-triggered runs can be paused from the menu bar without changing the saved schedule; manual backups remain available.
 - The controller observes macOS mount events and reacts only when the exact saved APFS backup volume was newly mounted. Unrelated disks and NAS mounts are ignored.
 - The overview shows the last verified run, configured schedule, exact local destination, and available destination capacity.
 - Named profiles keep distinct destinations, schedules, encryption policies, and last-run histories while making the one active profile explicit in setup, the overview, and the menu bar.
 - On first use, if the backup volume does not exist yet, the helper can ask to create a dedicated APFS volume on the newly attached external APFS disk.
-- In parallel, the setup window can configure a mounted NAS share, for example SMB, AFP, or NFS under `/Volumes`.
+- In parallel, the setup window can configure a mounted NAS share, for example SMB, AFP, or NFS under `/Volumes`. A writable directory alone never counts as a NAS: the setup check and backup engine both require a verified network file-system mount.
 - The setup window can select already mounted NAS shares, run a small Bonjour search, show the exact resolved destination, save a schedule, and start a backup manually. Its system check verifies the required tools, Google Drive access, and destination before a run. Backup actions never save edited form values implicitly.
 - A `flock` lock prevents two backup jobs from running at the same time.
 - Before a real backup starts, the Tiger helper asks whether this volume or NAS destination should be used.
@@ -77,7 +78,7 @@ rclone lsd gdrive:
 For most users, download the latest installer from the GitHub releases page:
 
 1. Open <https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/latest>
-2. Download `GDrive-Backup-Tiger-2.2.2.pkg` from `Assets`.
+2. Download `GDrive-Backup-Tiger-2.3.0.pkg` from `Assets`.
 3. Double-click the package and follow the macOS Installer.
 4. Open `/Applications/GDrive Backup Tiger.app` to choose language, external disk, NAS, and schedule settings.
 
@@ -91,13 +92,13 @@ The package is currently unsigned because the project does not yet have an Apple
 
 1. Click `Done`, not `Move to Trash`.
 2. Open `System Settings > Privacy & Security`.
-3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-2.2.2.pkg`.
+3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-2.3.0.pkg`.
 4. Confirm with `Open Anyway`, then install the package.
 
 Advanced users can also remove the download quarantine flag before opening:
 
 ```bash
-xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-2.2.2.pkg"
+xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-2.3.0.pkg"
 ```
 
 ### Install from source
@@ -188,6 +189,7 @@ GDRIVE_BACKUP_VERSIONING=1
 GDRIVE_BACKUP_VERSIONS_SUBDIR=.gdrive-versions
 GDRIVE_BACKUP_RETENTION=1
 GDRIVE_BACKUP_ENCRYPTION=none
+GDRIVE_BACKUP_PAUSED=0
 ```
 
 For NAS backups, the config looks like this:
@@ -204,6 +206,7 @@ Supported values for `GDRIVE_BACKUP_LANG` are `de`, `en`, `fr`, `es`, `ja`, `yue
 Supported values for `GDRIVE_BACKUP_TARGET` are `apfs` and `nas`.
 Supported values for `GDRIVE_BACKUP_SCHEDULE` are `manual`, `login`, `hourly`, and `daily`.
 Set `GDRIVE_BACKUP_CONFIRM=0` only if you deliberately want fully automatic backups whenever the configured volume is mounted.
+Set `GDRIVE_BACKUP_PAUSED=1` to silence schedule and mount-triggered runs without changing the saved schedule. The menu bar toggles this setting; **Backup now** always remains manual and available.
 Set `GDRIVE_BACKUP_AUTO_CREATE_VOLUME=0` if you want to create the backup volume yourself.
 Set `GDRIVE_BACKUP_NAS_START_ON_MOUNT=1` only if mount events should also start the configured NAS backup; the default `0` reserves mount-triggered runs for the external APFS target.
 Set `GDRIVE_BACKUP_VERSIONING=0` only if overwritten destination files should not be preserved. Versioning is enabled by default and moves the previous content into `.gdrive-versions/<timestamp>/<backup area>` through rclone's `--backup-dir` support.

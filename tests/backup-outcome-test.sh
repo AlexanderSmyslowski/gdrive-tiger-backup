@@ -82,6 +82,11 @@ SH
 exit "${FAKE_FLOCK_STATUS:-0}"
 SH
 
+  cat >"$FAKE_BIN/mount" <<'SH'
+#!/bin/bash
+printf '%s on %s (smbfs, nodev, nosuid)\n' '//backup.test/share' "${FAKE_NAS_MOUNT:?}"
+SH
+
   local tool
   for tool in diskutil plutil; do
     cat >"$FAKE_BIN/$tool" <<'SH'
@@ -90,7 +95,7 @@ exit 0
 SH
   done
   chmod +x "$FAKE_BIN/rclone" "$FAKE_BIN/jq" "$FAKE_BIN/open" "$FAKE_BIN/flock" \
-    "$FAKE_BIN/diskutil" "$FAKE_BIN/plutil"
+    "$FAKE_BIN/mount" "$FAKE_BIN/diskutil" "$FAKE_BIN/plutil"
 }
 
 run_backup() {
@@ -100,6 +105,7 @@ run_backup() {
     MOUNT_SETTLE_SECONDS=0 \
     GDRIVE_BACKUP_TARGET=nas \
     GDRIVE_BACKUP_NAS_MOUNT="$NAS_MOUNT" \
+    GDRIVE_BACKUP_MOUNT_BIN="$FAKE_BIN/mount" \
     GDRIVE_BACKUP_DEST_ROOT="$NAS_MOUNT/backup" \
     GDRIVE_BACKUP_CONFIRM="${GDRIVE_BACKUP_CONFIRM:-0}" \
     GDRIVE_BACKUP_LOCK="$TEST_HOME/backup.lock" \
@@ -117,12 +123,37 @@ run_backup() {
     FAKE_RCLONE_CONFIG_STARTED_FILE="${FAKE_RCLONE_CONFIG_STARTED_FILE:-}" \
     FAKE_RCLONE_CONFIG_SLEEP_SECONDS="${FAKE_RCLONE_CONFIG_SLEEP_SECONDS:-0}" \
     FAKE_FLOCK_STATUS="${FAKE_FLOCK_STATUS:-0}" \
+    FAKE_NAS_MOUNT="$NAS_MOUNT" \
     FAKE_OPEN_LOG="$OPEN_LOG" \
     FAKE_OPEN_STATUS="${FAKE_OPEN_STATUS:-0}" \
     FAKE_CONFIRM_DECISION="${FAKE_CONFIRM_DECISION:-}" \
     RCLONE_REMOTE=tdd-remote \
     "$@" \
     "$BACKUP_SCRIPT" --run
+}
+
+test_paused_automatic_run_is_silent_and_preserves_history() {
+  local name="paused automatic run is silent and preserves backup history"
+  local before after status state
+  prepare_test_environment
+  before=$'protocol=1\nstatus=success\npid=1\nstarted_at=1783790000\nfinished_at=1783790100\nexit_code=0\ntrigger=manual\ntarget=nas\ndestination=/Volumes/Archive'
+  printf '%s' "$before" >"$SUMMARY_STATE_FILE"
+  chmod 600 "$SUMMARY_STATE_FILE"
+
+  run_backup \
+    "GDRIVE_BACKUP_TRIGGER=schedule" \
+    "GDRIVE_BACKUP_PAUSED=1" \
+    "FAKE_RCLONE_STARTED_FILE=$TEST_HOME/rclone-started"
+  status=$?
+  after="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+  state="$(cat "$RUN_STATE_FILE" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" && "$after" == "$before" && ! -e "$TEST_HOME/rclone-started" &&
+        "$state" == *$'status=skipped\n'* && "$state" == *$'reason=automatic_backups_paused\n'* ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status state=${state//$'\n'/,})"
+  fi
 }
 
 start_backup_async() {
@@ -132,6 +163,7 @@ start_backup_async() {
     MOUNT_SETTLE_SECONDS=0 \
     GDRIVE_BACKUP_TARGET=nas \
     GDRIVE_BACKUP_NAS_MOUNT="$NAS_MOUNT" \
+    GDRIVE_BACKUP_MOUNT_BIN="$FAKE_BIN/mount" \
     GDRIVE_BACKUP_DEST_ROOT="$NAS_MOUNT/backup" \
     GDRIVE_BACKUP_CONFIRM=0 \
     GDRIVE_BACKUP_LOCK="$TEST_HOME/backup.lock" \
@@ -148,6 +180,7 @@ start_backup_async() {
     FAKE_RCLONE_CONFIG_STARTED_FILE="${FAKE_RCLONE_CONFIG_STARTED_FILE:-}" \
     FAKE_RCLONE_CONFIG_SLEEP_SECONDS="${FAKE_RCLONE_CONFIG_SLEEP_SECONDS:-0}" \
     FAKE_FLOCK_STATUS=0 \
+    FAKE_NAS_MOUNT="$NAS_MOUNT" \
     FAKE_OPEN_LOG="$OPEN_LOG" \
     RCLONE_REMOTE=tdd-remote \
     "$BACKUP_SCRIPT" --run &
@@ -602,6 +635,7 @@ test_failed_ui_launch_cleans_internal_state
 test_success_persists_private_summary
 test_failure_persists_failed_summary
 test_concurrent_start_preserves_previous_summary
+test_paused_automatic_run_is_silent_and_preserves_history
 
 if (( failures > 0 )); then
   printf '%s backup outcome test(s) failed.\n' "$failures"

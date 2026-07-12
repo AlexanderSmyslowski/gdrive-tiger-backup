@@ -193,7 +193,10 @@ int main(void) {
                 return YES;
             },
             ^NSDictionary<NSString *, id> *(NSString *command, NSArray<NSString *> *arguments) {
-                (void)command;
+                if ([command isEqualToString:@"mount"]) {
+                    return @{ @"status": @0, @"output": [NSString stringWithFormat:
+                        @"//backup.test/share on %@ (smbfs, nodev, nosuid)\n", destination] };
+                }
                 return [arguments.firstObject isEqualToString:@"listremotes"]
                     ? @{@"status": @0, @"output": @"gdrive:\n"}
                     : @{@"status": @0, @"output": @"{}"};
@@ -202,6 +205,27 @@ int main(void) {
         );
         Assert([nasMountReady[@"destination"][@"status"] isEqualToString:@"ready"],
                @"NAS health checks the mounted volume instead of requiring the backup folder");
+
+        NSDictionary<NSString *, id> *plainDirectoryNAS = Snapshot(
+            @{
+                @"GDRIVE_BACKUP_TARGET": @"nas",
+                @"GDRIVE_BACKUP_NAS_MOUNT": destination,
+                @"GDRIVE_BACKUP_ENCRYPTION": @"none",
+                @"RCLONE_REMOTE": @"gdrive"
+            },
+            ^BOOL(NSString *command) { (void)command; return YES; },
+            ^NSDictionary<NSString *, id> *(NSString *command, NSArray<NSString *> *arguments) {
+                if ([command isEqualToString:@"mount"]) {
+                    return @{ @"status": @0, @"output": @"/dev/disk3s5 on /System/Volumes/Data (apfs, local)\n" };
+                }
+                return [arguments.firstObject isEqualToString:@"listremotes"]
+                    ? @{ @"status": @0, @"output": @"gdrive:\n" }
+                    : @{ @"status": @0, @"output": @"{}" };
+            },
+            fileManager
+        );
+        Assert([plainDirectoryNAS[@"destination"][@"status"] isEqualToString:@"failure"],
+               @"setup never reports a plain local directory as a ready NAS mount");
 
         NSDictionary<NSString *, id> *missingDestination = Snapshot(
             @{
