@@ -2228,6 +2228,14 @@ stable_sha256() {
   printf '%s' "$digest"
 }
 
+drive_query_literal() {
+  local value="$1"
+  local apostrophe_escape="\\'"
+  value="${value//\\/\\\\}"
+  value="${value//\'/$apostrophe_escape}"
+  printf "'%s'" "$value"
+}
+
 archive_source_collisions() {
   local label="$1"
   local phase="$2"
@@ -2242,7 +2250,9 @@ archive_source_collisions() {
   local -a id_source_options=()
   local relative_destination scope_hash archive_root groups_root objects_root
   local collision_kind logical_path group_hash seen_hashes=""
-  local parent_path leaf_name parent_remote parent_json parent_id query query_json
+  local parent_path leaf_name parent_id query query_json
+  local parent_component parent_remaining parent_literal parent_query
+  local parent_query_json parent_query_errors previous_parent_id first_component
   local query_errors validated_json objects_tsv match_count tsv_count copied_count
   local object_id mime_type archive_name source_md5 source_size source_modified_time
   local object_key
@@ -2253,6 +2263,7 @@ archive_source_collisions() {
   local verification_report verification_status folder_backup_dir
   local manifest_objects manifest_path manifest_temp generated_at archive_path
   local option uses_shared_with_me=0 shared_root=0 provider_root=0
+  local team_drive_id="" expect_team_drive_id=0 provider_parent_id=""
   local proof_count manifest_umask
   local -a file_options folder_options
 
@@ -2266,12 +2277,30 @@ archive_source_collisions() {
   fi
 
   for option in "${source_options[@]}"; do
+    if [[ "$expect_team_drive_id" == "1" ]]; then
+      if [[ ! "$option" =~ ^[A-Za-z0-9_-]{3,255}$ ]]; then
+        log "FEHLER: Die Shared-Drive-ID fuer das ID-Archiv ist ungueltig."
+        return 1
+      fi
+      team_drive_id="$option"
+      expect_team_drive_id=0
+    elif [[ "$option" == "--drive-team-drive" ]]; then
+      if [[ -n "$team_drive_id" ]]; then
+        log "FEHLER: Das ID-Archiv erhielt mehrere Shared-Drive-Wurzeln."
+        return 1
+      fi
+      expect_team_drive_id=1
+    fi
     if [[ "$option" == "--drive-shared-with-me" ]]; then
       uses_shared_with_me=1
       continue
     fi
     id_source_options[${#id_source_options[@]}]="$option"
   done
+  if [[ "$expect_team_drive_id" == "1" ]]; then
+    log "FEHLER: Die Shared-Drive-ID fuer das ID-Archiv fehlt."
+    return 1
+  fi
 
   relative_destination="${destination#"$DEST_ROOT"/}"
   if [[ -z "$relative_destination" || "$relative_destination" == "$destination" ||
@@ -2327,17 +2356,16 @@ archive_source_collisions() {
     if [[ "$logical_path" == */* ]]; then
       parent_path="${logical_path%/*}"
       leaf_name="${logical_path##*/}"
-      parent_remote="${source}${parent_path}"
     else
       parent_path=""
       leaf_name="$logical_path"
-      parent_remote="$source"
     fi
     [[ -n "$leaf_name" ]] || return 1
 
     parent_id=""
     shared_root=0
     provider_root=0
+    provider_parent_id=""
     if [[ "$uses_shared_with_me" == "1" && -z "$parent_path" ]]; then
       # Root entries in Drive's virtual "Shared with me" view have no common
       # parent ID. Query that view explicitly, then copy each result by ID
@@ -2350,22 +2378,109 @@ archive_source_collisions() {
       # or Shared Drive; matching objects must then prove one common real
       # parent ID in the returned metadata.
       provider_root=1
-      query="'root' in parents and trashed = false"
-    else
-      parent_json="$(mktemp "${TMPDIR:-/tmp}/gdrive-parent-id.XXXXXX")" || return 1
-      if ! rclone lsjson "$parent_remote" --stat --original \
-          "${source_options[@]}" >"$parent_json" ||
-         ! parent_id="$(/usr/bin/jq -er '
-            (.ID // .OrigID) as $id
-            | select(($id | type) == "string")
-            | select($id | test("^[A-Za-z0-9_-]{3,255}$"))
-            | $id
-          ' "$parent_json" 2>/dev/null)"; then
-        cleanup_temp_file "$parent_json"
-        log "FEHLER: Der Elternordner eines gleichnamigen Drive-Eintrags konnte nicht per ID gelesen werden."
-        return 1
+      if [[ -n "$team_drive_id" ]]; then
+        provider_parent_id="$team_drive_id"
+        query="'$team_drive_id' in parents and trashed = false"
+      else
+        query="'root' in parents and trashed = false"
       fi
-      cleanup_temp_file "$parent_json"
+    else
+      # lsjson --stat describes any opened Drive path as a synthetic root and
+      # therefore omits its provider ID. Resolve each folder from the provider
+      # root instead, so duplicate ancestors can never be guessed by name.
+      parent_remaining="$parent_path"
+      first_component=1
+      while [[ -n "$parent_remaining" ]]; do
+        if [[ "$parent_remaining" == */* ]]; then
+          parent_component="${parent_remaining%%/*}"
+          parent_remaining="${parent_remaining#*/}"
+        else
+          parent_component="$parent_remaining"
+          parent_remaining=""
+        fi
+        [[ -n "$parent_component" ]] || return 1
+        parent_literal="$(drive_query_literal "$parent_component")" || return 1
+        previous_parent_id="$parent_id"
+        if [[ "$first_component" == "1" && "$uses_shared_with_me" == "1" ]]; then
+          parent_query="sharedWithMe = true and name = $parent_literal and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        elif [[ "$first_component" == "1" ]]; then
+          if [[ -n "$team_drive_id" ]]; then
+            parent_query="'$team_drive_id' in parents and name = $parent_literal and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+          else
+            parent_query="'root' in parents and name = $parent_literal and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+          fi
+        else
+          parent_query="'$previous_parent_id' in parents and name = $parent_literal and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        fi
+
+        parent_query_json="$(mktemp \
+          "${TMPDIR:-/tmp}/gdrive-parent-query.XXXXXX")" || return 1
+        parent_query_errors="$(mktemp \
+          "${TMPDIR:-/tmp}/gdrive-parent-query-errors.XXXXXX")" || {
+          cleanup_temp_file "$parent_query_json"
+          return 1
+        }
+        if ! rclone backend query "$source" "$parent_query" \
+            "${id_source_options[@]}" >"$parent_query_json" \
+            2>"$parent_query_errors"; then
+          while IFS= read -r line; do
+            [[ -n "$line" ]] && log "rclone query: $line"
+          done <"$parent_query_errors"
+          cleanup_temp_file "$parent_query_json" "$parent_query_errors"
+          log "FEHLER: Ein Elternordner eines gleichnamigen Drive-Eintrags konnte nicht gesucht werden."
+          return 1
+        fi
+        while IFS= read -r line; do
+          [[ -n "$line" ]] && log "rclone query: $line"
+        done <"$parent_query_errors"
+        if /usr/bin/grep -Eiq \
+            'incomplete|(^|[[:space:]])error([ :]|$)|failed to' \
+            "$parent_query_errors" 2>/dev/null ||
+           ! parent_id="$(/usr/bin/jq -er \
+              --arg component "$parent_component" \
+              --arg previous "$previous_parent_id" \
+              --arg first "$first_component" \
+              --arg shared "$uses_shared_with_me" \
+              --arg providerParent "$team_drive_id" '
+                if type != "array" then error("invalid folder query result")
+                else
+                  [ .[]
+                    | select(.name == $component)
+                    | select(.mimeType ==
+                        "application/vnd.google-apps.folder")
+                  ] as $matches
+                  | if ($matches | length) != 1
+                    then error("ambiguous folder")
+                    else $matches[0]
+                    end
+                  | select(
+                      ((.id | type) == "string") and
+                      (.id | test("^[A-Za-z0-9_-]{3,255}$")) and
+                      (if $first == "1" and $shared == "1" then true
+                       elif $first == "1" then
+                         ((.parents | type) == "array") and
+                         ((.parents | length) == 1) and
+                         ((.parents[0] | type) == "string") and
+                         (.parents[0] |
+                           test("^[A-Za-z0-9_-]{3,255}$")) and
+                         (if $providerParent == "" then true
+                          else .parents[0] == $providerParent
+                          end)
+                       else
+                         ((.parents | type) == "array") and
+                         ((.parents | index($previous)) != null)
+                       end)
+                    )
+                  | .id
+                end
+              ' "$parent_query_json" 2>/dev/null)"; then
+          cleanup_temp_file "$parent_query_json" "$parent_query_errors"
+          log "FEHLER: Ein Elternordner eines gleichnamigen Drive-Eintrags ist nicht eindeutig per ID aufloesbar."
+          return 1
+        fi
+        cleanup_temp_file "$parent_query_json" "$parent_query_errors"
+        first_component=0
+      done
       query="'$parent_id' in parents and trashed = false"
     fi
 
@@ -2397,7 +2512,8 @@ archive_source_collisions() {
           --arg name "$leaf_name" \
           --arg kind "$collision_kind" \
           --arg sharedRoot "$shared_root" \
-          --arg providerRoot "$provider_root" '
+          --arg providerRoot "$provider_root" \
+          --arg providerParent "$provider_parent_id" '
           def rendered_name:
             if .mimeType == "application/vnd.google-apps.document" then .name + ".docx"
             elif .mimeType == "application/vnd.google-apps.spreadsheet" then .name + ".xlsx"
@@ -2438,7 +2554,10 @@ archive_source_collisions() {
                      ((.parents | type) == "array") and
                      ((.parents | length) == 1) and
                      ((.parents[0] | type) == "string") and
-                     (.parents[0] | test("^[A-Za-z0-9_-]{3,255}$"))
+                     (.parents[0] | test("^[A-Za-z0-9_-]{3,255}$")) and
+                     (if $providerParent == "" then true
+                      else .parents[0] == $providerParent
+                      end)
                    ) and
                    (([$matches[].parents[0]] | unique | length) == 1)
                  else

@@ -37,12 +37,36 @@ case "${1:-}" in
     exit 0
     ;;
   backend)
+    if [[ " $* " == *" drives "* ]]; then
+      printf '%s\n' "${FAKE_RCLONE_DRIVES_JSON:-[]}"
+      exit 0
+    fi
     if [[ " $* " == *" query "* ]]; then
       if [[ -n "${FAKE_RCLONE_ARGS_FILE:-}" ]]; then
         printf '%s\n' "$@" >>"$FAKE_RCLONE_ARGS_FILE"
       fi
       if [[ -n "${FAKE_RCLONE_QUERY_STDERR:-}" ]]; then
         printf '%s\n' "$FAKE_RCLONE_QUERY_STDERR" >&2
+      fi
+      if [[ -n "${FAKE_RCLONE_QUERY_MATCH_1:-}" &&
+            "${4:-}" == "$FAKE_RCLONE_QUERY_MATCH_1" ]]; then
+        printf '%s\n' "${FAKE_RCLONE_QUERY_JSON_1:-[]}"
+        exit "${FAKE_RCLONE_COLLISION_QUERY_STATUS:-0}"
+      fi
+      if [[ -n "${FAKE_RCLONE_QUERY_MATCH_2:-}" &&
+            "${4:-}" == "$FAKE_RCLONE_QUERY_MATCH_2" ]]; then
+        printf '%s\n' "${FAKE_RCLONE_QUERY_JSON_2:-[]}"
+        exit "${FAKE_RCLONE_COLLISION_QUERY_STATUS:-0}"
+      fi
+      if [[ -n "${FAKE_RCLONE_QUERY_MATCH_3:-}" &&
+            "${4:-}" == "$FAKE_RCLONE_QUERY_MATCH_3" ]]; then
+        printf '%s\n' "${FAKE_RCLONE_QUERY_JSON_3:-[]}"
+        exit "${FAKE_RCLONE_COLLISION_QUERY_STATUS:-0}"
+      fi
+      if [[ -n "${FAKE_RCLONE_QUERY_MATCH_4:-}" &&
+            "${4:-}" == "$FAKE_RCLONE_QUERY_MATCH_4" ]]; then
+        printf '%s\n' "${FAKE_RCLONE_QUERY_JSON_4:-[]}"
+        exit "${FAKE_RCLONE_COLLISION_QUERY_STATUS:-0}"
       fi
       printf '%s\n' "${FAKE_RCLONE_COLLISION_QUERY_JSON:-[]}"
       exit "${FAKE_RCLONE_COLLISION_QUERY_STATUS:-0}"
@@ -94,7 +118,9 @@ case "${1:-}" in
     if [[ -n "${FAKE_RCLONE_COPY_OUTPUT:-}" &&
           " $* " != *" --drive-root-folder-id "* ]]; then
       if [[ "${FAKE_RCLONE_COPY_OUTPUT_SHARED_ONLY:-0}" != "1" ||
-            " $* " == *" --drive-shared-with-me "* ]]; then
+            " $* " == *" --drive-shared-with-me "* ]] &&
+         [[ "${FAKE_RCLONE_COPY_OUTPUT_TEAM_DRIVE_ONLY:-0}" != "1" ||
+            " $* " == *" --drive-team-drive "* ]]; then
         printf '%s\n' "$FAKE_RCLONE_COPY_OUTPUT"
       fi
     fi
@@ -120,6 +146,9 @@ SH
 
   cat >"$FAKE_BIN/jq" <<'SH'
 #!/bin/bash
+if [[ "${FAKE_JQ_USE_SYSTEM:-0}" == "1" ]]; then
+  exec /usr/bin/jq "$@"
+fi
 case "${1:-}" in
   length) printf '0\n' ;;
   -r) exit 0 ;;
@@ -193,10 +222,19 @@ run_backup_with_mode() {
     BACKUP_DISABLE_ANIMATION="${BACKUP_DISABLE_ANIMATION:-1}" \
     FAKE_RCLONE_COPY_STATUS="${FAKE_RCLONE_COPY_STATUS:-0}" \
     FAKE_RCLONE_COPY_OUTPUT="${FAKE_RCLONE_COPY_OUTPUT:-}" \
+    FAKE_RCLONE_DRIVES_JSON="${FAKE_RCLONE_DRIVES_JSON:-[]}" \
     FAKE_RCLONE_SUPPORTS_NAME_TRANSFORM="${FAKE_RCLONE_SUPPORTS_NAME_TRANSFORM:-1}" \
     FAKE_RCLONE_COLLISION_QUERY_JSON="${FAKE_RCLONE_COLLISION_QUERY_JSON:-[]}" \
     FAKE_RCLONE_COLLISION_QUERY_STATUS="${FAKE_RCLONE_COLLISION_QUERY_STATUS:-0}" \
     FAKE_RCLONE_QUERY_STDERR="${FAKE_RCLONE_QUERY_STDERR:-}" \
+    FAKE_RCLONE_QUERY_MATCH_1="${FAKE_RCLONE_QUERY_MATCH_1:-}" \
+    FAKE_RCLONE_QUERY_JSON_1="${FAKE_RCLONE_QUERY_JSON_1:-}" \
+    FAKE_RCLONE_QUERY_MATCH_2="${FAKE_RCLONE_QUERY_MATCH_2:-}" \
+    FAKE_RCLONE_QUERY_JSON_2="${FAKE_RCLONE_QUERY_JSON_2:-}" \
+    FAKE_RCLONE_QUERY_MATCH_3="${FAKE_RCLONE_QUERY_MATCH_3:-}" \
+    FAKE_RCLONE_QUERY_JSON_3="${FAKE_RCLONE_QUERY_JSON_3:-}" \
+    FAKE_RCLONE_QUERY_MATCH_4="${FAKE_RCLONE_QUERY_MATCH_4:-}" \
+    FAKE_RCLONE_QUERY_JSON_4="${FAKE_RCLONE_QUERY_JSON_4:-}" \
     FAKE_RCLONE_PARENT_JSON="${FAKE_RCLONE_PARENT_JSON:-}" \
     FAKE_RCLONE_PARENT_STATUS="${FAKE_RCLONE_PARENT_STATUS:-0}" \
     FAKE_RCLONE_ARCHIVE_STATUS="${FAKE_RCLONE_ARCHIVE_STATUS:-0}" \
@@ -204,6 +242,8 @@ run_backup_with_mode() {
     FAKE_RCLONE_ARCHIVE_FILE_NAME="${FAKE_RCLONE_ARCHIVE_FILE_NAME:-image.heic}" \
     FAKE_RCLONE_REJECT_SHARED_FOR_ID="${FAKE_RCLONE_REJECT_SHARED_FOR_ID:-0}" \
     FAKE_RCLONE_COPY_OUTPUT_SHARED_ONLY="${FAKE_RCLONE_COPY_OUTPUT_SHARED_ONLY:-0}" \
+    FAKE_RCLONE_COPY_OUTPUT_TEAM_DRIVE_ONLY="${FAKE_RCLONE_COPY_OUTPUT_TEAM_DRIVE_ONLY:-0}" \
+    FAKE_JQ_USE_SYSTEM="${FAKE_JQ_USE_SYSTEM:-0}" \
     FAKE_RCLONE_ARGS_FILE="${FAKE_RCLONE_ARGS_FILE:-}" \
     FAKE_RCLONE_SLEEP_SECONDS="${FAKE_RCLONE_SLEEP_SECONDS:-0}" \
     FAKE_RCLONE_STARTED_FILE="${FAKE_RCLONE_STARTED_FILE:-}" \
@@ -812,6 +852,14 @@ test_duplicate_source_files_are_archived_by_id() {
 
   FAKE_RCLONE_ARGS_FILE="$args_file" \
     FAKE_RCLONE_COPY_OUTPUT='NOTICE: Photos/image.heic: Duplicate object found in source - ignoring' \
+    FAKE_RCLONE_QUERY_MATCH_1="'root' in parents and name = 'Photos' and mimeType = 'application/vnd.google-apps.folder' and trashed = false" \
+    FAKE_RCLONE_QUERY_JSON_1='[
+      {"id":"parent-id","name":"Photos","mimeType":"application/vnd.google-apps.folder","parents":["root-id"]}
+    ]' \
+    FAKE_RCLONE_QUERY_MATCH_4="sharedWithMe = true and name = 'Photos' and mimeType = 'application/vnd.google-apps.folder' and trashed = false" \
+    FAKE_RCLONE_QUERY_JSON_4='[
+      {"id":"parent-id","name":"Photos","mimeType":"application/vnd.google-apps.folder"}
+    ]' \
     FAKE_RCLONE_COLLISION_QUERY_JSON='[
       {"id":"file-id-a","name":"image.heic","mimeType":"image/heic","parents":["parent-id"]},
       {"id":"file-id-b","name":"image.heic","mimeType":"image/heic","parents":["parent-id"]}
@@ -883,6 +931,179 @@ test_root_duplicate_uses_drive_root_query() {
         "$summary" == *$'status=success\n'* &&
         "$(grep -cFx -- "'root' in parents and trashed = false" \
           "$args_file" 2>/dev/null || true)" -ge 1 ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status summary=${summary//$'\n'/,})"
+  fi
+}
+
+test_nested_duplicate_resolves_each_parent_by_drive_id() {
+  local name="nested Drive duplicate resolves every parent component by ID"
+  local status summary args_file args
+  prepare_test_environment
+  args_file="$TEST_HOME/rclone-args"
+
+  FAKE_RCLONE_ARGS_FILE="$args_file" \
+    FAKE_RCLONE_PARENT_JSON='{"Path":"","Name":"","IsDir":true}' \
+    FAKE_RCLONE_COPY_OUTPUT='NOTICE: Top/Middle/Photos/image.heic: Duplicate object found in source - ignoring' \
+    FAKE_RCLONE_QUERY_MATCH_1="'root' in parents and name = 'Top' and mimeType = 'application/vnd.google-apps.folder' and trashed = false" \
+    FAKE_RCLONE_QUERY_JSON_1='[
+      {"id":"folder-id-a","name":"Top","mimeType":"application/vnd.google-apps.folder","parents":["root-id"]}
+    ]' \
+    FAKE_RCLONE_QUERY_MATCH_2="'folder-id-a' in parents and name = 'Middle' and mimeType = 'application/vnd.google-apps.folder' and trashed = false" \
+    FAKE_RCLONE_QUERY_JSON_2='[
+      {"id":"folder-id-b","name":"Middle","mimeType":"application/vnd.google-apps.folder","parents":["folder-id-a"]}
+    ]' \
+    FAKE_RCLONE_QUERY_MATCH_3="'folder-id-b' in parents and name = 'Photos' and mimeType = 'application/vnd.google-apps.folder' and trashed = false" \
+    FAKE_RCLONE_QUERY_JSON_3='[
+      {"id":"folder-id-c","name":"Photos","mimeType":"application/vnd.google-apps.folder","parents":["folder-id-b"]}
+    ]' \
+    FAKE_RCLONE_QUERY_MATCH_4="sharedWithMe = true and name = 'Top' and mimeType = 'application/vnd.google-apps.folder' and trashed = false" \
+    FAKE_RCLONE_QUERY_JSON_4='[
+      {"id":"folder-id-a","name":"Top","mimeType":"application/vnd.google-apps.folder"}
+    ]' \
+    FAKE_RCLONE_COLLISION_QUERY_JSON='[
+      {"id":"file-id-a","name":"image.heic","mimeType":"image/heic","parents":["folder-id-c"]},
+      {"id":"file-id-b","name":"image.heic","mimeType":"image/heic","parents":["folder-id-c"]}
+    ]' \
+    run_backup
+  status=$?
+  summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+  args="$(cat "$args_file" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" &&
+        "$summary" == *$'status=success\n'* &&
+        "$args" == *$'file-id-a\n'* &&
+        "$args" == *$'file-id-b\n'* &&
+        "$args" == *$'folder-id-c\x27 in parents and trashed = false\n'* ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status summary=${summary//$'\n'/,})"
+  fi
+}
+
+test_parent_folder_query_escapes_drive_literals() {
+  local name="parent folder query escapes apostrophes and backslashes"
+  local status summary args_file args component expected_query folder_json
+  prepare_test_environment
+  args_file="$TEST_HOME/rclone-args"
+  component="Client's\\Files"
+  expected_query="sharedWithMe = true and name = 'Client\\'s\\\\Files' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+  folder_json="$(/usr/bin/jq -cn \
+    --arg name "$component" \
+    '[{id:"parent-id", name:$name, mimeType:"application/vnd.google-apps.folder"}]')"
+
+  FAKE_RCLONE_ARGS_FILE="$args_file" \
+    FAKE_RCLONE_COPY_OUTPUT_SHARED_ONLY=1 \
+    FAKE_RCLONE_COPY_OUTPUT="NOTICE: $component/image.heic: Duplicate object found in source - ignoring" \
+    FAKE_RCLONE_QUERY_MATCH_1="$expected_query" \
+    FAKE_RCLONE_QUERY_JSON_1="$folder_json" \
+    FAKE_RCLONE_COLLISION_QUERY_JSON='[
+      {"id":"file-id-a","name":"image.heic","mimeType":"image/heic","parents":["parent-id"]},
+      {"id":"file-id-b","name":"image.heic","mimeType":"image/heic","parents":["parent-id"]}
+    ]' \
+    run_backup
+  status=$?
+  summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+  args="$(cat "$args_file" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" &&
+        "$summary" == *$'status=success\n'* &&
+        "$args" == *"$expected_query"* ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status summary=${summary//$'\n'/,})"
+  fi
+}
+
+test_ambiguous_parent_folder_fails_closed() {
+  local name="ambiguous parent folder IDs keep the backup failed"
+  local status summary args_file
+  prepare_test_environment
+  args_file="$TEST_HOME/rclone-args"
+
+  FAKE_RCLONE_ARGS_FILE="$args_file" \
+    FAKE_RCLONE_COPY_OUTPUT_SHARED_ONLY=1 \
+    FAKE_RCLONE_COPY_OUTPUT='NOTICE: Photos/image.heic: Duplicate object found in source - ignoring' \
+    FAKE_RCLONE_QUERY_MATCH_1="sharedWithMe = true and name = 'Photos' and mimeType = 'application/vnd.google-apps.folder' and trashed = false" \
+    FAKE_RCLONE_QUERY_JSON_1='[
+      {"id":"folder-id-a","name":"Photos","mimeType":"application/vnd.google-apps.folder"},
+      {"id":"folder-id-b","name":"Photos","mimeType":"application/vnd.google-apps.folder"}
+    ]' \
+    run_backup
+  status=$?
+  summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+
+  if [[ "$status" == "1" &&
+        "$summary" == *$'status=failure\n'* &&
+        "$summary" == *$'reason=source_name_collision\n'* &&
+        "$(grep -cFx 'copyid' "$args_file" 2>/dev/null || true)" == "0" ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status summary=${summary//$'\n'/,})"
+  fi
+}
+
+test_team_drive_parent_uses_the_drive_root_id() {
+  local name="nested Shared Drive parent starts from the drive root ID"
+  local status summary args_file args
+  prepare_test_environment
+  args_file="$TEST_HOME/rclone-args"
+
+  FAKE_RCLONE_ARGS_FILE="$args_file" \
+    FAKE_JQ_USE_SYSTEM=1 \
+    FAKE_RCLONE_DRIVES_JSON='[
+      {"id":"team-drive-id","name":"Team"}
+    ]' \
+    FAKE_RCLONE_COPY_OUTPUT_TEAM_DRIVE_ONLY=1 \
+    FAKE_RCLONE_COPY_OUTPUT='NOTICE: Photos/image.heic: Duplicate object found in source - ignoring' \
+    FAKE_RCLONE_QUERY_MATCH_1="'team-drive-id' in parents and name = 'Photos' and mimeType = 'application/vnd.google-apps.folder' and trashed = false" \
+    FAKE_RCLONE_QUERY_JSON_1='[
+      {"id":"parent-id","name":"Photos","mimeType":"application/vnd.google-apps.folder","parents":["team-drive-id"]}
+    ]' \
+    FAKE_RCLONE_COLLISION_QUERY_JSON='[
+      {"id":"file-id-a","name":"image.heic","mimeType":"image/heic","parents":["parent-id"]},
+      {"id":"file-id-b","name":"image.heic","mimeType":"image/heic","parents":["parent-id"]}
+    ]' \
+    run_backup
+  status=$?
+  summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+  args="$(cat "$args_file" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" &&
+        "$summary" == *$'status=success\n'* &&
+        "$args" == *$'\x27team-drive-id\x27 in parents and name = \x27Photos\x27'* ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status summary=${summary//$'\n'/,})"
+  fi
+}
+
+test_team_drive_root_duplicate_uses_the_drive_id() {
+  local name="root-level Shared Drive duplicate uses the drive ID"
+  local status summary args_file args
+  prepare_test_environment
+  args_file="$TEST_HOME/rclone-args"
+
+  FAKE_RCLONE_ARGS_FILE="$args_file" \
+    FAKE_JQ_USE_SYSTEM=1 \
+    FAKE_RCLONE_DRIVES_JSON='[
+      {"id":"team-drive-id","name":"Team"}
+    ]' \
+    FAKE_RCLONE_COPY_OUTPUT_TEAM_DRIVE_ONLY=1 \
+    FAKE_RCLONE_COPY_OUTPUT='NOTICE: image.heic: Duplicate object found in source - ignoring' \
+    FAKE_RCLONE_COLLISION_QUERY_JSON='[
+      {"id":"file-id-a","name":"image.heic","mimeType":"image/heic","parents":["team-drive-id"]},
+      {"id":"file-id-b","name":"image.heic","mimeType":"image/heic","parents":["team-drive-id"]}
+    ]' \
+    run_backup
+  status=$?
+  summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+  args="$(cat "$args_file" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" &&
+        "$summary" == *$'status=success\n'* &&
+        "$args" == *$'\x27team-drive-id\x27 in parents and trashed = false\n'* ]]; then
     pass "$name"
   else
     fail "$name (exit=$status summary=${summary//$'\n'/,})"
@@ -992,6 +1213,14 @@ test_google_workspace_duplicates_use_exported_names() {
   FAKE_RCLONE_ARGS_FILE="$args_file" \
     FAKE_RCLONE_COPY_OUTPUT='NOTICE: Docs/Plan.docx: Duplicate object found in source - ignoring' \
     FAKE_RCLONE_ARCHIVE_FILE_NAME='Plan.docx' \
+    FAKE_RCLONE_QUERY_MATCH_1="'root' in parents and name = 'Docs' and mimeType = 'application/vnd.google-apps.folder' and trashed = false" \
+    FAKE_RCLONE_QUERY_JSON_1='[
+      {"id":"parent-id","name":"Docs","mimeType":"application/vnd.google-apps.folder","parents":["root-id"]}
+    ]' \
+    FAKE_RCLONE_QUERY_MATCH_4="sharedWithMe = true and name = 'Docs' and mimeType = 'application/vnd.google-apps.folder' and trashed = false" \
+    FAKE_RCLONE_QUERY_JSON_4='[
+      {"id":"parent-id","name":"Docs","mimeType":"application/vnd.google-apps.folder"}
+    ]' \
     FAKE_RCLONE_COLLISION_QUERY_JSON='[
       {"id":"doc-id-a","name":"Plan","mimeType":"application/vnd.google-apps.document","parents":["parent-id"]},
       {"id":"doc-id-b","name":"Plan","mimeType":"application/vnd.google-apps.document","parents":["parent-id"]},
@@ -1296,6 +1525,11 @@ test_duplicate_source_directory_fails_closed
 test_duplicate_source_files_are_archived_by_id
 test_duplicate_source_directories_are_archived_by_id
 test_root_duplicate_uses_drive_root_query
+test_nested_duplicate_resolves_each_parent_by_drive_id
+test_parent_folder_query_escapes_drive_literals
+test_ambiguous_parent_folder_fails_closed
+test_team_drive_parent_uses_the_drive_root_id
+test_team_drive_root_duplicate_uses_the_drive_id
 test_collision_archive_failure_keeps_backup_failed
 test_mixed_collision_notices_cannot_be_partially_archived
 test_unparsed_exact_collision_cannot_hide_behind_valid_group
