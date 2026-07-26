@@ -34,12 +34,16 @@ if [[ "${INSTALL_DEPS:-0}" == "1" ]]; then
   brew install rclone flock jq
 fi
 
-for cmd in clang codesign iconutil install launchctl; do
+for cmd in clang codesign install launchctl xcrun; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "Missing required command: $cmd" >&2
     exit 127
   fi
 done
+if ! xcrun --find actool >/dev/null 2>&1; then
+  echo "Missing required command: actool" >&2
+  exit 127
+fi
 if [[ ! -x /usr/libexec/PlistBuddy ]]; then
   echo "Missing required command: /usr/libexec/PlistBuddy" >&2
   exit 127
@@ -175,6 +179,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
     printf 'GDRIVE_BACKUP_RETENTION=1\n'
     printf 'GDRIVE_BACKUP_ENCRYPTION=none\n'
     printf 'GDRIVE_BACKUP_PAUSED=0\n'
+    printf 'GDRIVE_BACKUP_NOTIFY_FAILURES=1\n'
   } >"$CONFIG_FILE"
 elif ! grep -q '^GDRIVE_BACKUP_LANG=' "$CONFIG_FILE"; then
   LC_ALL=C printf 'GDRIVE_BACKUP_LANG=%q\n' "$CONFIG_LANG" >>"$CONFIG_FILE"
@@ -191,6 +196,9 @@ fi
 if [[ -f "$CONFIG_FILE" ]] && ! grep -q '^GDRIVE_BACKUP_PAUSED=' "$CONFIG_FILE"; then
   printf 'GDRIVE_BACKUP_PAUSED=0\n' >>"$CONFIG_FILE"
 fi
+if [[ -f "$CONFIG_FILE" ]] && ! grep -q '^GDRIVE_BACKUP_NOTIFY_FAILURES=' "$CONFIG_FILE"; then
+  printf 'GDRIVE_BACKUP_NOTIFY_FAILURES=1\n' >>"$CONFIG_FILE"
+fi
 if [[ -f "$CONFIG_FILE" && "$BACKUP_TARGET" == "nas" ]]; then
   if [[ -n "$NAS_MOUNT" ]] && ! grep -q '^GDRIVE_BACKUP_NAS_MOUNT=' "$CONFIG_FILE"; then
     LC_ALL=C printf 'GDRIVE_BACKUP_NAS_MOUNT=%q\n' "$NAS_MOUNT" >>"$CONFIG_FILE"
@@ -206,18 +214,35 @@ fi
 
 install -m 644 "$ROOT/macos/GDriveBackupTiger/Info.plist" "$APP_CONTENTS/Info.plist"
 clang -fobjc-arc -Wall -Wextra -mmacosx-version-min=13.0 \
-  -arch arm64 -arch x86_64 -framework Cocoa \
+  -arch arm64 -arch x86_64 -framework Cocoa -framework UserNotifications \
   "$ROOT/macos/GDriveBackupTiger/main.m" \
   "$ROOT/macos/GDriveBackupTiger/ConfigSupport.m" \
+  "$ROOT/macos/GDriveBackupTiger/ProfileSupport.m" \
   "$ROOT/macos/GDriveBackupTiger/BackupStatusSupport.m" \
+  "$ROOT/macos/GDriveBackupTiger/NotificationSupport.m" \
+  "$ROOT/macos/GDriveBackupTiger/SetupHealthSupport.m" \
+  "$ROOT/macos/GDriveBackupTiger/RestoreSupport.m" \
+  "$ROOT/macos/GDriveBackupTiger/RestoreBrowserView.m" \
+  "$ROOT/macos/GDriveBackupTiger/DiagnosticsSupport.m" \
+  "$ROOT/macos/GDriveBackupTiger/DiagnosticsView.m" \
+  "$ROOT/macos/GDriveBackupTiger/UpdateSupport.m" \
   "$ROOT/macos/GDriveBackupTiger/Localization.m" \
   -o "$APP_CONTENTS/MacOS/GDriveBackupTiger"
 
 ICON_WORK="$(mktemp -d "${TMPDIR:-/tmp}/gdrive-tiger-icon.XXXXXX")"
 clang -fobjc-arc -Wall -Wextra -framework Cocoa "$ROOT/macos/GDriveBackupTiger/IconGenerator.m" \
   -o "$ICON_WORK/IconGenerator"
-"$ICON_WORK/IconGenerator" "$ICON_WORK/AppIcon.iconset"
-iconutil -c icns "$ICON_WORK/AppIcon.iconset" -o "$APP_CONTENTS/Resources/AppIcon.icns"
+"$ICON_WORK/IconGenerator" "$ICON_WORK/Assets.xcassets/AppIcon.appiconset"
+install -m 644 "$ROOT/macos/GDriveBackupTiger/AppIcon.appiconset/Contents.json" \
+  "$ICON_WORK/Assets.xcassets/AppIcon.appiconset/Contents.json"
+xcrun actool "$ICON_WORK/Assets.xcassets" \
+  --compile "$APP_CONTENTS/Resources" \
+  --platform macosx \
+  --minimum-deployment-target 13.0 \
+  --app-icon AppIcon \
+  --output-partial-info-plist "$ICON_WORK/AppIcon-partial.plist"
+test -s "$APP_CONTENTS/Resources/AppIcon.icns"
+test -s "$APP_CONTENTS/Resources/Assets.car"
 "$ROOT/scripts/trash-path.sh" "$ICON_WORK"
 
 /usr/bin/xattr -cr "$APP_DIR"

@@ -83,8 +83,7 @@ NSDictionary<NSString *, NSString *> *GDTReadBackupSummaryAtPath(NSString *path)
     return values;
 }
 
-NSString *GDTBackupSummaryStatusAtPath(NSString *path) {
-    NSDictionary<NSString *, NSString *> *values = GDTReadBackupSummaryAtPath(path);
+NSString *GDTBackupSummaryStatusForValues(NSDictionary<NSString *, NSString *> *values) {
     NSString *status = values[@"status"] ?: @"";
     NSString *pid = values[@"pid"] ?: @"";
     NSString *startedAt = values[@"started_at"] ?: @"";
@@ -120,6 +119,10 @@ NSString *GDTBackupSummaryStatusAtPath(NSString *path) {
         return @"cancelled";
     }
     return @"unknown";
+}
+
+NSString *GDTBackupSummaryStatusAtPath(NSString *path) {
+    return GDTBackupSummaryStatusForValues(GDTReadBackupSummaryAtPath(path));
 }
 
 NSString *GDTBackupDestinationForConfig(NSDictionary<NSString *, NSString *> *config) {

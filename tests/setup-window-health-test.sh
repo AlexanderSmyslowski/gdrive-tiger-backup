@@ -28,9 +28,10 @@ else
 fi
 
 if [[ "$show_setup" == *'NSMakeRect(26, 648, 270, 20)'* &&
-      "$source_contents" == *'NSMakeRect(18, 562, NSWidth(bounds) - 36, 52)'* &&
+      "$source_contents" == *'NSMakeRect(18, 562, NSWidth(bounds) - 36, 76)'* &&
+      "$show_setup" == *'NSMakeRect(164, 608, 440, 24)'* &&
       "$source_contents" == *'NSMakeRect(18, 76, NSWidth(bounds) - 36, 44)'* ]]; then
-  printf '%s\n' 'ok - footer and schedule remain below the setup sections'
+  printf '%s\n' 'ok - footer, schedule, and notification preference remain below the setup sections'
 else
   printf '%s\n' 'not ok - setup controls still overlap the system check'
   failures=$((failures + 1))

@@ -29,6 +29,11 @@ prepare_test_environment() {
 set -u
 : "${FAKE_RCLONE_LOG:?}"
 
+if [[ "${1:-}" == "copy" && "${2:-}" == "--help" ]]; then
+  printf '%s\n' '      --name-transform stringArray   Transform paths during the copy process'
+  exit 0
+fi
+
 printf '%s' "${1:-}" >>"$FAKE_RCLONE_LOG"
 for arg in "${@:2}"; do
   printf '\t%s' "$arg" >>"$FAKE_RCLONE_LOG"
@@ -462,6 +467,33 @@ test_retention_merges_sparse_deltas_before_pruning() {
   fi
 }
 
+test_nas_retention_merge_is_serial_without_reencoding() {
+  local name="NAS retention merges physical version trees serially without re-encoding names"
+  local oldest keeper status merge_line
+  prepare_test_environment
+
+  oldest="$(create_version '2026-07-09T08-00-00+0000' 41)"
+  keeper="$(create_version '2026-07-09T20-00-00+0000' 42)"
+  mkdir -p "$VERSIONS_ROOT/$oldest/My Drive" "$VERSIONS_ROOT/$keeper/My Drive"
+  printf '%s\n' old >"$VERSIONS_ROOT/$oldest/My Drive/file.txt"
+
+  run_backup
+  status=$?
+  merge_line="$(/usr/bin/awk -F '\t' '$1 == "copy" && $0 ~ /--ignore-existing/ {
+      print
+      exit
+    }' "$FAKE_RCLONE_LOG")"
+
+  if [[ "$status" == "0" &&
+        "$merge_line" == *$'\t--multi-thread-streams\t0'* &&
+        "$merge_line" == *$'\t--transfers\t1'* &&
+        "$merge_line" != *$'\t--name-transform\t'* ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status merge=${merge_line//$'\t'/,})"
+  fi
+}
+
 test_retention_stops_after_merge_failure() {
   local name="retention stops before older deltas after a merge failure"
   local oldest middle keeper status merge_calls
@@ -554,6 +586,7 @@ test_retention_dry_run_only_logs_candidates
 test_retention_falls_back_to_local_quarantine
 test_retention_retries_legacy_quarantine
 test_retention_merges_sparse_deltas_before_pruning
+test_nas_retention_merge_is_serial_without_reencoding
 test_retention_stops_after_merge_failure
 test_retention_age_boundaries
 

@@ -200,6 +200,27 @@ int main(void) {
             Assert(!fm.trashedNonemptyFilesList,
                    @"crypt restore clears its temporary plaintext file list before Trash");
 
+            SEL customInitSelector = NSSelectorFromString(
+                @"initWithRemoteName:backupRootURL:versionsSubdirectory:fileManager:commandRunner:");
+            BOOL supportsCustomVersions = [copierClass
+                instancesRespondToSelector:customInitSelector];
+            typedef id (*CustomInit)(id, SEL, NSString *, NSURL *, NSString *,
+                                     NSFileManager *, id);
+            id customCopier = supportsCustomVersions
+                ? ((CustomInit)[copierClass instanceMethodForSelector:customInitSelector])(
+                    [copierClass alloc], customInitSelector, @"backup-crypt", physicalRoot,
+                    @".custom-history", fm, restoreRunner)
+                : nil;
+            error = nil;
+            NSDictionary *customHistory = customCopier
+                ? restore(customCopier, restoreSelector,
+                    [NSString stringWithFormat:
+                        @"backup-crypt:.custom-history/%@/My Drive/custom-history.txt", newer],
+                    @"custom-history.txt", output, &error)
+                : nil;
+            Assert(supportsCustomVersions && customHistory && !error,
+                   @"crypt copier accepts the configured version-history subdirectory");
+
             NSUInteger before = [fm contentsOfDirectoryAtURL:output
                                   includingPropertiesForKeys:nil options:0 error:nil].count;
             fm.trashedNonemptyFilesList = NO;

@@ -35,14 +35,22 @@ static NSString *GDTNormalizedProfileName(NSString *name) {
 
 @interface GDTProfileStore ()
 @property(nonatomic, copy, readwrite) NSString *configDirectory;
+@property(nonatomic, strong) NSFileManager *fileManager;
 @end
 
 @implementation GDTProfileStore
 
 - (instancetype)initWithConfigDirectory:(NSString *)configDirectory {
+    return [self initWithConfigDirectory:configDirectory
+                             fileManager:NSFileManager.defaultManager];
+}
+
+- (instancetype)initWithConfigDirectory:(NSString *)configDirectory
+                             fileManager:(NSFileManager *)fileManager {
     self = [super init];
     if (self) {
         _configDirectory = [configDirectory.stringByStandardizingPath copy];
+        _fileManager = fileManager ?: NSFileManager.defaultManager;
     }
     return self;
 }
@@ -56,19 +64,19 @@ static NSString *GDTNormalizedProfileName(NSString *name) {
 }
 
 - (BOOL)pathIsRegularFile:(NSString *)path {
-    NSDictionary *attributes = [NSFileManager.defaultManager
+    NSDictionary *attributes = [self.fileManager
         attributesOfItemAtPath:path error:nil];
     return [attributes[NSFileType] isEqualToString:NSFileTypeRegular];
 }
 
 - (BOOL)profilesDirectoryIsTrusted {
-    NSDictionary *attributes = [NSFileManager.defaultManager
+    NSDictionary *attributes = [self.fileManager
         attributesOfItemAtPath:self.profilesDirectory error:nil];
     return [attributes[NSFileType] isEqualToString:NSFileTypeDirectory];
 }
 
 - (BOOL)ensureStoreDirectories:(NSError **)error {
-    NSFileManager *fileManager = NSFileManager.defaultManager;
+    NSFileManager *fileManager = self.fileManager;
     for (NSString *path in @[self.configDirectory, self.profilesDirectory]) {
         BOOL isDirectory = NO;
         if ([fileManager fileExistsAtPath:path isDirectory:&isDirectory]) {
@@ -112,7 +120,7 @@ static NSString *GDTNormalizedProfileName(NSString *name) {
 
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)profiles {
     if (![self profilesDirectoryIsTrusted]) return @[];
-    NSArray<NSString *> *entries = [NSFileManager.defaultManager
+    NSArray<NSString *> *entries = [self.fileManager
         contentsOfDirectoryAtPath:self.profilesDirectory error:nil] ?: @[];
     NSMutableArray<NSDictionary<NSString *, NSString *> *> *profiles = [NSMutableArray array];
     for (NSString *entry in entries) {
@@ -143,7 +151,7 @@ static NSString *GDTNormalizedProfileName(NSString *name) {
 }
 
 - (BOOL)writeActiveProfileID:(NSString *)profileID error:(NSError **)error {
-    if ([NSFileManager.defaultManager fileExistsAtPath:self.activeProfilePath] &&
+    if ([self.fileManager fileExistsAtPath:self.activeProfilePath] &&
         ![self pathIsRegularFile:self.activeProfilePath]) {
         if (error) *error = GDTProfileError(7, @"The active profile pointer is not a trusted file.");
         return NO;
@@ -153,8 +161,8 @@ static NSString *GDTNormalizedProfileName(NSString *name) {
                     atomically:YES encoding:NSUTF8StringEncoding error:error]) {
         return NO;
     }
-    return [NSFileManager.defaultManager setAttributes:@{NSFilePosixPermissions: @0600}
-                                           ofItemAtPath:self.activeProfilePath error:error];
+    return [self.fileManager setAttributes:@{NSFilePosixPermissions: @0600}
+                               ofItemAtPath:self.activeProfilePath error:error];
 }
 
 - (BOOL)migrateLegacyConfigAtPath:(NSString *)legacyPath error:(NSError **)error {
@@ -182,8 +190,8 @@ static NSString *GDTNormalizedProfileName(NSString *name) {
         legacyData = [@"" dataUsingEncoding:NSUTF8StringEncoding];
     }
     if (![legacyData writeToFile:defaultPath options:NSDataWritingAtomic error:error] ||
-        ![NSFileManager.defaultManager setAttributes:@{NSFilePosixPermissions: @0600}
-                                         ofItemAtPath:defaultPath error:error] ||
+        ![self.fileManager setAttributes:@{NSFilePosixPermissions: @0600}
+                            ofItemAtPath:defaultPath error:error] ||
         !GDTWriteConfigUpdatesAtPath(@{
             @"GDRIVE_BACKUP_PROFILE_ID": @"default",
             @"GDRIVE_BACKUP_PROFILE_NAME": @"Default"
@@ -236,7 +244,7 @@ static NSString *GDTNormalizedProfileName(NSString *name) {
         if (error) *error = GDTProfileError(5, @"Select another profile before deleting this one.");
         return NO;
     }
-    return [NSFileManager.defaultManager
+    return [self.fileManager
         trashItemAtURL:[NSURL fileURLWithPath:profile[@"configPath"]]
       resultingItemURL:nil error:error];
 }

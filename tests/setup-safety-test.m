@@ -147,6 +147,21 @@ int main(void) {
         Assert([failedDryRun.statusField.stringValue isEqualToString:T(@"en", @"statusDryRunFailed")],
                @"check run publishes a terminal generic failure state");
 
+        NSError *scheduleError = nil;
+        NSData *scheduleData = [[[AppDelegate alloc] init] schedulePlistDataForMode:@"daily"
+                                                                              error:&scheduleError];
+        NSDictionary *schedulePlist = scheduleData
+            ? [NSPropertyListSerialization propertyListWithData:scheduleData
+                                                        options:0
+                                                         format:nil
+                                                          error:&scheduleError]
+            : nil;
+        NSDictionary *scheduleEnvironment = schedulePlist[@"EnvironmentVariables"];
+        Assert(!scheduleError &&
+               [scheduleEnvironment[@"GDRIVE_BACKUP_TRIGGER"] isEqualToString:@"schedule"] &&
+               [scheduleEnvironment[@"BACKUP_ASSUME_YES"] isEqualToString:@"1"],
+               @"automatic schedules approve their verified destination without an unattended prompt");
+
         BOOL translated = YES;
         for (NSString *language in SupportedLanguageCodes()) {
             NSString *value = T(language, @"statusUnsavedChanges");
@@ -181,6 +196,8 @@ int main(void) {
         previewDelegate.schedulePopup = [[NSPopUpButton alloc] init];
         [previewDelegate.schedulePopup addItemWithTitle:@"Manual"];
         previewDelegate.schedulePopup.lastItem.representedObject = @"manual";
+        [previewDelegate.schedulePopup addItemWithTitle:@"Daily"];
+        previewDelegate.schedulePopup.lastItem.representedObject = @"daily";
         previewDelegate.encryptionPopup = [[NSPopUpButton alloc] init];
         [previewDelegate.encryptionPopup addItemWithTitle:@"None"];
         previewDelegate.encryptionPopup.lastItem.representedObject = @"none";
@@ -191,6 +208,14 @@ int main(void) {
         previewDelegate.nasSubdirField.stringValue = @"GoogleDrive-Backup";
         previewDelegate.destinationPreviewField = [[NSTextField alloc] init];
         previewDelegate.configuredAPFSVolumePath = @"/Volumes/Exact Backup Disk";
+        NSButton *notificationCheckbox = [[NSButton alloc] init];
+        notificationCheckbox.buttonType = NSButtonTypeSwitch;
+        notificationCheckbox.state = NSControlStateValueOn;
+        BOOL exposesNotificationPreference = [previewDelegate respondsToSelector:
+            NSSelectorFromString(@"setNotificationCheckbox:")];
+        if (exposesNotificationPreference) {
+            [previewDelegate setValue:notificationCheckbox forKey:@"notificationCheckbox"];
+        }
         [previewDelegate updateDestinationPreview];
         Assert([previewDelegate.destinationPreviewField.stringValue isEqualToString:@"/Volumes/Exact Backup Disk"] &&
                [previewDelegate.destinationPreviewField.toolTip isEqualToString:@"/Volumes/Exact Backup Disk"] &&
@@ -203,6 +228,44 @@ int main(void) {
         Assert([previewDelegate.destinationPreviewField.stringValue isEqualToString:@"/Volumes/Archive/GoogleDrive-Backup"],
                @"destination preview follows the selected NAS mount and folder");
 
+        NSDictionary<NSString *, NSString *> *notificationUpdates =
+            [previewDelegate currentSetupUpdates];
+        Assert(exposesNotificationPreference &&
+               [notificationUpdates[@"GDRIVE_BACKUP_NOTIFY_FAILURES"] isEqualToString:@"1"],
+               @"setup saves the enabled automatic-backup notification preference");
+        notificationCheckbox.state = NSControlStateValueOff;
+        Assert([[previewDelegate currentSetupUpdates][@"GDRIVE_BACKUP_NOTIFY_FAILURES"]
+                   isEqualToString:@"0"],
+               @"setup persists an explicit notification opt-out");
+
+        NSDictionary<NSString *, NSString *> *defaultsWithNotifications = @{
+            @"GDRIVE_BACKUP_TARGET": @"apfs",
+            @"GDRIVE_BACKUP_SCHEDULE": @"manual",
+            @"GDRIVE_BACKUP_ENCRYPTION": @"none",
+            @"GDRIVE_BACKUP_CRYPT_REMOTE": @"",
+            @"GDRIVE_BACKUP_VOLUME": @"/Volumes/GoogleDrive-Backup",
+            @"GDRIVE_BACKUP_NOTIFY_FAILURES": @"1"
+        };
+        Assert([previewDelegate setupUpdatesMatchSavedConfig:defaultsWithNotifications
+                                                 savedConfig:@{}],
+               @"existing profiles default to enabled failure notifications without false unsaved changes");
+
+        SEL availabilitySelector = NSSelectorFromString(@"updateNotificationControlAvailability");
+        if ([previewDelegate respondsToSelector:availabilitySelector]) {
+            typedef void (*VoidMethod)(id, SEL);
+            VoidMethod updateAvailability =
+                (VoidMethod)[previewDelegate methodForSelector:availabilitySelector];
+            [previewDelegate.schedulePopup selectItemAtIndex:0];
+            updateAvailability(previewDelegate, availabilitySelector);
+            BOOL manualDisabled = !notificationCheckbox.enabled;
+            [previewDelegate.schedulePopup selectItemAtIndex:1];
+            updateAvailability(previewDelegate, availabilitySelector);
+            Assert(manualDisabled && notificationCheckbox.enabled,
+                   @"the notification choice is available only for an automatic schedule");
+        } else {
+            Assert(NO, @"the notification choice is available only for an automatic schedule");
+        }
+
         BOOL destinationLabelTranslated = YES;
         for (NSString *language in SupportedLanguageCodes()) {
             NSString *value = T(language, @"destinationPreview");
@@ -211,6 +274,22 @@ int main(void) {
         }
         Assert(destinationLabelTranslated,
                @"exact destination label is localized in all supported languages");
+
+        BOOL notificationTextTranslated = YES;
+        NSArray<NSString *> *notificationKeys = @[
+            @"notifyBackupFailures", @"backupNotificationFailureTitle",
+            @"backupNotificationMissedTitle", @"backupNotificationMissedBody",
+            @"backupNotificationTargetUnavailable"
+        ];
+        for (NSString *language in SupportedLanguageCodes()) {
+            for (NSString *key in notificationKeys) {
+                NSString *value = T(language, key);
+                notificationTextTranslated = notificationTextTranslated &&
+                    value.length > 0 && ![value isEqualToString:key];
+            }
+        }
+        Assert(notificationTextTranslated,
+               @"notification setup and alert text is localized in all supported languages");
 
         SEL validationSelector = NSSelectorFromString(@"setupValidationErrorKeyForUpdates:");
         typedef NSString *(*ValidationMethod)(id, SEL, NSDictionary *);

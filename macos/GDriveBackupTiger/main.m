@@ -1,4 +1,5 @@
 #import <Cocoa/Cocoa.h>
+#import <UserNotifications/UserNotifications.h>
 #include <errno.h>
 #include <signal.h>
 #include <unistd.h>
@@ -6,6 +7,7 @@
 #import "ConfigSupport.h"
 #import "ProfileSupport.h"
 #import "BackupStatusSupport.h"
+#import "NotificationSupport.h"
 #import "SetupHealthSupport.h"
 #import "RestoreSupport.h"
 #import "RestoreBrowserView.h"
@@ -1115,7 +1117,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     panel.lineWidth = 1;
     [panel stroke];
 
-    NSBezierPath *schedulePanel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 562, NSWidth(bounds) - 36, 52) xRadius:12 yRadius:12];
+    NSBezierPath *schedulePanel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 562, NSWidth(bounds) - 36, 76) xRadius:12 yRadius:12];
     [[NSColor colorWithCalibratedWhite:1.0 alpha:0.42] setFill];
     [schedulePanel fill];
     [[NSColor colorWithCalibratedWhite:0.42 alpha:0.20] setStroke];
@@ -1407,7 +1409,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 
 @end
 
-@interface AppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, NSTextFieldDelegate>
+@interface AppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, NSTextFieldDelegate, UNUserNotificationCenterDelegate>
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, copy) NSString *sentinelPath;
 @property(nonatomic, copy) NSString *progressPath;
@@ -1438,6 +1440,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, strong) NSPopUpButton *mountedNasPopup;
 @property(nonatomic, strong) NSPopUpButton *discoveredNasPopup;
 @property(nonatomic, strong) NSPopUpButton *schedulePopup;
+@property(nonatomic, strong) NSButton *notificationCheckbox;
 @property(nonatomic, strong) NSTextField *nasURLField;
 @property(nonatomic, strong) NSTextField *nasMountField;
 @property(nonatomic, strong) NSTextField *nasSubdirField;
@@ -1476,6 +1479,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, copy) NSString *lastMountTriggerPath;
 @property(nonatomic, strong) NSDate *lastMountTriggerDate;
 @property(nonatomic, copy) NSString *terminalFailureReason;
+@property(nonatomic, strong) NSMutableSet<NSString *> *pendingBackupNotificationIdentifiers;
 - (void)requestCancelBackup:(id)sender;
 - (BOOL)cancelRunningBackup;
 @end
@@ -1556,6 +1560,202 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
 
 @implementation AppDelegate
 
+- (NSUserDefaults *)backupNotificationDefaultsStore {
+    return NSUserDefaults.standardUserDefaults;
+}
+
+- (NSString *)backupNotificationDefaultsKeyForProfileID:(NSString *)profileID suffix:(NSString *)suffix {
+    NSString *safeProfileID = profileID.length ? profileID : @"legacy";
+    return [NSString stringWithFormat:@"GDTBackupNotification.%@.%@", safeProfileID, suffix];
+}
+
+- (NSDictionary<NSString *, NSString *> *)notificationMonitoringConfigForConfig:
+    (NSDictionary<NSString *, NSString *> *)config now:(NSDate *)now {
+    NSString *schedule = [config[@"GDRIVE_BACKUP_SCHEDULE"] ?: @"manual" lowercaseString];
+    BOOL automaticSchedule = [@[@"login", @"hourly", @"daily"] containsObject:schedule];
+    NSString *profileID = config[@"GDRIVE_BACKUP_PROFILE_ID"] ?: @"legacy";
+    NSString *key = [self backupNotificationDefaultsKeyForProfileID:profileID suffix:@"monitorStartedAt"];
+    NSUserDefaults *defaults = [self backupNotificationDefaultsStore];
+    if (!automaticSchedule || [config[@"GDRIVE_BACKUP_NOTIFY_FAILURES"] isEqualToString:@"0"]) {
+        // Re-enabling later starts a fresh monitoring window instead of
+        // reporting deadlines that occurred while alerts were intentionally off.
+        [defaults removeObjectForKey:key];
+        return config;
+    }
+
+    NSTimeInterval startedAt = [defaults doubleForKey:key];
+    if (startedAt <= 0) {
+        startedAt = now.timeIntervalSince1970;
+        [defaults setDouble:startedAt forKey:key];
+    }
+    NSMutableDictionary<NSString *, NSString *> *monitoredConfig = [config mutableCopy];
+    monitoredConfig[@"GDRIVE_BACKUP_NOTIFICATION_MONITOR_STARTED_AT"] =
+        [NSString stringWithFormat:@"%.0f", startedAt];
+    return monitoredConfig;
+}
+
+- (void)configureBackupNotificationsForConfig:(NSDictionary<NSString *, NSString *> *)config {
+    NSString *schedule = [config[@"GDRIVE_BACKUP_SCHEDULE"] ?: @"manual" lowercaseString];
+    BOOL automaticSchedule = [@[@"login", @"hourly", @"daily"] containsObject:schedule];
+    if (!automaticSchedule || [config[@"GDRIVE_BACKUP_NOTIFY_FAILURES"] isEqualToString:@"0"]) {
+        return;
+    }
+
+    (void)[self notificationMonitoringConfigForConfig:config now:[NSDate date]];
+    UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
+    center.delegate = self;
+    UNNotificationAction *openAction = [UNNotificationAction
+        actionWithIdentifier:@"GDT_OPEN_BACKUP_OVERVIEW"
+                       title:T(self.language ?: @"en", @"overviewOpen")
+                     options:UNNotificationActionOptionForeground];
+    UNNotificationCategory *category = [UNNotificationCategory
+        categoryWithIdentifier:@"GDT_BACKUP_ALERT"
+                       actions:@[openAction]
+             intentIdentifiers:@[]
+                       options:UNNotificationCategoryOptionNone];
+    [center setNotificationCategories:[NSSet setWithObject:category]];
+    [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
+        if (settings.authorizationStatus != UNAuthorizationStatusNotDetermined) return;
+        [center requestAuthorizationWithOptions:
+            UNAuthorizationOptionAlert | UNAuthorizationOptionSound
+                              completionHandler:^(BOOL granted, NSError *error) {
+            (void)granted;
+            (void)error;
+        }];
+    }];
+}
+
+- (void)addBackupNotificationDecision:(NSDictionary<NSString *, NSString *> *)decision
+                              toCenter:(UNUserNotificationCenter *)center
+                            completion:(void (^)(BOOL delivered))completion {
+    UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
+    content.title = T(self.language ?: @"en", decision[@"titleKey"]);
+    content.body = T(self.language ?: @"en", decision[@"bodyKey"]);
+    content.sound = UNNotificationSound.defaultSound;
+    content.categoryIdentifier = @"GDT_BACKUP_ALERT";
+    UNNotificationRequest *request = [UNNotificationRequest
+        requestWithIdentifier:decision[@"identifier"] content:content trigger:nil];
+    [center addNotificationRequest:request withCompletionHandler:^(NSError *error) {
+        completion(error == nil);
+    }];
+}
+
+- (void)deliverBackupNotificationDecision:(NSDictionary<NSString *, NSString *> *)decision
+                                completion:(void (^)(BOOL delivered))completion {
+    UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
+    [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
+        if (settings.authorizationStatus == UNAuthorizationStatusAuthorized ||
+            settings.authorizationStatus == UNAuthorizationStatusProvisional) {
+            [self addBackupNotificationDecision:decision toCenter:center completion:completion];
+            return;
+        }
+        if (settings.authorizationStatus != UNAuthorizationStatusNotDetermined) {
+            completion(NO);
+            return;
+        }
+        [center requestAuthorizationWithOptions:
+            UNAuthorizationOptionAlert | UNAuthorizationOptionSound
+                              completionHandler:^(BOOL granted, NSError *error) {
+            if (!granted || error) {
+                completion(NO);
+                return;
+            }
+            [self addBackupNotificationDecision:decision toCenter:center completion:completion];
+        }];
+    }];
+}
+
+- (void)processBackupNotificationDecision:(NSDictionary<NSString *, NSString *> *)decision {
+    NSString *identifier = decision[@"identifier"];
+    NSString *profileID = decision[@"profileID"];
+    if (!identifier.length || !profileID.length || !decision[@"titleKey"].length ||
+        !decision[@"bodyKey"].length) {
+        return;
+    }
+    NSString *key = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                              suffix:@"lastDeliveredIdentifier"];
+    NSUserDefaults *defaults = [self backupNotificationDefaultsStore];
+    if ([[defaults stringForKey:key] isEqualToString:identifier]) return;
+    if (!self.pendingBackupNotificationIdentifiers) {
+        self.pendingBackupNotificationIdentifiers = [NSMutableSet set];
+    }
+    if ([self.pendingBackupNotificationIdentifiers containsObject:identifier]) return;
+    [self.pendingBackupNotificationIdentifiers addObject:identifier];
+
+    __weak typeof(self) weakSelf = self;
+    [self deliverBackupNotificationDecision:decision completion:^(BOOL delivered) {
+        void (^finish)(void) = ^{
+            typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            [strongSelf.pendingBackupNotificationIdentifiers removeObject:identifier];
+            if (delivered) {
+                [[strongSelf backupNotificationDefaultsStore] setObject:identifier forKey:key];
+            }
+        };
+        if (NSThread.isMainThread) {
+            finish();
+        } else {
+            dispatch_async(dispatch_get_main_queue(), finish);
+        }
+    }];
+}
+
+- (NSString *)backupAlertStatusForConfig:(NSDictionary<NSString *, NSString *> *)config
+                                  summary:(NSDictionary<NSString *, NSString *> *)summary
+                                rawStatus:(NSString *)rawStatus
+                                 decision:(NSDictionary<NSString *, NSString *> *)decision {
+    NSString *profileID = config[@"GDRIVE_BACKUP_PROFILE_ID"] ?: @"legacy";
+    NSUserDefaults *defaults = [self backupNotificationDefaultsStore];
+    NSString *kindKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                  suffix:@"activeIssueKind"];
+    NSString *timeKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                  suffix:@"activeIssueAt"];
+    if ([decision[@"profileID"] isEqualToString:profileID] &&
+        [@[@"failure", @"missed"] containsObject:decision[@"kind"]] &&
+        [decision[@"issueTimestamp"] doubleValue] > 0) {
+        [defaults setObject:decision[@"kind"] forKey:kindKey];
+        [defaults setDouble:[decision[@"issueTimestamp"] doubleValue] forKey:timeKey];
+    }
+
+    NSString *activeKind = [defaults stringForKey:kindKey];
+    NSTimeInterval activeSince = [defaults doubleForKey:timeKey];
+    if (![@[@"failure", @"missed"] containsObject:activeKind] || activeSince <= 0) {
+        return rawStatus;
+    }
+    NSTimeInterval finishedAt = [summary[@"finished_at"] doubleValue];
+    if ([rawStatus isEqualToString:@"success"] && finishedAt >= activeSince) {
+        [defaults removeObjectForKey:kindKey];
+        [defaults removeObjectForKey:timeKey];
+        return rawStatus;
+    }
+    return activeKind;
+}
+
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+       willPresentNotification:(UNNotification *)notification
+         withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler {
+    (void)center;
+    (void)notification;
+    completionHandler(UNNotificationPresentationOptionBanner |
+                      UNNotificationPresentationOptionList |
+                      UNNotificationPresentationOptionSound);
+}
+
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+didReceiveNotificationResponse:(UNNotificationResponse *)response
+         withCompletionHandler:(void (^)(void))completionHandler {
+    (void)center;
+    NSString *action = response.actionIdentifier;
+    if ([action isEqualToString:UNNotificationDefaultActionIdentifier] ||
+        [action isEqualToString:@"GDT_OPEN_BACKUP_OVERVIEW"]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self showOverviewWindow];
+            [self refreshOverviewStatus:nil];
+        });
+    }
+    completionHandler();
+}
+
 - (void)prepareProfileStore {
     if (NSProcessInfo.processInfo.environment[@"GDRIVE_BACKUP_CONFIG"].length) {
         return;
@@ -1615,9 +1815,21 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
                                                           summaryPath:(NSString *)summaryPath
                                                                   now:(NSDate *)now
                                                              calendar:(NSCalendar *)calendar {
-    NSString *language = self.language ?: @"en";
     NSDictionary<NSString *, NSString *> *summary = GDTReadBackupSummaryAtPath(summaryPath);
-    NSString *status = GDTBackupSummaryStatusAtPath(summaryPath);
+    NSString *status = GDTBackupSummaryStatusForValues(summary);
+    return [self overviewSnapshotForConfig:config
+                                   summary:summary
+                                    status:status
+                                       now:now
+                                  calendar:calendar];
+}
+
+- (NSDictionary<NSString *, NSString *> *)overviewSnapshotForConfig:(NSDictionary<NSString *, NSString *> *)config
+                                                              summary:(NSDictionary<NSString *, NSString *> *)summary
+                                                               status:(NSString *)status
+                                                                  now:(NSDate *)now
+                                                             calendar:(NSCalendar *)calendar {
+    NSString *language = self.language ?: @"en";
     NSDictionary<NSString *, NSString *> *statusKeys = @{
         @"success": @"completed",
         @"failure": @"failed",
@@ -1786,19 +1998,30 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     NSDictionary<NSString *, NSString *> *symbols = @{
         @"success": @"externaldrive.fill.badge.checkmark",
         @"failure": @"exclamationmark.triangle.fill",
+        @"missed": @"exclamationmark.triangle.fill",
         @"cancelled": @"stop.circle.fill",
         @"running": @"arrow.triangle.2.circlepath",
         @"interrupted": @"exclamationmark.circle.fill",
         @"unknown": @"externaldrive.fill"
     };
-    NSString *status = snapshot[@"status"] ?: @"unknown";
+    NSString *status = snapshot[@"alertStatus"] ?: snapshot[@"status"] ?: @"unknown";
     NSString *symbolName = symbols[status] ?: symbols[@"unknown"];
     NSImage *image = [NSImage imageWithSystemSymbolName:symbolName
                                accessibilityDescription:@"GDrive Backup Tiger"];
-    image.template = YES;
+    BOOL warning = [@[@"failure", @"missed", @"interrupted"] containsObject:status];
+    if (warning) {
+        image = [image imageWithSymbolConfiguration:
+            [NSImageSymbolConfiguration configurationWithHierarchicalColor:NSColor.systemRedColor]];
+    }
+    image.template = !warning;
     self.statusItem.button.image = image;
+    NSString *spokenStatus = [status isEqualToString:@"missed"]
+        ? T(self.language ?: @"en", @"backupNotificationMissedTitle")
+        : ([status isEqualToString:@"failure"]
+            ? T(self.language ?: @"en", @"failed")
+            : snapshot[@"lastRun"]);
     self.statusItem.button.accessibilityLabel = [NSString stringWithFormat:@"GDrive Backup Tiger — %@",
-        snapshot[@"lastRun"] ?: T(self.language ?: @"en", @"overviewStatusUnknown")];
+        spokenStatus ?: T(self.language ?: @"en", @"overviewStatusUnknown")];
 }
 
 - (void)updateOverviewRefreshTimerForStatus:(NSString *)status {
@@ -1839,34 +2062,59 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     (void)sender;
     if (self.overviewRefreshInFlight) return;
     self.overviewRefreshInFlight = YES;
-    NSDictionary<NSString *, NSString *> *config = GDTReadConfigDictionary();
-    NSString *summaryPath = GDTBackupSummaryPathForConfig(config);
+    NSDictionary<NSString *, NSString *> *baseConfig = GDTReadConfigDictionary();
+    NSString *summaryPath = GDTBackupSummaryPathForConfig(baseConfig);
     NSCalendar *calendar = NSCalendar.autoupdatingCurrentCalendar;
     NSDate *now = [NSDate date];
+    NSDictionary<NSString *, NSString *> *config =
+        [self notificationMonitoringConfigForConfig:baseConfig now:now];
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf) {
             return;
         }
+        NSDictionary<NSString *, NSString *> *summary = GDTReadBackupSummaryAtPath(summaryPath);
+        NSString *status = GDTBackupSummaryStatusForValues(summary);
         NSDictionary<NSString *, NSString *> *snapshot =
-            [strongSelf overviewSnapshotForConfig:config summaryPath:summaryPath now:now calendar:calendar];
+            [strongSelf overviewSnapshotForConfig:config summary:summary status:status
+                                               now:now calendar:calendar];
+        NSDictionary<NSString *, NSString *> *notificationDecision =
+            [GDTBackupNotificationPolicy decisionForConfig:config summary:summary
+                                                    status:status now:now calendar:calendar];
         dispatch_async(dispatch_get_main_queue(), ^{
             typeof(self) innerSelf = weakSelf;
             if (!innerSelf) {
                 return;
             }
             innerSelf.overviewRefreshInFlight = NO;
-            innerSelf.lastOverviewSnapshot = snapshot;
+            NSDictionary<NSString *, NSString *> *currentConfig = GDTReadConfigDictionary();
+            NSString *capturedProfileID = config[@"GDRIVE_BACKUP_PROFILE_ID"] ?: @"legacy";
+            NSString *currentProfileID = currentConfig[@"GDRIVE_BACKUP_PROFILE_ID"] ?: @"legacy";
+            if (![capturedProfileID isEqualToString:currentProfileID]) {
+                // A profile switch can finish while the summary is read off the
+                // main thread. Discard that stale snapshot before it can update
+                // the menu bar or deliver an alert for the previous profile.
+                [innerSelf refreshOverviewStatus:nil];
+                return;
+            }
+            NSMutableDictionary<NSString *, NSString *> *displaySnapshot = [snapshot mutableCopy];
+            displaySnapshot[@"alertStatus"] = [innerSelf backupAlertStatusForConfig:config
+                summary:summary rawStatus:status decision:notificationDecision];
+            if (notificationDecision) {
+                [innerSelf processBackupNotificationDecision:notificationDecision];
+            }
+            innerSelf.lastOverviewSnapshot = displaySnapshot;
             if ([innerSelf.window.contentView isKindOfClass:TigerOverviewView.class]) {
-                [innerSelf applyOverviewSnapshot:snapshot toView:(TigerOverviewView *)innerSelf.window.contentView];
+                [innerSelf applyOverviewSnapshot:displaySnapshot
+                                          toView:(TigerOverviewView *)innerSelf.window.contentView];
             }
             if (innerSelf.statusItem) {
-                innerSelf.statusItem.menu = [innerSelf statusMenuForSnapshot:snapshot];
+                innerSelf.statusItem.menu = [innerSelf statusMenuForSnapshot:displaySnapshot];
                 innerSelf.statusItem.menu.delegate = innerSelf;
-                [innerSelf updateStatusItemPresentationForSnapshot:snapshot];
+                [innerSelf updateStatusItemPresentationForSnapshot:displaySnapshot];
             }
-            [innerSelf updateOverviewRefreshTimerForStatus:snapshot[@"status"]];
+            [innerSelf updateOverviewRefreshTimerForStatus:displaySnapshot[@"status"]];
         });
     });
 }
@@ -2111,7 +2359,8 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
                     toDirectoryURL:destinationDirectory error:&error];
             } else if (sourceURL && [copier isKindOfClass:GDTRestoreCopier.class]) {
                 restoreResult = [(GDTRestoreCopier *)copier
-                    restoreSourceURL:sourceURL toDirectoryURL:destinationDirectory error:&error];
+                    restoreSourceURL:sourceURL name:sourceName
+                    toDirectoryURL:destinationDirectory error:&error];
             }
             dispatch_async(dispatch_get_main_queue(), ^{
                 typeof(self) innerSelf = weakSelf;
@@ -2201,10 +2450,12 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
                                                                       versionsSubdirectory:versionsSubdirectory];
             self.restoreCopier = [GDTCryptRestoreCopier productionCopierWithRemoteName:cryptRemote
                                                                            backupRootURL:rootURL
+                                                                   versionsSubdirectory:versionsSubdirectory
                                                                              fileManager:fileManager];
         } else {
             self.restoreCatalog = [[GDTRestoreCatalog alloc] initWithBackupRootURL:rootURL
-                                                                      fileManager:fileManager];
+                                                                      fileManager:fileManager
+                                                             versionsSubdirectory:versionsSubdirectory];
             self.restoreCopier = [[GDTRestoreCopier alloc] initWithBackupRootURL:rootURL
                                                                      fileManager:fileManager];
         }
@@ -2552,6 +2803,21 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
         NSWindowStyleMaskFullSizeContentView;
 }
 
+- (NSWindowCollectionBehavior)statusWindowCollectionBehavior {
+    // Status UI belongs to the Space where it was requested. In particular it
+    // must never become an auxiliary window of an unrelated fullscreen app.
+    return NSWindowCollectionBehaviorManaged |
+        NSWindowCollectionBehaviorFullScreenNone;
+}
+
+- (BOOL)shouldShowProgressForTrigger:(NSString *)trigger
+                   fromVisibleWindow:(BOOL)visibleWindow {
+    if (![trigger isEqualToString:@"manual"] || !visibleWindow) {
+        return NO;
+    }
+    return self.setupMode || (self.overviewMode && !self.menubarOnlyMode);
+}
+
 - (NSTimeInterval)confirmationTimeout {
     return self.voiceOverEnabled ? 0 : 120.0;
 }
@@ -2680,6 +2946,10 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
 
     self.language = selectedLanguage;
     [self buildMainMenu];
+    if (self.overviewMode) {
+        [self configureBackupNotificationsForConfig:GDTReadConfigDictionary()];
+        [self refreshOverviewStatus:nil];
+    }
     if (self.setupMode) {
         [self.window orderOut:nil];
         self.window = nil;
@@ -3055,6 +3325,17 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     self.schedulePopup.action = @selector(setupControlChanged:);
     [content addSubview:self.schedulePopup];
 
+    self.notificationCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(164, 608, 440, 24)];
+    self.notificationCheckbox.buttonType = NSButtonTypeSwitch;
+    self.notificationCheckbox.title = T(self.language, @"notifyBackupFailures");
+    self.notificationCheckbox.state = [config[@"GDRIVE_BACKUP_NOTIFY_FAILURES"] isEqualToString:@"0"]
+        ? NSControlStateValueOff : NSControlStateValueOn;
+    self.notificationCheckbox.target = self;
+    self.notificationCheckbox.action = @selector(setupControlChanged:);
+    self.notificationCheckbox.accessibilityLabel = self.notificationCheckbox.title;
+    [content addSubview:self.notificationCheckbox];
+    [self updateNotificationControlAvailability];
+
     self.statusField = [self label:T(self.language, @"statusReady") frame:NSMakeRect(26, 648, 270, 20)];
     self.statusField.textColor = [NSColor colorWithCalibratedWhite:0.36 alpha:1.0];
     [content addSubview:self.statusField];
@@ -3082,7 +3363,13 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     (void)sender;
     [self updateEncryptionControls];
     [self updateDestinationPreview];
+    [self updateNotificationControlAvailability];
     [self invalidateSetupHealth:nil];
+}
+
+- (void)updateNotificationControlAvailability {
+    NSString *schedule = self.schedulePopup.selectedItem.representedObject ?: @"manual";
+    self.notificationCheckbox.enabled = [@[@"login", @"hourly", @"daily"] containsObject:schedule];
 }
 
 - (void)updateEncryptionControls {
@@ -3284,6 +3571,8 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     updates[@"GDRIVE_BACKUP_SCHEDULE"] = schedule;
     updates[@"GDRIVE_BACKUP_ENCRYPTION"] = encryption;
     updates[@"GDRIVE_BACKUP_CRYPT_REMOTE"] = self.cryptRemoteField.stringValue ?: @"";
+    updates[@"GDRIVE_BACKUP_NOTIFY_FAILURES"] =
+        self.notificationCheckbox.state == NSControlStateValueOff ? @"0" : @"1";
 
     if ([target isEqualToString:@"nas"]) {
         updates[@"GDRIVE_BACKUP_NAS_MOUNT"] = self.nasMountField.stringValue ?: @"";
@@ -3313,7 +3602,8 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
         @"GDRIVE_BACKUP_NAS_URL": @"",
         @"GDRIVE_BACKUP_NAS_SUBDIR": @"GoogleDrive-Backup",
         @"GDRIVE_BACKUP_NAS_START_ON_MOUNT": @"0",
-        @"GDRIVE_BACKUP_VOLUME": @"/Volumes/GoogleDrive-Backup"
+        @"GDRIVE_BACKUP_VOLUME": @"/Volumes/GoogleDrive-Backup",
+        @"GDRIVE_BACKUP_NOTIFY_FAILURES": @"1"
     };
     NSSet<NSString *> *caseInsensitiveKeys = [NSSet setWithArray:@[
         @"GDRIVE_BACKUP_TARGET", @"GDRIVE_BACKUP_SCHEDULE", @"GDRIVE_BACKUP_ENCRYPTION"
@@ -3382,6 +3672,7 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
         self.statusField.stringValue = error.localizedDescription ?: @"Schedule update failed.";
         return NO;
     }
+    [self configureBackupNotificationsForConfig:GDTReadConfigDictionary()];
     self.statusField.stringValue = T(self.language, @"statusSaved");
     return YES;
 }
@@ -3554,8 +3845,8 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     environment[@"HOME"] = NSHomeDirectory();
     environment[@"PATH"] = @"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
     environment[@"GDRIVE_BACKUP_TRIGGER"] = trigger.length ? trigger : @"manual";
-    environment[@"BACKUP_PROGRESS_FOREGROUND"] =
-        self.overviewMode && [trigger isEqualToString:@"manual"] ? @"1" : @"0";
+    environment[@"BACKUP_PROGRESS_FOREGROUND"] = [self shouldShowProgressForTrigger:trigger
+        fromVisibleWindow:self.window.isVisible] ? @"1" : @"0";
     if (assumeYes) {
         environment[@"BACKUP_ASSUME_YES"] = @"1";
     }
@@ -3584,7 +3875,10 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
         @"EnvironmentVariables": @{
             @"HOME": NSHomeDirectory(),
             @"PATH": @"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-            @"GDRIVE_BACKUP_TRIGGER": @"schedule"
+            @"GDRIVE_BACKUP_TRIGGER": @"schedule",
+            // A scheduled job has no attentive user; the script still verifies
+            // that the configured destination is the expected mounted target.
+            @"BACKUP_ASSUME_YES": @"1"
         }
     } mutableCopy];
     if ([mode isEqualToString:@"login"]) {
@@ -3674,6 +3968,11 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     return YES;
 }
 
+- (void)applicationWillFinishLaunching:(NSNotification *)notification {
+    (void)notification;
+    UNUserNotificationCenter.currentNotificationCenter.delegate = self;
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     self.reduceMotion = NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
     self.voiceOverEnabled = NSWorkspace.sharedWorkspace.isVoiceOverEnabled;
@@ -3707,6 +4006,7 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
             ? NSApplicationActivationPolicyAccessory
             : NSApplicationActivationPolicyRegular];
         [self buildMainMenu];
+        [self configureBackupNotificationsForConfig:GDTReadConfigDictionary()];
         [self installStatusItemIfNeeded];
         if ([mode isEqualToString:@"overview"]) {
             [self showOverviewWindow];
@@ -3752,7 +4052,7 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     }
 
     [NSApp setApplicationIconImage:CreateApplicationIcon()];
-    [NSApp setActivationPolicy:self.confirmMode || self.progressForegroundMode
+    [NSApp setActivationPolicy:self.progressForegroundMode
         ? NSApplicationActivationPolicyRegular : NSApplicationActivationPolicyAccessory];
 
     NSSize size = self.confirmMode ? NSMakeSize(392, 162) : NSMakeSize(392, 198);
@@ -3772,7 +4072,8 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     self.window.backgroundColor = NSColor.clearColor;
     self.window.hasShadow = YES;
     self.window.level = self.confirmMode ? NSFloatingWindowLevel : NSNormalWindowLevel;
-    self.window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
+    self.window.collectionBehavior = [self statusWindowCollectionBehavior];
+    self.window.hidesOnDeactivate = !self.confirmMode || !self.progressForegroundMode;
     TigerBackupView *contentView = [[TigerBackupView alloc] initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
     __weak typeof(self) weakSelf = self;
     contentView.confirmMode = self.confirmMode;
@@ -3790,17 +4091,17 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     };
     self.window.contentView = contentView;
     self.window.alphaValue = 0;
-    [self.window makeKeyAndOrderFront:nil];
-    [self.window orderFrontRegardless];
+    if (self.confirmMode && self.progressForegroundMode) {
+        [self.window makeKeyAndOrderFront:nil];
+        [NSApp activateIgnoringOtherApps:YES];
+    } else {
+        [self.window orderFront:nil];
+    }
 
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
         context.duration = [self animationDuration:0.22];
         self.window.animator.alphaValue = 1;
     } completionHandler:nil];
-
-    if (self.confirmMode || self.progressForegroundMode) {
-        [NSApp activateIgnoringOtherApps:YES];
-    }
 
     if (self.confirmMode) {
         NSTimeInterval timeout = [self confirmationTimeout];
@@ -3906,7 +4207,12 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
 
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)flag {
     if (self.completing) {
-        [self.window orderFrontRegardless];
+        [self.window makeKeyAndOrderFront:nil];
+        return NO;
+    }
+
+    if (self.overviewMode && (self.menubarOnlyMode || !self.window || !flag)) {
+        [self showOverviewWindow];
         return NO;
     }
 
@@ -3924,7 +4230,6 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
 
     self.window.alphaValue = 0;
     [self.window makeKeyAndOrderFront:nil];
-    [self.window orderFrontRegardless];
     [NSApp activateIgnoringOtherApps:YES];
 
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
@@ -4248,16 +4553,11 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     TigerBackupView *contentView = (TigerBackupView *)self.window.contentView;
     [self applyTerminalStatus:status toView:contentView];
 
-    BOOL wasHidden = self.hiddenByUser || !self.window.isVisible;
-    self.hiddenByUser = NO;
-
-    if (wasHidden) {
-        [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-        self.window.alphaValue = 0;
-        [self.window orderFront:nil];
-    } else {
-        self.window.alphaValue = 1;
+    if (self.hiddenByUser || !self.window.isVisible || !NSApp.isActive) {
+        [NSApp terminate:nil];
+        return;
     }
+    self.window.alphaValue = 1;
 
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
         context.duration = [self animationDuration:0.22];

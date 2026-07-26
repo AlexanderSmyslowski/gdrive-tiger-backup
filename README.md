@@ -4,7 +4,7 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window. “Tiger” describes the visual style; the app requires macOS 13 Ventura or later and does not run on Mac OS X 10.4 Tiger.
 
-Current release: `v2.3.2` with one coherent Dock presence during manual backups, visible check-run progress and results, verified network-mount safety, pausable automatic backups, immediate manual-start feedback, a foreground Tiger progress window with safe cancellation, clearly identified disk and NAS destinations, optional end-to-end `rclone crypt` backups, Time Machine-like encrypted retention, verified encrypted recovery, manual safe update checks, named profiles, diagnostics, and a persistent menu bar overview.
+Current release: `v2.3.2` with one coherent Dock presence during manual backups, visible check-run progress and results, verified network-mount safety, pausable automatic backups, immediate manual-start feedback, a non-intrusive Tiger progress window with safe cancellation, clearly identified disk and NAS destinations, optional end-to-end `rclone crypt` backups, Time Machine-like encrypted retention, verified encrypted recovery, manual safe update checks, named profiles, diagnostics, and a persistent menu bar overview.
 
 It backs up:
 
@@ -15,12 +15,18 @@ It backs up:
 
 The backup is read-only from Google Drive's perspective. It uses `rclone copy`, so it does not delete, mutate, or reorganize anything in Drive.
 
+Google Docs, Sheets, and Slides are recoverable Office exports of their state at
+backup time. Retained app versions can keep older exports from later runs, but
+the backup does not preserve Google Drive's native document revision history.
+
 ## How It Works
 
 - A user LaunchAgent starts the lightweight menu bar controller at login.
 - Automatic schedule and mount-triggered runs can be paused from the menu bar without changing the saved schedule; manual backups remain available.
 - The controller observes macOS mount events and reacts only when the exact saved APFS backup volume was newly mounted. Unrelated disks and NAS mounts are ignored.
 - The overview shows the last verified run, configured schedule, exact local destination, and available destination capacity.
+- With notifications enabled, macOS reports a failed automatic run immediately and a daily 20:00 run that is still missing at 21:00. Alerts are deduplicated per profile and run; the menu bar warning remains until a newer successful backup.
+- Scheduled, mount-triggered, and menu-bar-only runs stay headless. Their live and final state remains available through the menu bar, with a macOS notification for automatic failures.
 - Named profiles keep distinct destinations, schedules, encryption policies, and last-run histories while making the one active profile explicit in setup, the overview, and the menu bar.
 - On first use, if the backup volume does not exist yet, the helper can ask to create a dedicated APFS volume on the newly attached external APFS disk.
 - In parallel, the setup window can configure a mounted NAS share, for example SMB, AFP, or NFS under `/Volumes`. A writable directory alone never counts as a NAS: the setup check and backup engine both require a verified network file-system mount.
@@ -28,16 +34,17 @@ The backup is read-only from Google Drive's perspective. It uses `rclone copy`, 
 - A `flock` lock prevents two backup jobs from running at the same time.
 - Before a real backup starts, the Tiger helper asks whether this volume or NAS destination should be used.
 - External disks and NAS targets are independent: plugging in the configured external disk still opens the confirmation dialog even when NAS backups are configured.
-- The native AppKit helper appears while the backup runs, but uses the normal
-  window level so other apps can cover it.
+- A direct manual start from the visible overview or setup can open the native
+  AppKit helper. It stays on its original Space, never joins another app's
+  fullscreen Space, and hides when another app becomes active.
 - During each `rclone copy`, the helper shows live progress, percent, transferred size, speed, and ETA when rclone reports it.
 - Native close and minimize controls behave like standard macOS controls; closing the overview leaves its menu bar status available.
 - The overview and menu bar open a native restore browser that combines the live backup with every actually available retained per-file version.
 - A restored file is copied to a user-selected folder outside the backup, never silently overwrites an existing file, and is published only after its SHA-256 digest matches the selected backup copy.
 - Optional `rclone crypt` mode encrypts file contents plus file and directory names. Active data, version deltas, thinning, and restore all address the same checked crypt remote; the app stores only its name and never reads a crypt password.
 - The app and menu bar open one native diagnostics window for tools, Google Drive, destination, schedule, services, and the last run. Its optional support report omits paths, credentials, file names, and log contents and is copied or saved only after an explicit click.
-- When the backup finishes, the helper briefly shows completion without taking
-  focus from the app currently in use.
+- When the backup finishes, an already active helper briefly shows completion.
+  A hidden or inactive helper stays hidden and never takes focus back.
 
 ## Requirements
 
@@ -169,6 +176,7 @@ The setup window can:
 - run a best-effort Bonjour search for SMB and AFP services
 - open a NAS URL in Finder so macOS can mount it through Keychain
 - save manual, login, hourly, or daily launchd start modes
+- enable or disable macOS failure and missed-daily-run notifications
 - start a backup immediately or run an optional no-copy check
 
 The installer writes:
@@ -190,6 +198,7 @@ GDRIVE_BACKUP_VERSIONS_SUBDIR=.gdrive-versions
 GDRIVE_BACKUP_RETENTION=1
 GDRIVE_BACKUP_ENCRYPTION=none
 GDRIVE_BACKUP_PAUSED=0
+GDRIVE_BACKUP_NOTIFY_FAILURES=1
 ```
 
 For NAS backups, the config looks like this:
@@ -205,8 +214,9 @@ GDRIVE_BACKUP_SCHEDULE=manual
 Supported values for `GDRIVE_BACKUP_LANG` are `de`, `en`, `fr`, `es`, `ja`, `yue`, and `ko`.
 Supported values for `GDRIVE_BACKUP_TARGET` are `apfs` and `nas`.
 Supported values for `GDRIVE_BACKUP_SCHEDULE` are `manual`, `login`, `hourly`, and `daily`.
-Set `GDRIVE_BACKUP_CONFIRM=0` only if you deliberately want fully automatic backups whenever the configured volume is mounted.
+Saved schedules run unattended after the script verifies the configured destination. `GDRIVE_BACKUP_CONFIRM=1` still protects mount-triggered runs with a prompt. Set it to `0` only if you also deliberately want those mount-triggered backups to start unattended whenever the configured volume is mounted.
 Set `GDRIVE_BACKUP_PAUSED=1` to silence schedule and mount-triggered runs without changing the saved schedule. The menu bar toggles this setting; **Backup now** always remains manual and available.
+Set `GDRIVE_BACKUP_NOTIFY_FAILURES=0` to disable macOS alerts for automatic failures and missed daily runs. The menu bar and overview continue to show backup status even when alerts are disabled or macOS notification permission is denied.
 Set `GDRIVE_BACKUP_AUTO_CREATE_VOLUME=0` if you want to create the backup volume yourself.
 Set `GDRIVE_BACKUP_NAS_START_ON_MOUNT=1` only if mount events should also start the configured NAS backup; the default `0` reserves mount-triggered runs for the external APFS target.
 Set `GDRIVE_BACKUP_VERSIONING=0` only if overwritten destination files should not be preserved. Versioning is enabled by default and moves the previous content into `.gdrive-versions/<timestamp>/<backup area>` through rclone's `--backup-dir` support.
@@ -236,6 +246,39 @@ leaves the original file unchanged as a fallback. New profile IDs are generated
 independently of their display names, profile files use mode `0600`, and unsafe
 IDs or symbolic links are rejected. Deleting a profile moves only its config to
 the macOS Trash; it does not delete any backup data.
+
+## Incremental behavior
+
+Every run lists and compares the source with the destination, but `rclone copy`
+transfers only new or changed files. Unchanged files are checked but not copied
+again. A changed file is transferred as a complete file, not as changed blocks,
+and its previous complete version is retained under `.gdrive-versions` when
+versioning is enabled.
+
+Because the backup deliberately uses `copy` rather than `sync`, a file deleted
+from Google Drive is not deleted from the backup destination. A rename or move
+therefore creates the new path while the old path remains recoverable. This
+protects against accidental source deletion but means the destination can grow
+over time.
+
+## NAS names and duplicate Drive entries
+
+Some NAS servers reject a directory whose exact name is `.bin`. On verified NAS
+destinations, the backup therefore applies a reversible name codec to `.bin`
+directories and escapes names that would otherwise look like codec markers. A
+versioned `.gdrive-name-codec` manifest records the physical layout. The restore
+browser validates that manifest and presents the original logical names instead
+of the internal NAS-safe names; an unknown or damaged codec layout is rejected.
+
+Google Drive can contain multiple objects with the same exact name in the same
+parent folder. When rclone reports such a collision, the backup inventories the
+matching provider IDs and stores every object separately in an internal,
+ID-addressed `.gdrive-collisions` archive with a group manifest. The run is
+reported as successful only after all IDs in the reported group have been
+archived. This preserves those exact-name duplicates without renaming or
+deduplicating anything in Drive. The internal collision archive is hidden from
+ordinary restore browsing and remains available for controlled recovery through
+its manifests and per-ID object trees.
 
 ## Version retention
 

@@ -77,7 +77,9 @@ else
   fail "backup engine never sources a symlinked profile"
 fi
 
-/usr/bin/trash "$PROFILE_DIR" >/dev/null 2>&1
+# Keep the original directory recoverable inside the disposable test tree. The
+# sandbox used by CI may deny access to the account's real macOS Trash.
+/bin/mv "$PROFILE_DIR" "$TEST_HOME/profile-dir-before-symlink"
 outside_profiles="$TEST_HOME/outside-profiles"
 /bin/mkdir -p "$outside_profiles"
 /usr/bin/printf '%s\n' \

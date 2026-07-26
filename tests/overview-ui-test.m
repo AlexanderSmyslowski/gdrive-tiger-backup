@@ -9,6 +9,8 @@
 @property(nonatomic) BOOL launchSucceeds;
 @property(nonatomic) BOOL sawImmediatePreparingState;
 @property(nonatomic) NSInteger progressHandoffCalls;
+@property(nonatomic) NSInteger overviewShowCalls;
+@property(nonatomic) NSInteger dockRestoreCalls;
 @end
 
 @implementation OverviewLaunchDelegate
@@ -27,6 +29,14 @@
 
 - (void)handoffOverviewDockPresenceToManualProgress {
     self.progressHandoffCalls++;
+}
+
+- (void)showOverviewWindow {
+    self.overviewShowCalls++;
+}
+
+- (void)restoreWindowFromDock {
+    self.dockRestoreCalls++;
 }
 
 @end
@@ -140,7 +150,53 @@ int main(void) {
                 @[@"app", @"/tmp/sentinel", @"/tmp/progress", @"/tmp/state"]);
         }
         Assert(manualProgressComesForward && scheduledProgressStaysPassive,
-               @"only explicitly foregrounded progress windows activate on launch");
+               @"only an explicit progress request receives a Dock presence");
+
+        SEL collectionSelector = NSSelectorFromString(@"statusWindowCollectionBehavior");
+        NSWindowCollectionBehavior progressCollectionBehavior = NSWindowCollectionBehaviorDefault;
+        if ([delegate respondsToSelector:collectionSelector]) {
+            typedef NSWindowCollectionBehavior (*CollectionMethod)(id, SEL);
+            CollectionMethod method = (CollectionMethod)[delegate methodForSelector:collectionSelector];
+            progressCollectionBehavior = method(delegate, collectionSelector);
+        }
+        delegate.confirmMode = YES;
+        NSWindowCollectionBehavior passiveConfirmationBehavior = NSWindowCollectionBehaviorDefault;
+        if ([delegate respondsToSelector:collectionSelector]) {
+            typedef NSWindowCollectionBehavior (*CollectionMethod)(id, SEL);
+            CollectionMethod method = (CollectionMethod)[delegate methodForSelector:collectionSelector];
+            passiveConfirmationBehavior = method(delegate, collectionSelector);
+        }
+        delegate.confirmMode = NO;
+        NSWindowCollectionBehavior fullscreenIntrusionFlags =
+            NSWindowCollectionBehaviorCanJoinAllSpaces |
+            NSWindowCollectionBehaviorFullScreenAuxiliary;
+        Assert([delegate respondsToSelector:collectionSelector] &&
+               (progressCollectionBehavior & fullscreenIntrusionFlags) == 0 &&
+               (passiveConfirmationBehavior & fullscreenIntrusionFlags) == 0 &&
+               (progressCollectionBehavior & NSWindowCollectionBehaviorFullScreenNone) != 0,
+               @"background progress and confirmation windows cannot enter another app's fullscreen Space");
+
+        SEL showProgressSelector = NSSelectorFromString(@"shouldShowProgressForTrigger:fromVisibleWindow:");
+        BOOL visibleOverviewShowsProgress = NO;
+        BOOL hiddenOverviewStaysHeadless = NO;
+        BOOL menuBarStaysHeadless = NO;
+        BOOL automaticTriggerStaysHeadless = NO;
+        if ([delegate respondsToSelector:showProgressSelector]) {
+            typedef BOOL (*ShowProgressMethod)(id, SEL, NSString *, BOOL);
+            ShowProgressMethod method = (ShowProgressMethod)[delegate methodForSelector:showProgressSelector];
+            delegate.overviewMode = YES;
+            delegate.menubarOnlyMode = NO;
+            visibleOverviewShowsProgress = method(delegate, showProgressSelector, @"manual", YES);
+            hiddenOverviewStaysHeadless = !method(delegate, showProgressSelector, @"manual", NO);
+            delegate.menubarOnlyMode = YES;
+            menuBarStaysHeadless = !method(delegate, showProgressSelector, @"manual", YES);
+            automaticTriggerStaysHeadless = !method(delegate, showProgressSelector, @"mount", YES);
+            delegate.overviewMode = NO;
+            delegate.menubarOnlyMode = NO;
+        }
+        Assert(visibleOverviewShowsProgress && hiddenOverviewStaysHeadless &&
+               menuBarStaysHeadless && automaticTriggerStaysHeadless,
+               @"only a visible window's direct manual action requests progress UI");
 
         OverviewLaunchDelegate *guardedLaunch = [[OverviewLaunchDelegate alloc] init];
         guardedLaunch.language = @"en";
@@ -303,6 +359,27 @@ int main(void) {
                [[menuTitles componentsJoinedByString:@" "] containsString:@"/Volumes/Archive"] &&
                [[menuTitles componentsJoinedByString:@" "] containsString:@"812 GB"],
                @"menu bar exposes the same status, schedule, target, storage, and actions");
+
+        OverviewLaunchDelegate *reopenDelegate = [[OverviewLaunchDelegate alloc] init];
+        reopenDelegate.overviewMode = YES;
+        reopenDelegate.menubarOnlyMode = YES;
+        BOOL handledReopen = [reopenDelegate applicationShouldHandleReopen:NSApp
+                                                          hasVisibleWindows:NO];
+        Assert(!handledReopen && reopenDelegate.overviewShowCalls == 1,
+               @"Finder reopen promotes a menu-bar-only controller to the visible overview");
+
+        OverviewLaunchDelegate *hiddenOverviewDelegate = [[OverviewLaunchDelegate alloc] init];
+        hiddenOverviewDelegate.overviewMode = YES;
+        hiddenOverviewDelegate.window = [[NSWindow alloc]
+            initWithContentRect:NSMakeRect(0, 0, 100, 100)
+                      styleMask:NSWindowStyleMaskTitled
+                        backing:NSBackingStoreBuffered
+                          defer:NO];
+        BOOL handledHiddenOverview = [hiddenOverviewDelegate applicationShouldHandleReopen:NSApp
+                                                                          hasVisibleWindows:NO];
+        Assert(!handledHiddenOverview && hiddenOverviewDelegate.overviewShowCalls == 1 &&
+               hiddenOverviewDelegate.dockRestoreCalls == 0,
+               @"Finder reopen restores a hidden overview with normal Dock presence");
 
         NSMenu *pausedMenu = [delegate statusMenuForSnapshot:pausedSnapshot];
         Assert([pausedMenu itemWithTitle:T(@"en", @"resumeAutomaticBackups")] != nil,

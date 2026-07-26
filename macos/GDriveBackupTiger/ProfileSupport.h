@@ -8,6 +8,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, copy, readonly, nullable) NSString *activeProfileID;
 
 - (instancetype)initWithConfigDirectory:(NSString *)configDirectory;
+- (instancetype)initWithConfigDirectory:(NSString *)configDirectory
+                             fileManager:(NSFileManager *)fileManager;
 - (BOOL)migrateLegacyConfigAtPath:(NSString *)legacyPath
                             error:(NSError * _Nullable * _Nullable)error;
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)profiles;

@@ -9,7 +9,7 @@ check_contains() {
   local file="$1"
   local expected="$2"
   local description="$3"
-  if /usr/bin/grep -Fq "$expected" "$file"; then
+  if /usr/bin/grep -Fq -- "$expected" "$file"; then
     printf 'ok - %s\n' "$description"
   else
     printf 'not ok - %s\n' "$description"
@@ -32,12 +32,31 @@ check_contains "$ROOT/install.sh" "GDRIVE_BACKUP_ENCRYPTION=none" \
   "source installer keeps encryption opt-in"
 check_contains "$ROOT/install.sh" "GDRIVE_BACKUP_PAUSED=0" \
   "source installer enables automatic backups explicitly"
+check_contains "$ROOT/install.sh" "GDRIVE_BACKUP_NOTIFY_FAILURES=1" \
+  "source installer enables automatic-backup notifications explicitly"
+check_contains "$ROOT/install.sh" "-framework UserNotifications" \
+  "source installer links the macOS notification framework"
 check_contains "$ROOT/packaging/scripts/postinstall" "GDRIVE_BACKUP_RETENTION=1" \
   "package installer enables retention explicitly"
 check_contains "$ROOT/packaging/scripts/postinstall" "GDRIVE_BACKUP_ENCRYPTION=none" \
   "package installer keeps encryption opt-in"
 check_contains "$ROOT/packaging/scripts/postinstall" "GDRIVE_BACKUP_PAUSED=0" \
   "package installer enables automatic backups explicitly"
+check_contains "$ROOT/packaging/scripts/postinstall" "GDRIVE_BACKUP_NOTIFY_FAILURES=1" \
+  "package installer enables automatic-backup notifications explicitly"
+
+for source in \
+  ProfileSupport.m \
+  NotificationSupport.m \
+  SetupHealthSupport.m \
+  RestoreSupport.m \
+  RestoreBrowserView.m \
+  DiagnosticsSupport.m \
+  DiagnosticsView.m \
+  UpdateSupport.m; do
+  check_contains "$ROOT/install.sh" "macos/GDriveBackupTiger/$source" \
+    "source installer links $source"
+done
 
 if (( failures > 0 )); then
   printf '%s release metadata check(s) failed.\n' "$failures"

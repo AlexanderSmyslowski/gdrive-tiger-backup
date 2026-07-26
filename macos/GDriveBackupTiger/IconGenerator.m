@@ -55,13 +55,37 @@ static NSImage *CreateIcon(CGFloat size) {
 }
 
 static BOOL WritePNG(NSImage *image, NSString *path) {
-    NSRect rect = NSMakeRect(0, 0, image.size.width, image.size.height);
-    CGImageRef cgImage = [image CGImageForProposedRect:&rect context:nil hints:nil];
-    if (!cgImage) {
+    NSInteger pixelWidth = (NSInteger)image.size.width;
+    NSInteger pixelHeight = (NSInteger)image.size.height;
+    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc]
+        initWithBitmapDataPlanes:NULL
+                      pixelsWide:pixelWidth
+                      pixelsHigh:pixelHeight
+                   bitsPerSample:8
+                 samplesPerPixel:4
+                        hasAlpha:YES
+                        isPlanar:NO
+                  colorSpaceName:NSCalibratedRGBColorSpace
+                     bytesPerRow:0
+                    bitsPerPixel:0];
+    if (!rep) {
         return NO;
     }
 
-    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithCGImage:cgImage];
+    // lockFocus follows the display's backing scale. Re-rendering into an
+    // explicit one-pixel-per-point bitmap keeps actool's required dimensions
+    // stable on both Retina and non-Retina build machines.
+    rep.size = NSMakeSize(pixelWidth, pixelHeight);
+    NSGraphicsContext *context = [NSGraphicsContext graphicsContextWithBitmapImageRep:rep];
+    [NSGraphicsContext saveGraphicsState];
+    [NSGraphicsContext setCurrentContext:context];
+    [image drawInRect:NSMakeRect(0, 0, pixelWidth, pixelHeight)
+             fromRect:NSZeroRect
+            operation:NSCompositingOperationCopy
+             fraction:1.0];
+    [context flushGraphics];
+    [NSGraphicsContext restoreGraphicsState];
+
     NSData *data = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
     return [data writeToFile:path atomically:YES];
 }

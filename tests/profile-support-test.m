@@ -20,6 +20,35 @@ static NSUInteger PermissionsAtPath(NSString *path) {
     return [attributes[NSFilePosixPermissions] unsignedIntegerValue] & 0777;
 }
 
+@interface GDTQuarantineFileManager : NSFileManager
+@property(nonatomic, copy) NSString *quarantineRoot;
+@end
+
+@implementation GDTQuarantineFileManager
+- (BOOL)trashItemAtURL:(NSURL *)url
+      resultingItemURL:(NSURL **)outResultingURL
+                 error:(NSError **)error {
+    if (!self.quarantineRoot.length) {
+        self.quarantineRoot = [NSTemporaryDirectory() stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"gdrive-profile-test-trash-%@",
+                                       NSUUID.UUID.UUIDString]];
+    }
+    if (![self createDirectoryAtPath:self.quarantineRoot
+          withIntermediateDirectories:YES attributes:nil error:error]) {
+        return NO;
+    }
+    NSURL *destination = [NSURL fileURLWithPath:[self.quarantineRoot
+        stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
+    if (![self moveItemAtURL:url toURL:destination error:error]) {
+        return NO;
+    }
+    if (outResultingURL) {
+        *outResultingURL = destination;
+    }
+    return YES;
+}
+@end
+
 int main(void) {
     @autoreleasepool {
         NSString *root = [NSTemporaryDirectory() stringByAppendingPathComponent:
@@ -38,7 +67,9 @@ int main(void) {
         BOOL legacyWritten = GDTWriteConfigUpdatesAtPath(legacyValues, legacy, &error);
         NSData *legacyBefore = [NSData dataWithContentsOfFile:legacy];
 
-        GDTProfileStore *store = [[GDTProfileStore alloc] initWithConfigDirectory:root];
+        GDTQuarantineFileManager *fileManager = [[GDTQuarantineFileManager alloc] init];
+        GDTProfileStore *store = [[GDTProfileStore alloc]
+            initWithConfigDirectory:root fileManager:fileManager];
         BOOL migrated = [store migrateLegacyConfigAtPath:legacy error:&error];
         NSArray<NSDictionary<NSString *, NSString *> *> *profiles = [store profiles];
         NSString *defaultPath = [store configPathForProfileID:@"default"];
@@ -106,15 +137,15 @@ int main(void) {
         NSString *outsidePointer = [root stringByAppendingPathComponent:@"outside-active"];
         [@"default\n" writeToFile:outsidePointer atomically:YES
                          encoding:NSUTF8StringEncoding error:nil];
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:activePointer]
-                                    resultingItemURL:nil error:nil];
-        [NSFileManager.defaultManager createSymbolicLinkAtPath:activePointer
-                                          withDestinationPath:outsidePointer error:nil];
+        [fileManager trashItemAtURL:[NSURL fileURLWithPath:activePointer]
+                   resultingItemURL:nil error:nil];
+        [fileManager createSymbolicLinkAtPath:activePointer
+                          withDestinationPath:outsidePointer error:nil];
         Assert(store.activeProfileID == nil &&
                ![store selectProfileID:@"default" error:nil],
                @"a symlinked active pointer is rejected instead of followed");
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:activePointer]
-                                    resultingItemURL:nil error:nil];
+        [fileManager trashItemAtURL:[NSURL fileURLWithPath:activePointer]
+                   resultingItemURL:nil error:nil];
         [store selectProfileID:createdID error:nil];
 
         Assert(![store deleteProfileID:createdID error:nil] &&
@@ -135,17 +166,17 @@ int main(void) {
             @"GDRIVE_BACKUP_PROFILE_ID": @"default",
             @"GDRIVE_BACKUP_PROFILE_NAME": @"Outside"
         }, [outsideProfiles stringByAppendingPathComponent:@"default.conf"], nil);
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:profilesDirectory]
-                                    resultingItemURL:nil error:nil];
-        [NSFileManager.defaultManager createSymbolicLinkAtPath:profilesDirectory
-                                          withDestinationPath:outsideProfiles error:nil];
+        [fileManager trashItemAtURL:[NSURL fileURLWithPath:profilesDirectory]
+                   resultingItemURL:nil error:nil];
+        [fileManager createSymbolicLinkAtPath:profilesDirectory
+                          withDestinationPath:outsideProfiles error:nil];
         Assert(store.profiles.count == 0 && store.activeProfileID == nil,
                @"a symlinked profile directory cannot become a trusted store");
 
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:root]
-                                    resultingItemURL:nil error:nil];
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:outside]
-                                    resultingItemURL:nil error:nil];
+        [fileManager trashItemAtURL:[NSURL fileURLWithPath:root]
+                   resultingItemURL:nil error:nil];
+        [fileManager trashItemAtURL:[NSURL fileURLWithPath:outside]
+                   resultingItemURL:nil error:nil];
     }
 
     if (failures > 0) {

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Open the visible overview when Finder reopens the already-running menu bar controller.
+- Let saved launchd schedules run unattended after the backup engine verifies the exact configured destination.
+- Link every required application source file from the source installer so local upgrades build successfully.
+- Add opt-out macOS notifications for failed automatic backups and daily 20:00 runs still missing at 21:00, deduplicated per profile and run.
+- Keep the menu bar warning active until a newer successful backup clears the reported problem.
+- Read each durable run summary once per refresh so the overview and notification watchdog evaluate the same state.
+- Preserve a per-profile last-success timestamp so later manual failures cannot make an already successful daily run appear missing.
+- Run scheduled, mount-triggered, and menu-bar-only backups without opening a progress window.
+- Keep progress and passive confirmation windows out of unrelated fullscreen Spaces, avoid forced front ordering, and never reshow hidden progress at completion.
+- Allow foreground confirmation only when a manual backup was requested from an already visible app window.
+- Apply a reversible, manifest-backed NAS name codec for exact `.bin` directories and reserved codec-like names that some network file systems reject.
+- Present codec-backed files and folders under their original logical names in restore browsing, and reject malformed or mismatched physical layers instead of guessing.
+- Detect exact-name Google Drive collisions that rclone would otherwise ignore, including duplicates at a Drive root, preserve every verified provider ID in a separate internal archive, and fail the run if that archive is incomplete.
+- Render app icons into fixed-size bitmap targets so Retina build hosts produce valid `AppIcon.icns` and asset catalogs, covered by an isolated signed Universal 2 build test.
+- Document that each run checks the source while transferring only new or changed files, and that Google Docs, Sheets, and Slides are Office exports rather than copies of Drive's native revision history.
+
 ## v2.3.2 - 2026-07-12
 
 - Let the persistent overview controller yield its Dock presence after a successful manual start so the foreground progress window is the app’s only Dock icon.

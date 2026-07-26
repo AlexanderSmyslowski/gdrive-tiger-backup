@@ -28,6 +28,22 @@ static NSString *RunBashAndReadValue(NSString *configPath, NSString *key) {
     return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"";
 }
 
+static void QuarantinePath(NSString *path) {
+    if (![NSFileManager.defaultManager fileExistsAtPath:path]) {
+        return;
+    }
+    NSString *destination = [NSTemporaryDirectory() stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"gdrive-config-test-trash-%@",
+                                   NSUUID.UUID.UUIDString]];
+    NSError *error = nil;
+    if (![NSFileManager.defaultManager moveItemAtPath:path
+                                               toPath:destination
+                                                error:&error]) {
+        NSLog(@"FAIL: could not quarantine test fixture: %@", error.localizedDescription);
+        exit(1);
+    }
+}
+
 int main(void) {
     @autoreleasepool {
         NSString *overridePath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"gdrive-config-override"];
@@ -64,14 +80,12 @@ int main(void) {
         [@"default\n" writeToFile:outsideActivePointer atomically:YES
                          encoding:NSUTF8StringEncoding error:nil];
         NSString *activePointer = [profileRoot stringByAppendingPathComponent:@"active-profile"];
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:activePointer]
-                                    resultingItemURL:nil error:nil];
+        QuarantinePath(activePointer);
         [NSFileManager.defaultManager createSymbolicLinkAtPath:activePointer
                                           withDestinationPath:outsideActivePointer error:nil];
         AssertEqual(GDTConfigPathForConfigDirectory(profileRoot), legacyProfileConfig,
                     @"a symlinked active profile pointer is never trusted");
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:activePointer]
-                                    resultingItemURL:nil error:nil];
+        QuarantinePath(activePointer);
         [@"default\n" writeToFile:activePointer atomically:YES
                          encoding:NSUTF8StringEncoding error:nil];
         NSString *outsideProfiles = [profileRoot stringByAppendingPathComponent:@"outside-profiles"];
@@ -81,14 +95,12 @@ int main(void) {
             @"GDRIVE_BACKUP_PROFILE_ID": @"default",
             @"GDRIVE_BACKUP_PROFILE_NAME": @"Default"
         }, [outsideProfiles stringByAppendingPathComponent:@"default.conf"], nil);
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:profileDirectory]
-                                    resultingItemURL:nil error:nil];
+        QuarantinePath(profileDirectory);
         [NSFileManager.defaultManager createSymbolicLinkAtPath:profileDirectory
                                           withDestinationPath:outsideProfiles error:nil];
         AssertEqual(GDTConfigPathForConfigDirectory(profileRoot), legacyProfileConfig,
                     @"a symlinked profile directory is never trusted");
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:profileRoot]
-                                    resultingItemURL:nil error:nil];
+        QuarantinePath(profileRoot);
 
         NSString *roundTripValue = @"Client's \\Archive\\2026 $(untouched)";
         NSString *quoted = GDTShellQuote(roundTripValue);
@@ -168,9 +180,7 @@ int main(void) {
             return 1;
         }
 
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:directory]
-                                    resultingItemURL:nil
-                                               error:nil];
+        QuarantinePath(directory);
 
         NSLog(@"PASS: ConfigSupport quoting and read/write roundtrips");
     }

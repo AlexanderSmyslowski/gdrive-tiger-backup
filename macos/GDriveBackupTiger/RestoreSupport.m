@@ -3,6 +3,10 @@
 #include <limits.h>
 
 static NSString *const GDTRestoreErrorDomain = @"com.commcats.gdrivebackup.restore";
+static NSString *const GDTNASNameCodecManifestName = @".gdrive-name-codec";
+static NSString *const GDTCollisionArchiveDirectoryName = @".gdrive-collisions";
+static NSString *const GDTNASNameCodecPrefix = @"__gdt0__";
+static NSString *const GDTNASNameCodecDotBinPrefix = @"__gdt0__dotbin_";
 
 typedef NS_ENUM(NSInteger, GDTRestoreErrorCode) {
     GDTRestoreErrorUnsafePath = 1,
@@ -10,6 +14,12 @@ typedef NS_ENUM(NSInteger, GDTRestoreErrorCode) {
     GDTRestoreErrorUnavailableDestination = 3,
     GDTRestoreErrorIntegrityFailure = 4,
     GDTRestoreErrorCopyFailure = 5
+};
+
+typedef NS_ENUM(NSUInteger, GDTNASNameCodecState) {
+    GDTNASNameCodecDisabled = 0,
+    GDTNASNameCodecEnabled = 1,
+    GDTNASNameCodecInvalid = 2
 };
 
 static void GDTSetRestoreError(NSError **error, GDTRestoreErrorCode code, NSString *description) {
@@ -152,6 +162,166 @@ static BOOL GDTURLIsSafeRegularFile(NSURL *url) {
     return isRegularFile.boolValue;
 }
 
+static NSString *GDTNASNameCodecManifestContents(void) {
+    return @"protocol=1\n"
+            "codec=nas-path-v1\n"
+            "prefix=__gdt0__\n"
+            "dot_bin_prefix=__gdt0__dotbin_\n"
+            "current_layers=1\n"
+            "version_layers=2\n";
+}
+
+static GDTNASNameCodecState GDTNASNameCodecStateForRoot(
+    NSURL *rootURL,
+    NSFileManager *fileManager
+) {
+    NSURL *manifestURL = [rootURL URLByAppendingPathComponent:GDTNASNameCodecManifestName];
+    if (![fileManager fileExistsAtPath:manifestURL.path]) {
+        return GDTNASNameCodecDisabled;
+    }
+    if (!GDTURLIsSafeRegularFile(manifestURL)) {
+        return GDTNASNameCodecInvalid;
+    }
+    NSString *contents = [NSString stringWithContentsOfURL:manifestURL
+                                                  encoding:NSUTF8StringEncoding
+                                                     error:nil];
+    return [contents isEqualToString:GDTNASNameCodecManifestContents()]
+        ? GDTNASNameCodecEnabled : GDTNASNameCodecInvalid;
+}
+
+static BOOL GDTNASNameHasCodecPrefix(NSString *name) {
+    return [name rangeOfString:GDTNASNameCodecPrefix
+                       options:(NSAnchoredSearch | NSCaseInsensitiveSearch)].location
+        != NSNotFound;
+}
+
+static NSDictionary<NSString *, NSString *> *GDTNASDotBinNameToCode(void) {
+    static NSDictionary<NSString *, NSString *> *mapping;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        mapping = @{
+            @".bin": @"000", @".biN": @"001", @".bIn": @"010", @".bIN": @"011",
+            @".Bin": @"100", @".BiN": @"101", @".BIn": @"110", @".BIN": @"111"
+        };
+    });
+    return mapping;
+}
+
+static NSDictionary<NSString *, NSString *> *GDTNASDotBinCodeToName(void) {
+    static NSDictionary<NSString *, NSString *> *mapping;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        mapping = @{
+            @"000": @".bin", @"001": @".biN", @"010": @".bIn", @"011": @".bIN",
+            @"100": @".Bin", @"101": @".BiN", @"110": @".BIn", @"111": @".BIN"
+        };
+    });
+    return mapping;
+}
+
+static NSString *GDTNASEncodeNameOnce(NSString *name, BOOL isDirectory) {
+    if (GDTNASNameHasCodecPrefix(name)) {
+        return [GDTNASNameCodecPrefix stringByAppendingString:name];
+    }
+    NSString *dotBinCode = isDirectory ? GDTNASDotBinNameToCode()[name] : nil;
+    if (dotBinCode) {
+        return [GDTNASNameCodecDotBinPrefix stringByAppendingString:dotBinCode];
+    }
+    return name;
+}
+
+static NSString * _Nullable GDTNASDecodeNameOnce(NSString *name, BOOL isDirectory) {
+    if (isDirectory && [name hasPrefix:GDTNASNameCodecDotBinPrefix]) {
+        NSString *code = [name substringFromIndex:GDTNASNameCodecDotBinPrefix.length];
+        NSString *dotBinName = GDTNASDotBinCodeToName()[code];
+        if (dotBinName) {
+            return dotBinName;
+        }
+    }
+    if (GDTNASNameHasCodecPrefix(name)) {
+        NSString *remainder = [name substringFromIndex:GDTNASNameCodecPrefix.length];
+        if (GDTNASNameHasCodecPrefix(remainder)) {
+            return remainder;
+        }
+        return nil;
+    }
+    return name;
+}
+
+static NSUInteger GDTNASRawAreaComponentCount(NSArray<NSString *> *components) {
+    if (!components.count) {
+        return 0;
+    }
+    NSString *area = components.firstObject;
+    if ([area isEqualToString:@"My Drive"] ||
+        [area isEqualToString:@"Shared with me"]) {
+        return 1;
+    }
+    if ([area isEqualToString:@"Shared Drives"]) {
+        return 2;
+    }
+    // Unknown top-level entries are not produced by a transformed rclone copy.
+    return components.count;
+}
+
+static BOOL GDTNASChildrenUseCodec(NSString *logicalParentPath) {
+    NSArray<NSString *> *components = logicalParentPath.pathComponents;
+    if (!components.count) {
+        return NO;
+    }
+    NSString *area = components.firstObject;
+    if ([area isEqualToString:@"My Drive"] ||
+        [area isEqualToString:@"Shared with me"]) {
+        return components.count >= 1;
+    }
+    if ([area isEqualToString:@"Shared Drives"]) {
+        return components.count >= 2;
+    }
+    return NO;
+}
+
+static NSString *GDTNASPhysicalRelativePath(NSString *logicalPath,
+                                             BOOL finalComponentIsDirectory,
+                                             NSUInteger layers) {
+    if (!logicalPath.length || layers == 0) {
+        return logicalPath ?: @"";
+    }
+    NSArray<NSString *> *components = logicalPath.pathComponents;
+    NSUInteger rawComponentCount = GDTNASRawAreaComponentCount(components);
+    NSMutableArray<NSString *> *encoded = [NSMutableArray arrayWithCapacity:components.count];
+    for (NSUInteger index = 0; index < components.count; index++) {
+        NSString *component = components[index];
+        BOOL isDirectory = finalComponentIsDirectory || index + 1 < components.count;
+        if (index >= rawComponentCount) {
+            for (NSUInteger layer = 0; layer < layers; layer++) {
+                component = GDTNASEncodeNameOnce(component, isDirectory);
+            }
+        }
+        [encoded addObject:component];
+    }
+    return [encoded componentsJoinedByString:@"/"];
+}
+
+static NSString * _Nullable GDTNASLogicalName(NSString *physicalName,
+                                               BOOL isDirectory,
+                                               NSUInteger layers) {
+    NSString *logicalName = physicalName;
+    for (NSUInteger layer = 0; layer < layers; layer++) {
+        logicalName = GDTNASDecodeNameOnce(logicalName, isDirectory);
+        if (!logicalName) {
+            return nil;
+        }
+    }
+    NSString *roundTrip = logicalName;
+    for (NSUInteger layer = 0; layer < layers; layer++) {
+        roundTrip = GDTNASEncodeNameOnce(roundTrip, isDirectory);
+    }
+    if (![roundTrip isEqualToString:physicalName]) {
+        return nil;
+    }
+    return logicalName;
+}
+
 static NSDate *GDTRunDate(NSString *runID) {
     static NSRegularExpression *expression;
     static NSDateFormatter *formatter;
@@ -204,6 +374,8 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
 @property(nonatomic, strong) NSURL *backupRootURL;
 @property(nonatomic, strong) NSFileManager *fileManager;
 @property(nonatomic) BOOL backupRootIsSymbolicLink;
+@property(nonatomic) GDTNASNameCodecState nameCodecState;
+@property(nonatomic, copy) NSString *versionsSubdirectory;
 @end
 
 @interface GDTCryptRestoreCatalog ()
@@ -348,7 +520,11 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
         }
         for (NSDictionary *item in items ?: @[]) {
             NSString *name = item[@"Name"];
-            if (!relativePath.length && [name isEqualToString:self.versionsSubdirectory]) continue;
+            if (!relativePath.length &&
+                ([name isEqualToString:self.versionsSubdirectory] ||
+                 [name isEqualToString:GDTCollisionArchiveDirectoryName])) {
+                continue;
+            }
             BOOL isDirectory = [item[@"IsDir"] boolValue];
             NSString *kind = isDirectory ? @"directory" : @"file";
             NSString *childPath = relativePath.length
@@ -422,6 +598,7 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
 @interface GDTCryptRestoreCopier ()
 @property(nonatomic, copy) NSString *remoteName;
 @property(nonatomic, strong) NSURL *backupRootURL;
+@property(nonatomic, copy) NSString *versionsSubdirectory;
 @property(nonatomic, strong) NSFileManager *fileManager;
 @property(nonatomic, copy) GDTRestoreCommandRunner commandRunner;
 @end
@@ -432,10 +609,23 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
                        backupRootURL:(NSURL *)backupRootURL
                          fileManager:(NSFileManager *)fileManager
                        commandRunner:(GDTRestoreCommandRunner)commandRunner {
+    return [self initWithRemoteName:remoteName
+                       backupRootURL:backupRootURL
+               versionsSubdirectory:@".gdrive-versions"
+                         fileManager:fileManager
+                       commandRunner:commandRunner];
+}
+
+- (instancetype)initWithRemoteName:(NSString *)remoteName
+                       backupRootURL:(NSURL *)backupRootURL
+               versionsSubdirectory:(NSString *)versionsSubdirectory
+                         fileManager:(NSFileManager *)fileManager
+                       commandRunner:(GDTRestoreCommandRunner)commandRunner {
     self = [super init];
     if (!self) return nil;
     _remoteName = [remoteName copy] ?: @"";
     _backupRootURL = GDTCanonicalRootURL(backupRootURL);
+    _versionsSubdirectory = [versionsSubdirectory copy] ?: @"";
     _fileManager = fileManager;
     _commandRunner = [commandRunner copy];
     return self;
@@ -444,9 +634,21 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
 + (instancetype)productionCopierWithRemoteName:(NSString *)remoteName
                                    backupRootURL:(NSURL *)backupRootURL
                                      fileManager:(NSFileManager *)fileManager {
-    return [[self alloc] initWithRemoteName:remoteName backupRootURL:backupRootURL
-                                fileManager:fileManager
-                              commandRunner:^NSDictionary *(NSString *command, NSArray *arguments) {
+    return [self productionCopierWithRemoteName:remoteName
+                                    backupRootURL:backupRootURL
+                            versionsSubdirectory:@".gdrive-versions"
+                                      fileManager:fileManager];
+}
+
++ (instancetype)productionCopierWithRemoteName:(NSString *)remoteName
+                                    backupRootURL:(NSURL *)backupRootURL
+                            versionsSubdirectory:(NSString *)versionsSubdirectory
+                                      fileManager:(NSFileManager *)fileManager {
+    return [[self alloc] initWithRemoteName:remoteName
+                               backupRootURL:backupRootURL
+                       versionsSubdirectory:versionsSubdirectory
+                                 fileManager:fileManager
+                               commandRunner:^NSDictionary *(NSString *command, NSArray *arguments) {
         return GDTRunRestoreCommand(command, arguments);
     }];
 }
@@ -454,14 +656,25 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
 - (BOOL)remotePathIsSafe:(NSString *)remotePath name:(NSString *)name {
     NSString *prefix = [self.remoteName stringByAppendingString:@":"];
     if (!GDTIsSafeRemoteName(self.remoteName) || ![remotePath hasPrefix:prefix] ||
-        !GDTIsSafePathComponent(name)) return NO;
+        !GDTIsSafePathComponent(name) ||
+        !GDTIsSafeRelativePath(self.versionsSubdirectory, NO)) {
+        return NO;
+    }
     NSString *relative = [remotePath substringFromIndex:prefix.length];
     if (!GDTIsSafeRelativePath(relative, NO) || ![relative.lastPathComponent isEqualToString:name]) return NO;
     NSArray<NSString *> *components = relative.pathComponents;
+    NSArray<NSString *> *versionsComponents = self.versionsSubdirectory.pathComponents;
     NSSet *areas = [NSSet setWithArray:@[@"My Drive", @"Shared with me", @"Shared Drives"]];
-    if ([components.firstObject isEqualToString:@".gdrive-versions"]) {
-        return components.count >= 4 && GDTRunDate(components[1]) != nil &&
-            [areas containsObject:components[2]];
+    BOOL isVersionPath = components.count >= versionsComponents.count;
+    for (NSUInteger index = 0; isVersionPath && index < versionsComponents.count; index++) {
+        isVersionPath = [components[index] isEqualToString:versionsComponents[index]];
+    }
+    if (isVersionPath) {
+        NSUInteger runIndex = versionsComponents.count;
+        NSUInteger areaIndex = runIndex + 1;
+        return components.count >= versionsComponents.count + 3 &&
+            GDTRunDate(components[runIndex]) != nil &&
+            [areas containsObject:components[areaIndex]];
     }
     return [areas containsObject:components.firstObject];
 }
@@ -533,12 +746,19 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
         return nil;
     }
 
-    NSURL *temporaryDirectory = [directoryURL URLByAppendingPathComponent:
-        [@".gdrive-restore-" stringByAppendingString:NSUUID.UUID.UUIDString] isDirectory:YES];
     NSError *fileError = nil;
-    if (![self.fileManager createDirectoryAtURL:temporaryDirectory
-                    withIntermediateDirectories:NO attributes:@{NSFilePosixPermissions: @(0700)}
-                                         error:&fileError]) {
+    NSURL *temporaryDirectory = [self.fileManager
+        URLForDirectory:NSItemReplacementDirectory
+               inDomain:NSUserDomainMask
+      appropriateForURL:directoryURL
+                 create:YES
+                  error:&fileError];
+    if (!temporaryDirectory ||
+        ![self.fileManager setAttributes:@{NSFilePosixPermissions: @(0700)}
+                            ofItemAtPath:temporaryDirectory.path error:&fileError]) {
+        if (temporaryDirectory) {
+            [self trashTemporaryURL:temporaryDirectory];
+        }
         if (error) *error = fileError;
         return nil;
     }
@@ -601,6 +821,14 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
 
 - (instancetype)initWithBackupRootURL:(NSURL *)backupRootURL
                            fileManager:(NSFileManager *)fileManager {
+    return [self initWithBackupRootURL:backupRootURL
+                           fileManager:fileManager
+                  versionsSubdirectory:@".gdrive-versions"];
+}
+
+- (instancetype)initWithBackupRootURL:(NSURL *)backupRootURL
+                           fileManager:(NSFileManager *)fileManager
+                  versionsSubdirectory:(NSString *)versionsSubdirectory {
     self = [super init];
     if (!self) {
         return nil;
@@ -608,11 +836,18 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
     _backupRootIsSymbolicLink = GDTURLIsSymbolicLink(backupRootURL);
     _backupRootURL = GDTCanonicalRootURL(backupRootURL);
     _fileManager = fileManager;
+    _nameCodecState = GDTNASNameCodecStateForRoot(_backupRootURL, fileManager);
+    _versionsSubdirectory = GDTIsSafeRelativePath(versionsSubdirectory, NO)
+        ? [versionsSubdirectory copy] : @"";
     return self;
 }
 
 - (NSArray<NSDictionary<NSString *, id> *> *)versionRunRecords {
-    NSURL *versionsURL = [self.backupRootURL URLByAppendingPathComponent:@".gdrive-versions"
+    if (!self.versionsSubdirectory.length) {
+        return @[];
+    }
+    NSURL *versionsURL = [self.backupRootURL
+        URLByAppendingPathComponent:self.versionsSubdirectory
                                                              isDirectory:YES];
     if (!GDTURLIsSafeDirectory(versionsURL)) {
         return @[];
@@ -657,12 +892,21 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
     return records;
 }
 
-- (NSArray<NSURL *> *)containerURLs {
-    NSMutableArray<NSURL *> *urls = [NSMutableArray arrayWithObject:self.backupRootURL];
+- (NSArray<NSDictionary<NSString *, id> *> *)containerRecords {
+    NSUInteger currentLayers = self.nameCodecState == GDTNASNameCodecEnabled ? 1 : 0;
+    NSUInteger versionLayers = self.nameCodecState == GDTNASNameCodecEnabled ? 2 : 0;
+    NSMutableArray<NSDictionary<NSString *, id> *> *records =
+        [NSMutableArray arrayWithObject:@{
+            @"url": self.backupRootURL,
+            @"codecLayers": @(currentLayers)
+        }];
     for (NSDictionary<NSString *, id> *record in [self versionRunRecords]) {
-        [urls addObject:record[@"url"]];
+        [records addObject:@{
+            @"url": record[@"url"],
+            @"codecLayers": @(versionLayers)
+        }];
     }
-    return urls;
+    return records;
 }
 
 - (NSArray<NSDictionary<NSString *, id> *> *)childrenAtRelativePath:(NSString *)relativePath
@@ -670,6 +914,11 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
     if (self.backupRootIsSymbolicLink) {
         GDTSetRestoreError(error, GDTRestoreErrorUnsafePath,
                            @"The configured backup root is a symbolic link.");
+        return @[];
+    }
+    if (self.nameCodecState == GDTNASNameCodecInvalid) {
+        GDTSetRestoreError(error, GDTRestoreErrorUnavailableSource,
+                           @"The NAS backup name codec is invalid or unsupported.");
         return @[];
     }
     if (!GDTIsSafeRelativePath(relativePath, YES)) {
@@ -680,9 +929,14 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
 
     NSMutableDictionary<NSString *, NSMutableDictionary<NSString *, id> *> *entries =
         [NSMutableDictionary dictionary];
-    for (NSURL *containerURL in [self containerURLs]) {
-        NSURL *directoryURL = relativePath.length
-            ? [containerURL URLByAppendingPathComponent:relativePath isDirectory:YES]
+    for (NSDictionary<NSString *, id> *container in [self containerRecords]) {
+        NSURL *containerURL = container[@"url"];
+        NSUInteger codecLayers = [container[@"codecLayers"] unsignedIntegerValue];
+        BOOL childNamesUseCodec = codecLayers > 0 && GDTNASChildrenUseCodec(relativePath);
+        NSString *physicalRelativePath = GDTNASPhysicalRelativePath(
+            relativePath, YES, codecLayers);
+        NSURL *directoryURL = physicalRelativePath.length
+            ? [containerURL URLByAppendingPathComponent:physicalRelativePath isDirectory:YES]
             : containerURL;
         if (!GDTURLIsSafeDirectory(directoryURL) ||
             GDTURLContainsSymlinkBelowRoot(directoryURL, containerURL)) {
@@ -695,8 +949,12 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
                                                        NSURLIsSymbolicLinkKey
                                                    ] options:0 error:nil] ?: @[];
         for (NSURL *item in items) {
-            NSString *name = item.lastPathComponent;
-            if (!relativePath.length && [name isEqualToString:@".gdrive-versions"]) {
+            NSString *physicalName = item.lastPathComponent;
+            if (!relativePath.length &&
+                ([physicalName isEqualToString:
+                    self.versionsSubdirectory.pathComponents.firstObject] ||
+                 [physicalName isEqualToString:GDTCollisionArchiveDirectoryName] ||
+                 [physicalName isEqualToString:GDTNASNameCodecManifestName])) {
                 continue;
             }
             NSNumber *isDirectory = nil;
@@ -705,6 +963,14 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
             [item getResourceValue:&isRegularFile forKey:NSURLIsRegularFileKey error:nil];
             if (GDTURLIsSymbolicLink(item) || (!isDirectory.boolValue && !isRegularFile.boolValue)) {
                 continue;
+            }
+            NSString *name = childNamesUseCodec
+                ? GDTNASLogicalName(physicalName, isDirectory.boolValue, codecLayers)
+                : physicalName;
+            if (!name) {
+                GDTSetRestoreError(error, GDTRestoreErrorUnavailableSource,
+                                   @"The NAS backup contains an invalid encoded item name.");
+                return @[];
             }
             NSString *childPath = relativePath.length
                 ? [relativePath stringByAppendingPathComponent:name]
@@ -735,13 +1001,15 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
 - (NSDictionary<NSString *, id> *)versionRecordForURL:(NSURL *)url
                                                   kind:(NSString *)kind
                                                  runID:(nullable NSString *)runID
-                                                  date:(nullable NSDate *)date {
+                                                  date:(nullable NSDate *)date
+                                                  name:(NSString *)name {
     NSNumber *size = nil;
     NSDate *modified = nil;
     [url getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
     [url getResourceValue:&modified forKey:NSURLContentModificationDateKey error:nil];
     NSMutableDictionary<NSString *, id> *record = [@{
         @"sourceURL": url,
+        @"name": name,
         @"kind": kind,
         @"size": size ?: @0
     } mutableCopy];
@@ -761,27 +1029,40 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
                            @"The configured backup root is a symbolic link.");
         return @[];
     }
+    if (self.nameCodecState == GDTNASNameCodecInvalid) {
+        GDTSetRestoreError(error, GDTRestoreErrorUnavailableSource,
+                           @"The NAS backup name codec is invalid or unsupported.");
+        return @[];
+    }
     if (!GDTIsSafeRelativePath(relativePath, NO)) {
         GDTSetRestoreError(error, GDTRestoreErrorUnsafePath,
                            @"The selected backup path is not safe.");
         return @[];
     }
     NSMutableArray<NSDictionary<NSString *, id> *> *records = [NSMutableArray array];
-    NSURL *currentURL = [self.backupRootURL URLByAppendingPathComponent:relativePath];
+    NSUInteger currentLayers = self.nameCodecState == GDTNASNameCodecEnabled ? 1 : 0;
+    NSUInteger versionLayers = self.nameCodecState == GDTNASNameCodecEnabled ? 2 : 0;
+    NSString *currentPhysicalPath = GDTNASPhysicalRelativePath(
+        relativePath, NO, currentLayers);
+    NSURL *currentURL = [self.backupRootURL URLByAppendingPathComponent:currentPhysicalPath];
     if (GDTURLIsSafeRegularFile(currentURL) &&
         !GDTURLContainsSymlinkBelowRoot(currentURL, self.backupRootURL)) {
         [records addObject:[self versionRecordForURL:currentURL kind:@"current"
-                                                  runID:nil date:nil]];
+                                                  runID:nil date:nil
+                                                   name:relativePath.lastPathComponent]];
     }
     for (NSDictionary<NSString *, id> *run in [self versionRunRecords]) {
         NSURL *runURL = run[@"url"];
-        NSURL *sourceURL = [runURL URLByAppendingPathComponent:relativePath];
+        NSString *versionPhysicalPath = GDTNASPhysicalRelativePath(
+            relativePath, NO, versionLayers);
+        NSURL *sourceURL = [runURL URLByAppendingPathComponent:versionPhysicalPath];
         if (!GDTURLIsSafeRegularFile(sourceURL) ||
             GDTURLContainsSymlinkBelowRoot(sourceURL, runURL)) {
             continue;
         }
         [records addObject:[self versionRecordForURL:sourceURL kind:@"historical"
-                                                  runID:run[@"runID"] date:run[@"date"]]];
+                                                  runID:run[@"runID"] date:run[@"date"]
+                                                   name:relativePath.lastPathComponent]];
     }
     return records;
 }
@@ -868,6 +1149,14 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
 - (nullable NSDictionary<NSString *, id> *)restoreSourceURL:(NSURL *)sourceURL
                                              toDirectoryURL:(NSURL *)directoryURL
                                                        error:(NSError **)error {
+    return [self restoreSourceURL:sourceURL name:sourceURL.lastPathComponent
+                   toDirectoryURL:directoryURL error:error];
+}
+
+- (nullable NSDictionary<NSString *, id> *)restoreSourceURL:(NSURL *)sourceURL
+                                                        name:(NSString *)name
+                                              toDirectoryURL:(NSURL *)directoryURL
+                                                       error:(NSError **)error {
     NSURL *standardSource = sourceURL;
     NSString *rootPrefix = [self.backupRootURL.path stringByAppendingString:@"/"];
     if (self.backupRootIsSymbolicLink ||
@@ -876,6 +1165,11 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
         !GDTURLIsSafeRegularFile(standardSource)) {
         GDTSetRestoreError(error, GDTRestoreErrorUnavailableSource,
                            @"The selected backup file is unavailable or unsafe.");
+        return nil;
+    }
+    if (!GDTIsSafePathComponent(name)) {
+        GDTSetRestoreError(error, GDTRestoreErrorUnsafePath,
+                           @"The restored file name is unsafe.");
         return nil;
     }
     NSURL *resolvedDestination = directoryURL.URLByResolvingSymlinksInPath.URLByStandardizingPath;
@@ -890,19 +1184,33 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
         return nil;
     }
 
-    NSURL *destinationURL = [self availableDestinationForName:standardSource.lastPathComponent
+    NSURL *destinationURL = [self availableDestinationForName:name
                                                   directoryURL:directoryURL];
     if (!destinationURL) {
         GDTSetRestoreError(error, GDTRestoreErrorCopyFailure,
                            @"A safe destination name could not be created.");
         return nil;
     }
-    NSURL *temporaryURL = [directoryURL URLByAppendingPathComponent:
+    NSError *stagingError = nil;
+    NSURL *stagingDirectory = [self.fileManager
+        URLForDirectory:NSItemReplacementDirectory
+               inDomain:NSUserDomainMask
+      appropriateForURL:directoryURL
+                 create:YES
+                  error:&stagingError];
+    if (!stagingDirectory) {
+        if (error) {
+            *error = stagingError;
+        }
+        return nil;
+    }
+    NSURL *temporaryURL = [stagingDirectory URLByAppendingPathComponent:
         [NSString stringWithFormat:@".gdrive-restore-%@.tmp", NSUUID.UUID.UUIDString]];
 
     NSError *digestError = nil;
     NSString *sourceDigestBefore = self.digestProvider(standardSource, &digestError);
     if (!sourceDigestBefore.length) {
+        [self trashTemporaryURL:stagingDirectory];
         if (error) {
             *error = digestError;
         }
@@ -910,6 +1218,7 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
     }
     NSError *copyError = nil;
     if (![self.fileManager copyItemAtURL:standardSource toURL:temporaryURL error:&copyError]) {
+        [self trashTemporaryURL:stagingDirectory];
         if (error) {
             *error = copyError;
         }
@@ -921,18 +1230,19 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
     if (!sourceDigestAfter.length || !copiedDigest.length ||
         ![sourceDigestBefore isEqualToString:sourceDigestAfter] ||
         ![sourceDigestBefore isEqualToString:copiedDigest]) {
-        [self trashTemporaryURL:temporaryURL];
+        [self trashTemporaryURL:stagingDirectory];
         GDTSetRestoreError(error, GDTRestoreErrorIntegrityFailure,
                            @"The restored file did not match the backup copy.");
         return nil;
     }
     if (![self.fileManager moveItemAtURL:temporaryURL toURL:destinationURL error:&copyError]) {
-        [self trashTemporaryURL:temporaryURL];
+        [self trashTemporaryURL:stagingDirectory];
         if (error) {
             *error = copyError;
         }
         return nil;
     }
+    [self trashTemporaryURL:stagingDirectory];
     NSNumber *size = nil;
     [destinationURL getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
     return @{

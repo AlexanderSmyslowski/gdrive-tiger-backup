@@ -50,6 +50,16 @@ status_presentation_method="$(/usr/bin/awk '
   in_method { print }
   in_method && /^}$/ { exit }
 ' "$MAIN_SOURCE")"
+collection_behavior_method="$(/usr/bin/awk '
+  /^- \(NSWindowCollectionBehavior\)statusWindowCollectionBehavior/ { in_method = 1 }
+  in_method { print }
+  in_method && /^}$/ { exit }
+' "$MAIN_SOURCE")"
+restore_method="$(/usr/bin/awk '
+  /^- \(void\)restoreWindowFromDock/ { in_method = 1 }
+  in_method { print }
+  in_method && /^}$/ { exit }
+' "$MAIN_SOURCE")"
 
 check_contains() {
   local expected="$1"
@@ -80,20 +90,39 @@ check_absent \
   'self.window.level = NSFloatingWindowLevel;' \
   'normal progress startup does not unconditionally float the window'
 
-foreground_activation=$'if (self.confirmMode || self.progressForegroundMode) {\n        [NSApp activateIgnoringOtherApps:YES];\n    }'
-check_contains "$foreground_activation" \
-  'forced activation is limited to confirmation and explicit manual progress startup'
+safe_progress_presentation=$'if (self.confirmMode && self.progressForegroundMode) {\n        [self.window makeKeyAndOrderFront:nil];\n        [NSApp activateIgnoringOtherApps:YES];\n    } else {\n        [self.window orderFront:nil];\n    }'
+check_contains "$safe_progress_presentation" \
+  'only an explicitly requested confirmation activates the app or becomes key'
 
 activation_count="$(/usr/bin/grep -Fc '[NSApp activateIgnoringOtherApps:YES];' <<<"$startup_method")"
 if [[ "$activation_count" == "1" ]]; then
-  printf '%s\n' 'ok - progress startup has no unconditional duplicate activation'
+  printf '%s\n' 'ok - startup has one explicit-confirmation activation path'
 else
-  printf 'not ok - expected one guarded startup activation, found %s\n' "$activation_count"
+  printf 'not ok - expected one confirmation-only startup activation, found %s\n' "$activation_count"
+  failures=$((failures + 1))
+fi
+
+if [[ "$collection_behavior_method" == *'NSWindowCollectionBehaviorManaged'* &&
+      "$collection_behavior_method" == *'NSWindowCollectionBehaviorFullScreenNone'* &&
+      "$collection_behavior_method" != *'NSWindowCollectionBehaviorCanJoinAllSpaces'* &&
+      "$collection_behavior_method" != *'NSWindowCollectionBehaviorFullScreenAuxiliary'* &&
+      "$startup_method" == *'self.window.collectionBehavior = [self statusWindowCollectionBehavior];'* &&
+      "$startup_method" == *'self.window.hidesOnDeactivate = !self.confirmMode || !self.progressForegroundMode;'* ]]; then
+  printf '%s\n' 'ok - background status windows stay on one normal Space and hide behind other apps'
+else
+  printf '%s\n' 'not ok - a background status window can still enter another app or fullscreen Space'
+  failures=$((failures + 1))
+fi
+
+if [[ "$startup_method" != *'[self.window orderFrontRegardless];'* ]]; then
+  printf '%s\n' 'ok - startup never forces the status window above the active app'
+else
+  printf '%s\n' 'not ok - startup still uses orderFrontRegardless'
   failures=$((failures + 1))
 fi
 
 if [[ "$startup_method" == *'self.progressForegroundMode = [self shouldForegroundProgressForArguments:arguments];'* &&
-      "$startup_method" == *'self.confirmMode || self.progressForegroundMode'* ]]; then
+      "$startup_method" == *'[NSApp setActivationPolicy:self.progressForegroundMode'* ]]; then
   printf '%s\n' 'ok - only explicitly requested manual progress receives a Dock presence'
 else
   printf '%s\n' 'not ok - manual progress cannot reliably appear from the Dock'
@@ -102,10 +131,19 @@ fi
 
 if [[ "$terminal_method" != *'activateIgnoringOtherApps:YES'* &&
       "$terminal_method" != *'orderFrontRegardless'* &&
-      "$terminal_method" == *'[self.window orderFront:nil];'* ]]; then
-  printf '%s\n' 'ok - completion appears without stealing focus or forcing front order'
+      "$terminal_method" == *'if (self.hiddenByUser || !self.window.isVisible || !NSApp.isActive) {'* &&
+      "$terminal_method" == *'[NSApp terminate:nil];'* ]]; then
+  printf '%s\n' 'ok - hidden or inactive progress stays hidden when the backup finishes'
 else
-  printf '%s\n' 'not ok - completion still steals focus or forces front order'
+  printf '%s\n' 'not ok - completion can still reappear over the active app'
+  failures=$((failures + 1))
+fi
+
+if [[ "$restore_method" != *'orderFrontRegardless'* &&
+      "$restore_method" == *'[self.window makeKeyAndOrderFront:nil];'* ]]; then
+  printf '%s\n' 'ok - an explicit Dock reopen uses normal AppKit ordering'
+else
+  printf '%s\n' 'not ok - Dock reopen still relies on forced front ordering'
   failures=$((failures + 1))
 fi
 

@@ -12,6 +12,9 @@ typedef NSDictionary<NSString *, id> * _Nonnull (^GDTRestoreCommandRunner)(
 
 - (instancetype)initWithBackupRootURL:(NSURL *)backupRootURL
                            fileManager:(NSFileManager *)fileManager;
+- (instancetype)initWithBackupRootURL:(NSURL *)backupRootURL
+                           fileManager:(NSFileManager *)fileManager
+                  versionsSubdirectory:(NSString *)versionsSubdirectory;
 - (NSArray<NSDictionary<NSString *, id> *> *)childrenAtRelativePath:(NSString *)relativePath
                                                                error:(NSError **)error;
 - (NSArray<NSDictionary<NSString *, id> *> *)versionsForRelativePath:(NSString *)relativePath
@@ -39,9 +42,18 @@ typedef NSDictionary<NSString *, id> * _Nonnull (^GDTRestoreCommandRunner)(
                        backupRootURL:(NSURL *)backupRootURL
                          fileManager:(NSFileManager *)fileManager
                        commandRunner:(GDTRestoreCommandRunner)commandRunner;
+- (instancetype)initWithRemoteName:(NSString *)remoteName
+                       backupRootURL:(NSURL *)backupRootURL
+               versionsSubdirectory:(NSString *)versionsSubdirectory
+                         fileManager:(NSFileManager *)fileManager
+                       commandRunner:(GDTRestoreCommandRunner)commandRunner;
 + (instancetype)productionCopierWithRemoteName:(NSString *)remoteName
                                    backupRootURL:(NSURL *)backupRootURL
                                      fileManager:(NSFileManager *)fileManager;
++ (instancetype)productionCopierWithRemoteName:(NSString *)remoteName
+                                    backupRootURL:(NSURL *)backupRootURL
+                            versionsSubdirectory:(NSString *)versionsSubdirectory
+                                      fileManager:(NSFileManager *)fileManager;
 - (nullable NSDictionary<NSString *, id> *)restoreRemotePath:(NSString *)remotePath
                                                          name:(NSString *)name
                                                toDirectoryURL:(NSURL *)directoryURL
@@ -57,6 +69,10 @@ typedef NSDictionary<NSString *, id> * _Nonnull (^GDTRestoreCommandRunner)(
                            fileManager:(NSFileManager *)fileManager;
 - (nullable NSDictionary<NSString *, id> *)restoreSourceURL:(NSURL *)sourceURL
                                              toDirectoryURL:(NSURL *)directoryURL
+                                                       error:(NSError **)error;
+- (nullable NSDictionary<NSString *, id> *)restoreSourceURL:(NSURL *)sourceURL
+                                                        name:(NSString *)name
+                                              toDirectoryURL:(NSURL *)directoryURL
                                                        error:(NSError **)error;
 
 @end

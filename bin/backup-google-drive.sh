@@ -185,6 +185,24 @@ VERSION_RUN_ID=""
 TARGET_APPROVED=0
 COPY_INDEX=0
 COPY_TOTAL=0
+LAST_RCLONE_COLLISION_REPORT=""
+NAS_NAME_CODEC_ENABLED=0
+NAS_NAME_CODEC_MANIFEST=".gdrive-name-codec"
+NAS_NAME_CODEC_PREFIX="__gdt0__"
+NAS_NAME_CODEC_DOT_BIN_PREFIX="__gdt0__dotbin_"
+# The literal ${1} belongs to rclone's replacement expression.
+# shellcheck disable=SC2016
+NAS_NAME_CODEC_ESCAPE_TRANSFORM='all,regex=(?i)^(__gdt0__.*)$/__gdt0__${1}'
+NAS_NAME_CODEC_DOT_BIN_TRANSFORMS=(
+  'dir,regex=^\.bin$/__gdt0__dotbin_000'
+  'dir,regex=^\.biN$/__gdt0__dotbin_001'
+  'dir,regex=^\.bIn$/__gdt0__dotbin_010'
+  'dir,regex=^\.bIN$/__gdt0__dotbin_011'
+  'dir,regex=^\.Bin$/__gdt0__dotbin_100'
+  'dir,regex=^\.BiN$/__gdt0__dotbin_101'
+  'dir,regex=^\.BIn$/__gdt0__dotbin_110'
+  'dir,regex=^\.BIN$/__gdt0__dotbin_111'
+)
 
 mkdir -p "$HOME/Library/Logs"
 if [[ -L "$LOG" || ( -e "$LOG" && ! -f "$LOG" ) ||
@@ -212,17 +230,115 @@ log() {
 
 cleanup_temp_file() {
   local path
+  local trash_bin="${GDRIVE_BACKUP_TEMP_TRASH_BIN:-/usr/bin/trash}"
   for path in "$@"; do
     [[ -n "$path" && -e "$path" ]] || continue
     # Cleanup stays recoverable; older systems without trash intentionally keep the temp file.
-    if [[ ! -x /usr/bin/trash ]]; then
-      log "WARNUNG: Temporaere Datei bleibt erhalten, weil /usr/bin/trash fehlt: $path"
+    if [[ ! -x "$trash_bin" ]]; then
+      log "WARNUNG: Temporaere Datei bleibt erhalten, weil das Papierkorb-Werkzeug fehlt: $path"
       continue
     fi
-    if ! /usr/bin/trash "$path" >/dev/null 2>&1; then
+    if ! "$trash_bin" "$path" >/dev/null 2>&1; then
       log "WARNUNG: Temporaere Datei konnte nicht in den Papierkorb verschoben werden: $path"
     fi
   done
+}
+
+nas_name_codec_manifest_content() {
+  printf '%s\n' \
+    'protocol=1' \
+    'codec=nas-path-v1' \
+    "prefix=$NAS_NAME_CODEC_PREFIX" \
+    "dot_bin_prefix=$NAS_NAME_CODEC_DOT_BIN_PREFIX" \
+    'current_layers=1' \
+    'version_layers=2'
+}
+
+prepare_nas_name_codec() {
+  local manifest_path legacy_collision temp_manifest copy_help
+
+  [[ "$BACKUP_TARGET" == "nas" && "$ENCRYPTION" != "rclone-crypt" ]] || return 0
+
+  if ! copy_help="$(rclone copy --help 2>&1)" ||
+     [[ "$copy_help" != *"--name-transform"* ]]; then
+    RUN_STATE_REASON="unsupported_rclone"
+    log "FEHLER: Diese rclone-Version kann NAS-inkompatible Ordnernamen nicht verlustfrei abbilden."
+    return 1
+  fi
+
+  manifest_path="${DEST_ROOT%/}/$NAS_NAME_CODEC_MANIFEST"
+  if [[ -L "$manifest_path" || ( -e "$manifest_path" && ! -f "$manifest_path" ) ]]; then
+    RUN_STATE_REASON="invalid_name_codec"
+    log "FEHLER: Das NAS-Namenscodec-Manifest ist kein sicherer regulaerer Dateipfad."
+    return 1
+  fi
+  if [[ -f "$manifest_path" ]]; then
+    # cmp preserves the terminating newline. Restore uses the same byte-exact
+    # contract so backup and restore cannot disagree about a damaged manifest.
+    if ! /usr/bin/cmp -s "$manifest_path" <(nas_name_codec_manifest_content); then
+      RUN_STATE_REASON="invalid_name_codec"
+      log "FEHLER: Das NAS-Namenscodec-Manifest hat eine unbekannte oder beschaedigte Version."
+      return 1
+    fi
+    NAS_NAME_CODEC_ENABLED=1
+    return 0
+  fi
+
+  # Before enabling the codec on an existing plain tree, make sure its reserved
+  # namespace and vetoed .bin name were not already used below a copy root.
+  # Destination area names themselves are raw rclone arguments, so the root
+  # and immediate Shared Drive names are deliberately excluded.
+  if [[ -d "$DEST_ROOT" ]]; then
+    # The nested shell must expand its own positional parameters.
+    # shellcheck disable=SC2016
+    if ! legacy_collision="$(/usr/bin/find "$DEST_ROOT" \
+        \( -iname "${NAS_NAME_CODEC_PREFIX}*" -o \
+           \( -type d -iname '.bin' \) \) \
+        -exec /bin/bash -c '
+          destination_root="$1"
+          versions_subdir="$2"
+          candidate="$3"
+          case "$candidate" in
+            "$destination_root/"*) relative="${candidate#"$destination_root/"}" ;;
+            *) exit 1 ;;
+          esac
+          case "$relative" in
+            "My Drive/"*|"Shared with me/"*|"Shared Drives/"*"/"*)
+              exit 0
+              ;;
+            "$versions_subdir/"*"/My Drive/"*|\
+            "$versions_subdir/"*"/Shared with me/"*|\
+            "$versions_subdir/"*"/Shared Drives/"*"/"*)
+              exit 0
+              ;;
+          esac
+          exit 1
+        ' _ "$DEST_ROOT" "$VERSIONS_SUBDIR" {} \; -print -quit 2>/dev/null)"; then
+      RUN_STATE_REASON="destination_unreadable"
+      log "FEHLER: Das bestehende NAS-Ziel konnte nicht auf Namenskollisionen geprueft werden."
+      return 1
+    fi
+    if [[ -n "$legacy_collision" ]]; then
+      RUN_STATE_REASON="name_codec_collision"
+      log "FEHLER: Das bestehende NAS-Ziel verwendet bereits den reservierten Namensraum des verlustfreien Codecs."
+      return 1
+    fi
+  fi
+
+  if [[ "$DRY_RUN" == "0" ]]; then
+    temp_manifest="${manifest_path}.tmp.$$"
+    if [[ -e "$temp_manifest" || -L "$temp_manifest" ]] ||
+       ! nas_name_codec_manifest_content >"$temp_manifest" ||
+       ! /bin/mv "$temp_manifest" "$manifest_path"; then
+      cleanup_temp_file "$temp_manifest"
+      RUN_STATE_REASON="destination_permission_denied"
+      log "FEHLER: Das NAS-Namenscodec-Manifest konnte nicht sicher angelegt werden."
+      return 1
+    fi
+  fi
+
+  NAS_NAME_CODEC_ENABLED=1
+  log "NAS-Namenscodec aktiv: .bin-Ordner werden verlustfrei und reversibel abgebildet."
 }
 
 validate_versioning_config() {
@@ -722,6 +838,9 @@ merge_retention_candidate_into_keeper() {
       return 1
     fi
     merge_options=(--ignore-existing --create-empty-src-dirs --log-level INFO)
+    if [[ "$BACKUP_TARGET" == "nas" ]]; then
+      merge_options+=(--multi-thread-streams 0 --transfers 1)
+    fi
     if ! rclone copy "$source" "$keeper" "${merge_options[@]}"; then
       log "FEHLER: Verschluesselte Dateiversionen konnten nicht zusammengefuehrt werden."
       return 1
@@ -744,6 +863,11 @@ merge_retention_candidate_into_keeper() {
   fi
 
   merge_options=(--ignore-existing --create-empty-src-dirs --log-level INFO --one-file-system)
+  if [[ "$BACKUP_TARGET" == "nas" ]]; then
+    # Version trees are already in their physical encoded form, so retention
+    # preserves names verbatim while keeping writes serialized for SMB.
+    merge_options+=(--multi-thread-streams 0 --transfers 1)
+  fi
   if ! rclone copy "$source" "$keeper" "${merge_options[@]}"; then
     log "FEHLER: Dateiversionen konnten nicht in den Aufbewahrungsstand uebernommen werden: ${source##*/}"
     return 1
@@ -1292,7 +1416,7 @@ write_run_state() {
 write_last_run_summary() {
   local status="$1"
   local exit_code="${2:-}"
-  local summary_dir tmp finished_at
+  local summary_dir tmp finished_at last_success_at=""
 
   [[ "$DRY_RUN" == "0" && "$SETUP_UI" == "0" ]] || return 0
   # A lock-contended process did not perform a backup and must not replace the
@@ -1305,6 +1429,15 @@ write_last_run_summary() {
   (umask 077 && mkdir -p "$summary_dir") || return 0
   tmp="${SUMMARY_STATE_FILE}.$$"
   finished_at="$(date +%s 2>/dev/null || printf '0')"
+  if [[ -f "$SUMMARY_STATE_FILE" ]]; then
+    last_success_at="$(awk -F= '
+      $1 == "last_success_at" && $2 ~ /^[0-9]+$/ { value = $2 }
+      END { if (value) print value }
+    ' "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+  fi
+  if [[ "$status" == "success" ]]; then
+    last_success_at="$finished_at"
+  fi
 
   if (umask 077 && {
     printf 'protocol=1\n'
@@ -1314,6 +1447,7 @@ write_last_run_summary() {
     if [[ "$status" != "running" ]]; then
       printf 'finished_at=%s\n' "$finished_at"
     fi
+    [[ -n "$last_success_at" ]] && printf 'last_success_at=%s\n' "$last_success_at"
     [[ -n "$exit_code" ]] && printf 'exit_code=%s\n' "$exit_code"
     [[ -n "$RUN_STATE_REASON" ]] && printf 'reason=%s\n' "$(progress_escape "$RUN_STATE_REASON")"
     [[ -n "$RUN_STATE_SIGNAL" ]] && printf 'signal=%s\n' "$(progress_escape "$RUN_STATE_SIGNAL")"
@@ -1361,30 +1495,102 @@ run_rclone_with_progress() {
   local phase="$2"
   shift 2
 
-  local line status error_class_file="" error_class=""
-  error_class_file="$(mktemp "${TMPDIR:-/tmp}/gdrive-backup-error-class.XXXXXX")" || true
+  local line status error_class_file="" collision_report="" collision_path=""
+  local collision_prefix="" collision_kind=""
+  local detected_count=0 parsed_count=0 unhandled_count=0
+  LAST_RCLONE_COLLISION_REPORT=""
+  if ! error_class_file="$(mktemp "${TMPDIR:-/tmp}/gdrive-backup-error-class.XXXXXX")"; then
+    log "FEHLER: Die rclone-Auswertung konnte nicht sicher vorbereitet werden."
+    RUN_STATE_REASON="internal_state_unavailable"
+    return 70
+  fi
+  if ! collision_report="$(mktemp "${TMPDIR:-/tmp}/gdrive-backup-collisions.XXXXXX")"; then
+    cleanup_temp_file "$error_class_file"
+    log "FEHLER: Die Drive-Kollisionsauswertung konnte nicht sicher vorbereitet werden."
+    RUN_STATE_REASON="internal_state_unavailable"
+    return 70
+  fi
   "$@" 2>&1 | while IFS= read -r line; do
     printf '%s\n' "$line"
     update_progress_from_rclone_line "$label" "$phase" "$line"
     if [[ -n "$error_class_file" && "$line" == *"Failed to copy:"* &&
           ( "$line" == *"permission denied"* || "$line" == *"Permission denied"* ||
             "$line" == *"access denied"* || "$line" == *"Access denied"* ) ]]; then
-      printf 'destination_permission_denied\n' >"$error_class_file"
+      printf 'destination_permission_denied\n' >>"$error_class_file"
+    fi
+    # Google Drive permits equal names. rclone normally logs that it ignored
+    # one of them but exits zero, which must not be mistaken for a complete
+    # backup. Case/Unicode collisions on a case-insensitive NAS are equivalent.
+    if [[ -n "$error_class_file" &&
+          ( "$line" == *"Duplicate object found in source - ignoring"* ||
+            "$line" == *"Duplicate directory found in source - ignoring"* ||
+            ( "$line" == *"duplicate filename"* &&
+              "$line" == *"case/unicode normalization"* ) ) ]]; then
+      printf 'source_name_collision\n' >>"$error_class_file"
+    fi
+    if [[ "$line" == *"Duplicate object found in source - ignoring"* ||
+          "$line" == *"Duplicate directory found in source - ignoring"* ]]; then
+      printf 'source_exact_collision_detected\n' >>"$error_class_file"
+    elif [[ "$line" == *"duplicate filename"* &&
+            "$line" == *"case/unicode normalization"* ]]; then
+      printf 'source_collision_unhandled\n' >>"$error_class_file"
+    fi
+    collision_kind=""
+    collision_prefix=""
+    if [[ "$line" == *": Duplicate object found in source - ignoring"* ]]; then
+      collision_kind="file"
+      collision_prefix="${line%: Duplicate object found in source - ignoring*}"
+    elif [[ "$line" == *": Duplicate directory found in source - ignoring"* ]]; then
+      collision_kind="directory"
+      collision_prefix="${line%: Duplicate directory found in source - ignoring*}"
+    fi
+    if [[ -n "$collision_kind" && -n "$collision_report" &&
+          "$collision_prefix" == *"NOTICE: "* ]]; then
+      collision_path="${collision_prefix#*"NOTICE: "}"
+      if [[ -n "$collision_path" && "$collision_path" != /* &&
+            ! "$collision_path" =~ [[:cntrl:]] ]]; then
+        case "/$collision_path/" in
+          *"//"*|*"/./"*|*"/../"*) ;;
+          *)
+            printf '%s\t%s\n' "$collision_kind" "$collision_path" >>"$collision_report"
+            printf 'source_exact_collision_parsed\n' >>"$error_class_file"
+            ;;
+        esac
+      fi
     fi
   done
   status=${PIPESTATUS[0]}
   if [[ "$status" != "0" && -n "$error_class_file" ]]; then
-    IFS= read -r error_class <"$error_class_file" || true
-    if [[ -n "$error_class" ]]; then
-      RUN_STATE_REASON="$error_class"
+    if /usr/bin/grep -Fxq 'destination_permission_denied' "$error_class_file"; then
+      RUN_STATE_REASON="destination_permission_denied"
+    fi
+  elif [[ "$status" == "0" && -n "$error_class_file" ]] &&
+       /usr/bin/grep -Fxq 'source_name_collision' "$error_class_file"; then
+    RUN_STATE_REASON="source_name_collision"
+    status=65
+    detected_count="$(/usr/bin/grep -Fxc 'source_exact_collision_detected' \
+      "$error_class_file" 2>/dev/null || true)"
+    parsed_count="$(/usr/bin/grep -Fxc 'source_exact_collision_parsed' \
+      "$error_class_file" 2>/dev/null || true)"
+    unhandled_count="$(/usr/bin/grep -Fxc 'source_collision_unhandled' \
+      "$error_class_file" 2>/dev/null || true)"
+    if (( detected_count > 0 && detected_count == parsed_count &&
+          unhandled_count == 0 )); then
+      LAST_RCLONE_COLLISION_REPORT="$collision_report"
+      collision_report=""
+      log "Google Drive enthaelt gleichnamige Eintraege; die separaten Drive-IDs werden gesichert."
+    else
+      log "FEHLER: Nicht jede erkannte Drive-Kollision kann sicher einer ID-Gruppe zugeordnet werden."
     fi
   fi
   cleanup_temp_file "$error_class_file"
+  cleanup_temp_file "$collision_report"
   return "$status"
 }
 
 start_animation() {
-  if [[ "$DRY_RUN" == "1" || "${BACKUP_DISABLE_ANIMATION:-0}" == "1" ]]; then
+  if [[ "$DRY_RUN" == "1" || "${BACKUP_DISABLE_ANIMATION:-0}" == "1" ||
+        "${BACKUP_PROGRESS_FOREGROUND:-0}" != "1" ]]; then
     return
   fi
 
@@ -1519,7 +1725,14 @@ confirm_prompt() {
     }
     : >"$response"
 
-    if "$OPEN_BIN" -W -n "$ANIMATION_APP" --args --confirm "$title" "$detail" "$primary_button" "$secondary_button" "$response" >/dev/null 2>&1; then
+    local -a confirmation_arguments=(
+      --confirm "$title" "$detail" "$primary_button" "$secondary_button" "$response"
+    )
+    if [[ "${BACKUP_PROGRESS_FOREGROUND:-0}" == "1" ]]; then
+      confirmation_arguments+=(--foreground)
+    fi
+
+    if "$OPEN_BIN" -W -n "$ANIMATION_APP" --args "${confirmation_arguments[@]}" >/dev/null 2>&1; then
       decision="$(tr -d '\r\n' <"$response" 2>/dev/null || true)"
     fi
     cleanup_temp_file "$response"
@@ -1929,6 +2142,9 @@ if ! validate_all_encrypted_active_trees; then
   log "FEHLER: Der vorhandene Zielbaum erfuellt die Verschluesselungsrichtlinie nicht."
   exit 69
 fi
+if ! prepare_nas_name_codec; then
+  exit 69
+fi
 
 if [[ "$VERSIONING" == "1" ]]; then
   # The UUID prevents two Macs writing to the same NAS—or a repeated local
@@ -1968,6 +2184,15 @@ if [[ "$BACKUP_TARGET" == "nas" ]]; then
   RCLONE_OPTS+=(--multi-thread-streams 0 --transfers 1)
 fi
 
+if [[ "$NAS_NAME_CODEC_ENABLED" == "1" ]]; then
+  # The first transform escapes the reserved namespace, making the second
+  # exact-name mapping injective even if Drive contains a marker-like folder.
+  RCLONE_OPTS+=(--name-transform "$NAS_NAME_CODEC_ESCAPE_TRANSFORM")
+  for name_transform in "${NAS_NAME_CODEC_DOT_BIN_TRANSFORMS[@]}"; do
+    RCLONE_OPTS+=(--name-transform "$name_transform")
+  done
+fi
+
 if [[ "$ENCRYPTION" == "apfs" ]]; then
   RCLONE_OPTS+=(--one-file-system)
 fi
@@ -1995,6 +2220,562 @@ validate_live_nas_destination() {
   return 0
 }
 
+stable_sha256() {
+  local digest
+  digest="$(printf '%s' "$1" | /usr/bin/shasum -a 256 2>/dev/null)" || return 1
+  digest="${digest%% *}"
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s' "$digest"
+}
+
+archive_source_collisions() {
+  local label="$1"
+  local phase="$2"
+  local source="$3"
+  local destination="$4"
+  local collision_report="$5"
+  shift 5
+  # Keep one harmless Drive option in the array because macOS Bash 3.2 treats
+  # expansion of a declared-but-empty array as an unbound variable under set -u.
+  local -a source_options=(--drive-export-formats "docx,xlsx,pptx")
+  source_options+=("$@")
+  local -a id_source_options=()
+  local relative_destination scope_hash archive_root groups_root objects_root
+  local collision_kind logical_path group_hash seen_hashes=""
+  local parent_path leaf_name parent_remote parent_json parent_id query query_json
+  local query_errors validated_json objects_tsv match_count tsv_count copied_count
+  local object_id mime_type archive_name source_md5 source_size source_modified_time
+  local object_key
+  local object_directory object_destination copy_status nested_report
+  local archived_file entry_count local_md5 local_sha256 object_stage=""
+  local recorded_sha256=""
+  local existing_is_current old_destination replacement_root
+  local verification_report verification_status folder_backup_dir
+  local manifest_objects manifest_path manifest_temp generated_at archive_path
+  local option uses_shared_with_me=0 shared_root=0 provider_root=0
+  local proof_count manifest_umask
+  local -a file_options folder_options
+
+  if [[ "$ENCRYPTION" == "rclone-crypt" ]]; then
+    log "FEHLER: Gleichnamige Drive-IDs koennen fuer dieses verschluesselte Ziel noch nicht getrennt archiviert werden."
+    return 1
+  fi
+  if [[ ! -f "$collision_report" || -L "$collision_report" ]]; then
+    log "FEHLER: Die Liste gleichnamiger Drive-Eintraege ist nicht sicher lesbar."
+    return 1
+  fi
+
+  for option in "${source_options[@]}"; do
+    if [[ "$option" == "--drive-shared-with-me" ]]; then
+      uses_shared_with_me=1
+      continue
+    fi
+    id_source_options[${#id_source_options[@]}]="$option"
+  done
+
+  relative_destination="${destination#"$DEST_ROOT"/}"
+  if [[ -z "$relative_destination" || "$relative_destination" == "$destination" ||
+        "$relative_destination" =~ [[:cntrl:]] ]]; then
+    log "FEHLER: Der Backup-Bereich fuer das ID-Archiv ist ungueltig."
+    return 1
+  fi
+  if ! scope_hash="$(stable_sha256 "$relative_destination")"; then
+    log "FEHLER: Der sichere Bezeichner fuer das ID-Archiv konnte nicht erzeugt werden."
+    return 1
+  fi
+
+  archive_root="${DEST_ROOT%/}/.gdrive-collisions/$scope_hash"
+  groups_root="$archive_root/groups"
+  objects_root="$archive_root/objects"
+  for object_destination in \
+      "${DEST_ROOT%/}/.gdrive-collisions" "$archive_root" "$groups_root" "$objects_root"; do
+    if [[ -L "$object_destination" ||
+          ( -e "$object_destination" && ! -d "$object_destination" ) ]]; then
+      log "FEHLER: Das ID-Archiv enthaelt einen unsicheren Pfad."
+      return 1
+    fi
+  done
+  if [[ "$DRY_RUN" == "0" ]] &&
+     ! mkdir -p "$groups_root" "$objects_root"; then
+    RUN_STATE_REASON="destination_permission_denied"
+    log "FEHLER: Das ID-Archiv konnte auf dem Backup-Ziel nicht angelegt werden."
+    return 1
+  fi
+
+  while IFS=$'\t' read -r collision_kind logical_path; do
+    if [[ ( "$collision_kind" != "file" && "$collision_kind" != "directory" ) ||
+          -z "$logical_path" || "$logical_path" == /* ||
+          "$logical_path" =~ [[:cntrl:]] ]]; then
+      log "FEHLER: Ein gleichnamiger Drive-Eintrag konnte nicht sicher zugeordnet werden."
+      return 1
+    fi
+    case "/$logical_path/" in
+      *"//"*|*"/./"*|*"/../"*)
+        log "FEHLER: Ein gleichnamiger Drive-Pfad ist unsicher."
+        return 1
+        ;;
+    esac
+    if ! group_hash="$(stable_sha256 "$collision_kind"$'\037'"$logical_path")"; then
+      return 1
+    fi
+    case " $seen_hashes " in
+      *" $group_hash "*) continue ;;
+    esac
+    seen_hashes="$seen_hashes $group_hash"
+    manifest_path="$groups_root/$group_hash.json"
+
+    if [[ "$logical_path" == */* ]]; then
+      parent_path="${logical_path%/*}"
+      leaf_name="${logical_path##*/}"
+      parent_remote="${source}${parent_path}"
+    else
+      parent_path=""
+      leaf_name="$logical_path"
+      parent_remote="$source"
+    fi
+    [[ -n "$leaf_name" ]] || return 1
+
+    parent_id=""
+    shared_root=0
+    provider_root=0
+    if [[ "$uses_shared_with_me" == "1" && -z "$parent_path" ]]; then
+      # Root entries in Drive's virtual "Shared with me" view have no common
+      # parent ID. Query that view explicitly, then copy each result by ID
+      # without carrying the virtual-root option into the ID-rooted copy.
+      shared_root=1
+      query="sharedWithMe = true and trashed = false"
+    elif [[ -z "$parent_path" ]]; then
+      # rclone's stat for a Drive root intentionally omits its provider ID.
+      # Google's root alias still scopes the query to the configured My Drive
+      # or Shared Drive; matching objects must then prove one common real
+      # parent ID in the returned metadata.
+      provider_root=1
+      query="'root' in parents and trashed = false"
+    else
+      parent_json="$(mktemp "${TMPDIR:-/tmp}/gdrive-parent-id.XXXXXX")" || return 1
+      if ! rclone lsjson "$parent_remote" --stat --original \
+          "${source_options[@]}" >"$parent_json" ||
+         ! parent_id="$(/usr/bin/jq -er '
+            (.ID // .OrigID) as $id
+            | select(($id | type) == "string")
+            | select($id | test("^[A-Za-z0-9_-]{3,255}$"))
+            | $id
+          ' "$parent_json" 2>/dev/null)"; then
+        cleanup_temp_file "$parent_json"
+        log "FEHLER: Der Elternordner eines gleichnamigen Drive-Eintrags konnte nicht per ID gelesen werden."
+        return 1
+      fi
+      cleanup_temp_file "$parent_json"
+      query="'$parent_id' in parents and trashed = false"
+    fi
+
+    query_json="$(mktemp "${TMPDIR:-/tmp}/gdrive-collision-query.XXXXXX")" || return 1
+    query_errors="$(mktemp "${TMPDIR:-/tmp}/gdrive-collision-query-errors.XXXXXX")" || {
+      cleanup_temp_file "$query_json"
+      return 1
+    }
+    validated_json="$(mktemp "${TMPDIR:-/tmp}/gdrive-collision-validated.XXXXXX")" || {
+      cleanup_temp_file "$query_json" "$query_errors"
+      return 1
+    }
+    if ! rclone backend query "$source" "$query" \
+        "${id_source_options[@]}" >"$query_json" 2>"$query_errors"; then
+      while IFS= read -r line; do
+        [[ -n "$line" ]] && log "rclone query: $line"
+      done <"$query_errors"
+      cleanup_temp_file "$query_json" "$query_errors" "$validated_json"
+      log "FEHLER: Die Drive-Suche fuer einen gleichnamigen Eintrag ist fehlgeschlagen."
+      return 1
+    fi
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && log "rclone query: $line"
+    done <"$query_errors"
+    if /usr/bin/grep -Eiq 'incomplete|(^|[[:space:]])error([ :]|$)|failed to' \
+        "$query_errors" 2>/dev/null ||
+       ! /usr/bin/jq -e \
+          --arg parent "$parent_id" \
+          --arg name "$leaf_name" \
+          --arg kind "$collision_kind" \
+          --arg sharedRoot "$shared_root" \
+          --arg providerRoot "$provider_root" '
+          def rendered_name:
+            if .mimeType == "application/vnd.google-apps.document" then .name + ".docx"
+            elif .mimeType == "application/vnd.google-apps.spreadsheet" then .name + ".xlsx"
+            elif .mimeType == "application/vnd.google-apps.presentation" then .name + ".pptx"
+            else .name
+            end;
+          def supported_type:
+            (.mimeType == "application/vnd.google-apps.folder") or
+            ((.mimeType | startswith("application/vnd.google-apps.")) | not) or
+            (.mimeType == "application/vnd.google-apps.document") or
+            (.mimeType == "application/vnd.google-apps.spreadsheet") or
+            (.mimeType == "application/vnd.google-apps.presentation");
+          if type != "array" then error("invalid query result")
+          else
+            [ .[]
+              | select((.name | type) == "string" and
+                       (.mimeType | type) == "string")
+              | . + {archiveName: rendered_name}
+              | select(.archiveName == $name)
+              | select(
+                  if $kind == "directory"
+                  then .mimeType == "application/vnd.google-apps.folder"
+                  else .mimeType != "application/vnd.google-apps.folder"
+                  end)
+            ] as $matches
+              | if ($matches | length) < 2 then error("not a duplicate group")
+              elif ([$matches[].id] | unique | length) != ($matches | length)
+                then error("duplicate IDs")
+              elif
+                all($matches[];
+                  ((.id | type) == "string") and
+                  (.id | test("^[A-Za-z0-9_-]{3,255}$")) and
+                  supported_type
+                ) and
+                (if $sharedRoot == "1" then true
+                 elif $providerRoot == "1" then
+                   all($matches[];
+                     ((.parents | type) == "array") and
+                     ((.parents | length) == 1) and
+                     ((.parents[0] | type) == "string") and
+                     (.parents[0] | test("^[A-Za-z0-9_-]{3,255}$"))
+                   ) and
+                   (([$matches[].parents[0]] | unique | length) == 1)
+                 else
+                   all($matches[];
+                     ((.parents | type) == "array") and
+                     ((.parents | index($parent)) != null)
+                   )
+                 end)
+              then $matches
+              else error("invalid duplicate metadata")
+              end
+          end
+        ' "$query_json" >"$validated_json" 2>/dev/null; then
+      cleanup_temp_file "$query_json" "$query_errors" "$validated_json"
+      log "FEHLER: Die Drive-IDs eines gleichnamigen Eintrags konnten nicht vollstaendig inventarisiert werden."
+      return 1
+    fi
+    cleanup_temp_file "$query_json" "$query_errors"
+    match_count="$(/usr/bin/jq 'length' "$validated_json" 2>/dev/null || printf '0')"
+    if [[ ! "$match_count" =~ ^[0-9]+$ || "$match_count" -lt 2 ]]; then
+      cleanup_temp_file "$validated_json"
+      return 1
+    fi
+    objects_tsv="$(mktemp "${TMPDIR:-/tmp}/gdrive-collision-objects.XXXXXX")" || {
+      cleanup_temp_file "$validated_json"
+      return 1
+    }
+    manifest_objects="$(mktemp "${TMPDIR:-/tmp}/gdrive-collision-manifest.XXXXXX")" || {
+      cleanup_temp_file "$validated_json" "$objects_tsv"
+      return 1
+    }
+    if ! /usr/bin/jq -er '
+        .[] | [
+          .id, .mimeType, .archiveName,
+          (.md5Checksum // "-"), (.size // "-"), (.modifiedTime // "-")
+        ] | @tsv
+      ' "$validated_json" >"$objects_tsv"; then
+      cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+      return 1
+    fi
+    tsv_count="$(/usr/bin/wc -l <"$objects_tsv" | /usr/bin/tr -d '[:space:]')"
+    if [[ "$tsv_count" != "$match_count" ]]; then
+      cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+      log "FEHLER: Nicht jede inventarisierte Drive-ID kann verarbeitet werden."
+      return 1
+    fi
+
+    copied_count=0
+    # Every failure path returns immediately after cleanup, so moving the
+    # materialized TSV while its read descriptor is open cannot continue a
+    # partial loop.
+    # shellcheck disable=SC2094
+    while IFS=$'\t' read -r object_id mime_type archive_name source_md5 source_size \
+        source_modified_time; do
+      [[ "$object_id" =~ ^[A-Za-z0-9_-]{3,255}$ &&
+          -n "$mime_type" && "$archive_name" == "$leaf_name" ]] || {
+        cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+        return 1
+      }
+      if ! validate_live_nas_destination; then
+        cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+        return 1
+      fi
+      if ! object_key="$(stable_sha256 "drive-object-id"$'\037'"$object_id")"; then
+        cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+        return 1
+      fi
+      object_directory="$objects_root/$object_key"
+      if [[ -L "$object_directory" ||
+            ( -e "$object_directory" && ! -d "$object_directory" ) ]]; then
+        cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+        log "FEHLER: Ein Drive-ID-Ziel ist kein sicherer Ordner."
+        return 1
+      fi
+
+      copy_status=0
+      LAST_RCLONE_COLLISION_REPORT=""
+      if [[ "$mime_type" == "application/vnd.google-apps.folder" ]]; then
+        if [[ "$DRY_RUN" == "0" ]] && ! mkdir -p "$object_directory"; then
+          cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+          RUN_STATE_REASON="destination_permission_denied"
+          return 1
+        fi
+        object_destination="$object_directory/root"
+        folder_options=(--drive-root-folder-id "$object_id")
+        if [[ "$VERSIONING" == "1" ]]; then
+          folder_backup_dir="${DEST_ROOT%/}/$VERSIONS_SUBDIR/$VERSION_RUN_ID/.gdrive-collisions/$scope_hash/objects/$object_key/root"
+          folder_options+=(--backup-dir "$folder_backup_dir")
+        fi
+        run_rclone_with_progress "$label (ID-Archiv)" "$phase" \
+          rclone copy "$source" "$object_destination" \
+          "${folder_options[@]}" "${id_source_options[@]}" \
+          "${RCLONE_OPTS[@]}" || copy_status=$?
+      else
+        existing_is_current=0
+        archived_file="$object_directory/$archive_name"
+        if [[ "$DRY_RUN" == "0" && "$source_md5" =~ ^[0-9a-fA-F]{32}$ &&
+              -f "$archived_file" && ! -L "$archived_file" ]]; then
+          entry_count="$(/usr/bin/find "$object_directory" -mindepth 1 -maxdepth 1 \
+            -exec /usr/bin/printf 'x\n' \; 2>/dev/null | /usr/bin/wc -l |
+            /usr/bin/tr -d '[:space:]')"
+          local_md5="$(/sbin/md5 -q -- "$archived_file" 2>/dev/null || true)"
+          if [[ "$entry_count" == "1" &&
+                "$(lowercase "$local_md5")" == "$(lowercase "$source_md5")" ]]; then
+            existing_is_current=1
+          fi
+        elif [[ "$DRY_RUN" == "0" && -n "$source_modified_time" &&
+                -f "$archived_file" && ! -L "$archived_file" &&
+                -f "$manifest_path" && ! -L "$manifest_path" ]]; then
+          entry_count="$(/usr/bin/find "$object_directory" -mindepth 1 -maxdepth 1 \
+            -exec /usr/bin/printf 'x\n' \; 2>/dev/null | /usr/bin/wc -l |
+            /usr/bin/tr -d '[:space:]')"
+          recorded_sha256="$(/usr/bin/jq -er \
+            --arg id "$object_id" \
+            --arg archiveName "$archive_name" \
+            --arg modifiedTime "$source_modified_time" '
+              .objects[]
+              | select(.id == $id and .archiveName == $archiveName and
+                       .modifiedTime == $modifiedTime)
+              | .storedSha256
+              | select(type == "string" and test("^[0-9a-f]{64}$"))
+            ' "$manifest_path" 2>/dev/null || true)"
+          local_sha256="$(/usr/bin/shasum -a 256 -- "$archived_file" 2>/dev/null)"
+          local_sha256="${local_sha256%% *}"
+          if [[ "$entry_count" == "1" && -n "$recorded_sha256" &&
+                "$local_sha256" == "$recorded_sha256" ]]; then
+            existing_is_current=1
+          fi
+        fi
+        if [[ "$DRY_RUN" == "1" ]]; then
+          file_options=(--retries 3 --low-level-retries 10 --dry-run)
+          run_rclone_with_progress "$label (ID-Archiv)" "$phase" \
+            rclone backend copyid "$source" "$object_id" "${object_directory%/}/" \
+            "${id_source_options[@]}" "${file_options[@]}" || copy_status=$?
+        elif [[ "$existing_is_current" != "1" ]]; then
+          object_stage="$(/usr/bin/mktemp -d \
+            "${objects_root}/.${object_key}.stage.XXXXXX")" || copy_status=70
+          if [[ "$copy_status" == "0" ]]; then
+            file_options=(--retries 3 --low-level-retries 10)
+            run_rclone_with_progress "$label (ID-Archiv)" "$phase" \
+              rclone backend copyid "$source" "$object_id" "${object_stage%/}/" \
+              "${id_source_options[@]}" "${file_options[@]}" || copy_status=$?
+          fi
+          archived_file="$object_stage/$archive_name"
+          if [[ "$copy_status" == "0" ]]; then
+            entry_count="$(/usr/bin/find "$object_stage" -mindepth 1 -maxdepth 1 \
+              -exec /usr/bin/printf 'x\n' \; 2>/dev/null | /usr/bin/wc -l |
+              /usr/bin/tr -d '[:space:]')"
+            if [[ "$entry_count" != "1" || ! -f "$archived_file" ||
+                  -L "$archived_file" ]]; then
+              copy_status=1
+            fi
+          fi
+          if [[ "$copy_status" == "0" && "$source_size" =~ ^[0-9]+$ ]]; then
+            [[ "$(/usr/bin/stat -f '%z' "$archived_file" 2>/dev/null || printf x)" == \
+              "$source_size" ]] || copy_status=1
+          fi
+          if [[ "$copy_status" == "0" && "$source_md5" =~ ^[0-9a-fA-F]{32}$ ]]; then
+            local_md5="$(/sbin/md5 -q -- "$archived_file" 2>/dev/null || true)"
+            [[ "$(lowercase "$local_md5")" == "$(lowercase "$source_md5")" ]] ||
+              copy_status=1
+          fi
+          if [[ "$copy_status" == "0" ]]; then
+            old_destination=""
+            if [[ -d "$object_directory" ]]; then
+              if [[ "$VERSIONING" == "1" ]]; then
+                old_destination="${DEST_ROOT%/}/$VERSIONS_SUBDIR/$VERSION_RUN_ID/.gdrive-collisions/$scope_hash/objects/$object_key"
+              else
+                replacement_root="$archive_root/.replacement-trash/$object_key"
+                if ! mkdir -p "$replacement_root"; then
+                  copy_status=1
+                else
+                  old_destination="$replacement_root/$(date -u '+%Y%m%dT%H%M%SZ')-$(/usr/bin/uuidgen | /usr/bin/tr '[:upper:]' '[:lower:]')"
+                fi
+              fi
+              if [[ "$copy_status" == "0" &&
+                    ( -e "$old_destination" || -L "$old_destination" ) ]]; then
+                copy_status=1
+              elif [[ "$copy_status" == "0" ]] &&
+                   ! mkdir -p "$(/usr/bin/dirname "$old_destination")"; then
+                copy_status=1
+              elif [[ "$copy_status" == "0" ]] &&
+                   ! /bin/mv "$object_directory" "$old_destination"; then
+                copy_status=1
+              fi
+            fi
+            if [[ "$copy_status" == "0" ]] &&
+               ! /bin/mv "$object_stage" "$object_directory"; then
+              copy_status=1
+              if [[ -n "$old_destination" && -d "$old_destination" &&
+                    ! -e "$object_directory" ]]; then
+                /bin/mv "$old_destination" "$object_directory" >/dev/null 2>&1 || true
+              fi
+            fi
+            if [[ "$copy_status" == "0" ]]; then
+              object_stage=""
+              archived_file="$object_directory/$archive_name"
+            fi
+          fi
+        fi
+      fi
+      nested_report="$LAST_RCLONE_COLLISION_REPORT"
+      LAST_RCLONE_COLLISION_REPORT=""
+      cleanup_temp_file "$nested_report"
+      if [[ "$copy_status" != "0" ]]; then
+        cleanup_temp_file "$object_stage"
+        cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+        log "FEHLER: Eine gleichnamige Drive-ID konnte nicht separat gesichert werden."
+        return 1
+      fi
+
+      if [[ "$DRY_RUN" == "0" && "$mime_type" == "application/vnd.google-apps.folder" ]]; then
+        if [[ ! -d "$object_destination" || -L "$object_destination" ]]; then
+          cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+          log "FEHLER: Das ID-Archiv des Drive-Ordners wurde nicht materialisiert."
+          return 1
+        fi
+        verification_report="$(mktemp \
+          "${TMPDIR:-/tmp}/gdrive-collision-folder-check.XXXXXX")" || {
+          cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+          return 1
+        }
+        verification_status=0
+        run_rclone_with_progress "$label (ID-Pruefung)" "$phase" \
+          rclone copy "$source" "$object_destination" \
+          --drive-root-folder-id "$object_id" "${id_source_options[@]}" \
+          "${RCLONE_OPTS[@]}" --dry-run --retries 1 \
+          --combined "$verification_report" || verification_status=$?
+        nested_report="$LAST_RCLONE_COLLISION_REPORT"
+        LAST_RCLONE_COLLISION_REPORT=""
+        cleanup_temp_file "$nested_report"
+        if [[ "$verification_status" != "0" ]] ||
+           /usr/bin/grep -Eq '^[+*!][[:space:]]' "$verification_report" 2>/dev/null; then
+          cleanup_temp_file "$verification_report" "$validated_json" \
+            "$objects_tsv" "$manifest_objects"
+          log "FEHLER: Das ID-Archiv eines Drive-Ordners ist nach dem Kopieren nicht vollstaendig."
+          return 1
+        fi
+        cleanup_temp_file "$verification_report"
+      fi
+
+      local_sha256=""
+      if [[ "$DRY_RUN" == "0" && "$mime_type" != "application/vnd.google-apps.folder" ]]; then
+        archived_file="$object_directory/$archive_name"
+        local_sha256="$(/usr/bin/shasum -a 256 -- "$archived_file" 2>/dev/null)"
+        local_sha256="${local_sha256%% *}"
+        if [[ ! "$local_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+          cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+          return 1
+        fi
+        archive_path=".gdrive-collisions/$scope_hash/objects/$object_key/$archive_name"
+      else
+        archive_path=".gdrive-collisions/$scope_hash/objects/$object_key/root"
+      fi
+      if ! /usr/bin/jq -ce \
+          --arg id "$object_id" \
+          --arg objectKey "$object_key" \
+          --arg archiveName "$archive_name" \
+          --arg archivePath "$archive_path" \
+          --arg storedSha256 "$local_sha256" '
+            map(select(.id == $id))[0] +
+            {
+              objectKey: $objectKey,
+              archiveName: $archiveName,
+              archivePath: $archivePath,
+              storedSha256: $storedSha256
+            }
+            | with_entries(select(.value != null and .value != ""))
+          ' "$validated_json" >>"$manifest_objects"; then
+        cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+        return 1
+      fi
+      copied_count=$((copied_count + 1))
+    done <"$objects_tsv"
+
+    proof_count="$(/usr/bin/wc -l <"$manifest_objects" | /usr/bin/tr -d '[:space:]')"
+    if [[ "$copied_count" != "$match_count" || "$proof_count" != "$match_count" ]]; then
+      cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+      log "FEHLER: Nicht jede inventarisierte Drive-ID wurde nachweislich archiviert."
+      return 1
+    fi
+
+    if [[ "$DRY_RUN" == "0" ]]; then
+      if [[ -L "$manifest_path" ||
+            ( -e "$manifest_path" && ! -f "$manifest_path" ) ]]; then
+        cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+        log "FEHLER: Das Manifest des Drive-ID-Archivs ist unsicher."
+        return 1
+      fi
+      manifest_umask="$(umask)"
+      umask 077
+      manifest_temp="$(/usr/bin/mktemp "${manifest_path}.tmp.XXXXXX")" || {
+        umask "$manifest_umask"
+        cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+        return 1
+      }
+      umask "$manifest_umask"
+      generated_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+      if ! /usr/bin/jq -n \
+          --arg area "$relative_destination" \
+          --arg path "$logical_path" \
+          --arg collisionKind "$collision_kind" \
+          --arg generatedAt "$generated_at" \
+          --arg versionRunID "$VERSION_RUN_ID" \
+          --slurpfile objects "$manifest_objects" '
+            {
+              protocol: 1,
+              archive: "drive-id-collisions-v1",
+              area: $area,
+              logicalPath: $path,
+              collisionKind: $collisionKind,
+              generatedAt: $generatedAt,
+              versionRunID: $versionRunID,
+              objects: $objects
+            }
+            | with_entries(select(.value != null and .value != ""))
+          ' >"$manifest_temp" ||
+         ! /bin/chmod 600 "$manifest_temp" ||
+         ! /bin/mv "$manifest_temp" "$manifest_path"; then
+        cleanup_temp_file "$manifest_temp" "$validated_json" "$objects_tsv" \
+          "$manifest_objects"
+        RUN_STATE_REASON="destination_permission_denied"
+        log "FEHLER: Das Manifest des Drive-ID-Archivs konnte nicht atomar geschrieben werden."
+        return 1
+      fi
+    fi
+    cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+    log "Drive-ID-Archiv vollstaendig: $match_count getrennte Objekte fuer einen gleichnamigen Eintrag."
+  done <"$collision_report"
+
+  [[ -n "$seen_hashes" ]] || {
+    log "FEHLER: Die rclone-Kollisionsmeldung enthielt keine sicher archivierbare Drive-ID."
+    return 1
+  }
+  return 0
+}
+
 copy_one() {
   local label="$1"
   local source="$2"
@@ -2003,6 +2784,7 @@ copy_one() {
   local phase=""
   local backup_dir=""
   local copy_status=0
+  local collision_report=""
 
   COPY_INDEX=$((COPY_INDEX + 1))
   if (( COPY_TOTAL > 0 )); then
@@ -2065,6 +2847,21 @@ copy_one() {
     run_rclone_with_progress "$label" "$phase" rclone copy "$source" "$dest" \
       "$@" "${RCLONE_OPTS[@]}" || copy_status=$?
   fi
+  collision_report="$LAST_RCLONE_COLLISION_REPORT"
+  LAST_RCLONE_COLLISION_REPORT=""
+  if [[ "$copy_status" == "65" ]]; then
+    if archive_source_collisions "$label" "$phase" "$source" "$dest" \
+        "$collision_report" "$@"; then
+      copy_status=0
+      if [[ "$RUN_STATE_REASON" == "source_name_collision" && "$errors" == "0" ]]; then
+        RUN_STATE_REASON=""
+      fi
+    else
+      copy_status=1
+      RUN_STATE_REASON="${RUN_STATE_REASON:-source_name_collision}"
+    fi
+  fi
+  cleanup_temp_file "$collision_report"
 
   # A vanished SMB mount must never be recreated as an ordinary directory on
   # the startup disk. Revalidate after every transfer before attempting the
