@@ -180,6 +180,27 @@ SH
 printf '%s on %s (smbfs, nodev, nosuid)\n' '//backup.test/share' "${FAKE_NAS_MOUNT:?}"
 SH
 
+  cat >"$FAKE_BIN/cmp" <<'SH'
+#!/bin/bash
+if [[ -n "${FAKE_CMP_CALLS_FILE:-}" ]]; then
+  printf 'call\n' >>"$FAKE_CMP_CALLS_FILE"
+fi
+sequence="${FAKE_CMP_STATUS_SEQUENCE:-real}"
+if [[ "$sequence" != "real" ]]; then
+  IFS=',' read -r -a statuses <<<"$sequence"
+  call_number="$(wc -l <"${FAKE_CMP_CALLS_FILE:?}")"
+  index=$((call_number - 1))
+  if (( index >= ${#statuses[@]} )); then
+    index=$((${#statuses[@]} - 1))
+  fi
+  cmp_status="${statuses[$index]}"
+  if [[ "$cmp_status" != "0" ]]; then
+    exit "$cmp_status"
+  fi
+fi
+exec /usr/bin/cmp "$@"
+SH
+
   cat >"$FAKE_BIN/trash" <<'SH'
 #!/bin/bash
 : "${FAKE_TEMP_TRASH_DIR:?}"
@@ -198,7 +219,8 @@ exit 0
 SH
   done
   chmod +x "$FAKE_BIN/rclone" "$FAKE_BIN/jq" "$FAKE_BIN/open" "$FAKE_BIN/flock" \
-    "$FAKE_BIN/mount" "$FAKE_BIN/trash" "$FAKE_BIN/diskutil" "$FAKE_BIN/plutil"
+    "$FAKE_BIN/mount" "$FAKE_BIN/cmp" "$FAKE_BIN/trash" \
+    "$FAKE_BIN/diskutil" "$FAKE_BIN/plutil"
 }
 
 run_backup_with_mode() {
@@ -211,6 +233,7 @@ run_backup_with_mode() {
     GDRIVE_BACKUP_TARGET=nas \
     GDRIVE_BACKUP_NAS_MOUNT="$NAS_MOUNT" \
     GDRIVE_BACKUP_MOUNT_BIN="$FAKE_BIN/mount" \
+    GDRIVE_BACKUP_CMP_BIN="$FAKE_BIN/cmp" \
     GDRIVE_BACKUP_DEST_ROOT="$NAS_MOUNT/backup" \
     GDRIVE_BACKUP_CONFIRM="${GDRIVE_BACKUP_CONFIRM:-0}" \
     GDRIVE_BACKUP_LOCK="$TEST_HOME/backup.lock" \
@@ -250,6 +273,8 @@ run_backup_with_mode() {
     FAKE_RCLONE_DISCONNECT_MOUNT="${FAKE_RCLONE_DISCONNECT_MOUNT:-}" \
     FAKE_RCLONE_CONFIG_STARTED_FILE="${FAKE_RCLONE_CONFIG_STARTED_FILE:-}" \
     FAKE_RCLONE_CONFIG_SLEEP_SECONDS="${FAKE_RCLONE_CONFIG_SLEEP_SECONDS:-0}" \
+    FAKE_CMP_STATUS_SEQUENCE="${FAKE_CMP_STATUS_SEQUENCE:-real}" \
+    FAKE_CMP_CALLS_FILE="${FAKE_CMP_CALLS_FILE:-}" \
     FAKE_FLOCK_STATUS="${FAKE_FLOCK_STATUS:-0}" \
     FAKE_NAS_MOUNT="$NAS_MOUNT" \
     FAKE_TEMP_TRASH_DIR="$TEMP_TRASH_DIR" \
@@ -710,6 +735,66 @@ $'dot_bin_prefix=__gdt0__dotbin_\ncurrent_layers=1\nversion_layers=2' \
     pass "$name"
   else
     fail "$name (exit=$status summary=${summary//$'\n'/,})"
+  fi
+}
+
+write_valid_nas_codec_manifest() {
+  mkdir -p "$NAS_MOUNT/backup"
+  printf '%s\n' \
+    'protocol=1' \
+    'codec=nas-path-v1' \
+    'prefix=__gdt0__' \
+    'dot_bin_prefix=__gdt0__dotbin_' \
+    'current_layers=1' \
+    'version_layers=2' \
+    >"$NAS_MOUNT/backup/.gdrive-name-codec"
+}
+
+test_nas_codec_retries_transient_manifest_read_errors() {
+  local name="NAS codec retries transient manifest read errors"
+  local calls_file status calls
+  prepare_test_environment
+  write_valid_nas_codec_manifest
+  calls_file="$TEST_HOME/cmp-calls"
+
+  FAKE_CMP_STATUS_SEQUENCE='2,2,0' \
+    FAKE_CMP_CALLS_FILE="$calls_file" \
+    run_backup
+  status=$?
+  calls="$(/usr/bin/awk 'END { print NR + 0 }' "$calls_file" 2>/dev/null)"
+
+  if [[ "$status" == "0" && "$calls" == "3" ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status calls=$calls)"
+  fi
+}
+
+test_nas_codec_classifies_persistent_manifest_read_errors() {
+  local name="NAS codec distinguishes unreadable manifests from invalid content"
+  local calls_file status calls summary manifest_before manifest_after
+  prepare_test_environment
+  write_valid_nas_codec_manifest
+  calls_file="$TEST_HOME/cmp-calls"
+  manifest_before="$(/usr/bin/shasum -a 256 \
+    "$NAS_MOUNT/backup/.gdrive-name-codec" | /usr/bin/awk '{print $1}')"
+
+  FAKE_CMP_STATUS_SEQUENCE='2,2,2' \
+  FAKE_CMP_CALLS_FILE="$calls_file" \
+    run_backup
+  status=$?
+  calls="$(/usr/bin/awk 'END { print NR + 0 }' "$calls_file" 2>/dev/null)"
+  summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+  manifest_after="$(/usr/bin/shasum -a 256 \
+    "$NAS_MOUNT/backup/.gdrive-name-codec" | /usr/bin/awk '{print $1}')"
+
+  if [[ "$status" == "69" &&
+        "$calls" == "3" &&
+        "$summary" == *$'reason=destination_unreadable\n'* &&
+        "$manifest_before" == "$manifest_after" ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status calls=$calls summary=${summary//$'\n'/,})"
   fi
 }
 
@@ -1515,6 +1600,8 @@ test_nas_copy_uses_reversible_dot_bin_codec
 test_nas_codec_dry_run_does_not_create_manifest
 test_nas_codec_rejects_unsupported_rclone
 test_nas_codec_rejects_malformed_manifest
+test_nas_codec_retries_transient_manifest_read_errors
+test_nas_codec_classifies_persistent_manifest_read_errors
 test_nas_codec_rejects_nonregular_manifest
 test_nas_codec_rejects_ambiguous_legacy_names
 test_nas_codec_keeps_shared_drive_destination_raw

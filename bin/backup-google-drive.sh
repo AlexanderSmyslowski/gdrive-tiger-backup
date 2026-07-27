@@ -182,6 +182,7 @@ CRYPT_REMOTE="${GDRIVE_BACKUP_CRYPT_REMOTE-}"
 DISKUTIL_BIN="${GDRIVE_BACKUP_DISKUTIL-/usr/sbin/diskutil}"
 OSASCRIPT_BIN="${GDRIVE_BACKUP_OSASCRIPT-/usr/bin/osascript}"
 MOUNT_BIN="${GDRIVE_BACKUP_MOUNT_BIN-/sbin/mount}"
+CMP_BIN="${GDRIVE_BACKUP_CMP_BIN-/usr/bin/cmp}"
 ENCRYPTED_VOLUME_REAL=""
 ENCRYPTED_VOLUME_DEVICE=""
 ENCRYPTED_VOLUME_UUID=""
@@ -264,8 +265,26 @@ nas_name_codec_manifest_content() {
     'version_layers=2'
 }
 
+compare_nas_name_codec_manifest() {
+  local manifest_path="$1"
+  local attempt compare_status=2
+
+  for attempt in 1 2 3; do
+    "$CMP_BIN" -s "$manifest_path" <(nas_name_codec_manifest_content)
+    compare_status=$?
+    case "$compare_status" in
+      0|1) return "$compare_status" ;;
+    esac
+    if (( attempt < 3 )); then
+      log "WARNUNG: Das NAS-Namenscodec-Manifest ist voruebergehend nicht lesbar; Vergleich wird wiederholt."
+      /bin/sleep 0.25
+    fi
+  done
+  return "$compare_status"
+}
+
 prepare_nas_name_codec() {
-  local manifest_path legacy_collision temp_manifest copy_help
+  local manifest_path manifest_compare_status legacy_collision temp_manifest copy_help
 
   [[ "$BACKUP_TARGET" == "nas" && "$ENCRYPTION" != "rclone-crypt" ]] || return 0
 
@@ -285,13 +304,24 @@ prepare_nas_name_codec() {
   if [[ -f "$manifest_path" ]]; then
     # cmp preserves the terminating newline. Restore uses the same byte-exact
     # contract so backup and restore cannot disagree about a damaged manifest.
-    if ! /usr/bin/cmp -s "$manifest_path" <(nas_name_codec_manifest_content); then
-      RUN_STATE_REASON="invalid_name_codec"
-      log "FEHLER: Das NAS-Namenscodec-Manifest hat eine unbekannte oder beschaedigte Version."
-      return 1
-    fi
-    NAS_NAME_CODEC_ENABLED=1
-    return 0
+    compare_nas_name_codec_manifest "$manifest_path"
+    manifest_compare_status=$?
+    case "$manifest_compare_status" in
+      0)
+        NAS_NAME_CODEC_ENABLED=1
+        return 0
+        ;;
+      1)
+        RUN_STATE_REASON="invalid_name_codec"
+        log "FEHLER: Das NAS-Namenscodec-Manifest hat eine unbekannte oder beschaedigte Version."
+        return 1
+        ;;
+      *)
+        RUN_STATE_REASON="destination_unreadable"
+        log "FEHLER: Das NAS-Namenscodec-Manifest konnte nicht zuverlaessig gelesen werden."
+        return 1
+        ;;
+    esac
   fi
 
   # Before enabling the codec on an existing plain tree, make sure its reserved

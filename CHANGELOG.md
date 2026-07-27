@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reuse one in-process setup window from the persistent controller, present it before network discovery, and drain command output without deadlocking or spawning extra Dock instances.
+- Retry transient NAS codec-manifest read errors and report a persistently unreadable destination separately from a genuinely invalid manifest.
 - Keep passive mount confirmations visible and clickable without activating the app or entering another application's fullscreen Space.
 - Bind external APFS targets to their stable volume UUID, resolve the current macOS mount path before every run, and reject same-name or swapped volumes before Drive access.
 - Refuse APFS path traversal, symbolic-link escapes, nested foreign file systems, post-confirmation swaps, and retention operations whose UUID or device identity changes.
