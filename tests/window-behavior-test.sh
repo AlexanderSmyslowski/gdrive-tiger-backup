@@ -107,8 +107,8 @@ if [[ "$collection_behavior_method" == *'NSWindowCollectionBehaviorManaged'* &&
       "$collection_behavior_method" != *'NSWindowCollectionBehaviorCanJoinAllSpaces'* &&
       "$collection_behavior_method" != *'NSWindowCollectionBehaviorFullScreenAuxiliary'* &&
       "$startup_method" == *'self.window.collectionBehavior = [self statusWindowCollectionBehavior];'* &&
-      "$startup_method" == *'self.window.hidesOnDeactivate = !self.confirmMode || !self.progressForegroundMode;'* ]]; then
-  printf '%s\n' 'ok - background status windows stay on one normal Space and hide behind other apps'
+      "$startup_method" == *'self.window.hidesOnDeactivate = [self statusWindowShouldHideOnDeactivate];'* ]]; then
+  printf '%s\n' 'ok - background status windows stay on one normal Space with mode-specific visibility'
 else
   printf '%s\n' 'not ok - a background status window can still enter another app or fullscreen Space'
   failures=$((failures + 1))

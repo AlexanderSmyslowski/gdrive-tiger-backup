@@ -138,6 +138,8 @@ if [[ "${1:-}" == "info" && "${2:-}" == "-plist" ]]; then
 <dict>
   <key>FilesystemType</key><string>${FAKE_FILESYSTEM_TYPE:-apfs}</string>
   <key>MountPoint</key><string>${FAKE_MOUNT_POINT:-/missing-test-mount}</string>
+  <key>RemovableMediaOrExternalDevice</key><${FAKE_EXTERNAL_VALUE:-true}/>
+  <key>WritableMedia</key><true/>
   $(if [[ "${FAKE_PLIST_MODE:-valid}" != "missing-encryption" ]]; then
       printf '<key>Encryption</key><%s/>' "$encryption_value"
     fi)
@@ -642,8 +644,99 @@ test_rclone_crypt_keeps_local_log_owner_only() {
   fi
 }
 
+test_saved_apfs_uuid_resolves_the_current_mount_path() {
+  local name="saved APFS UUID resolves the current mount path instead of a same-name path"
+  local configured_volume resolved_volume status
+  prepare_test_environment
+  configured_volume="$TEST_HOME/GoogleDrive-Backup"
+  resolved_volume="$TEST_HOME/GoogleDrive-Backup 2"
+  mkdir -p "$configured_volume" "$resolved_volume"
+  configured_volume="$(cd "$configured_volume" && /bin/pwd -P)"
+  resolved_volume="$(cd "$resolved_volume" && /bin/pwd -P)"
+
+  run_backup \
+    GDRIVE_BACKUP_ENCRYPTION=none \
+    GDRIVE_BACKUP_VOLUME_UUID=11111111-2222-3333-4444-555555555555 \
+    GDRIVE_BACKUP_VOLUME="$configured_volume" \
+    GDRIVE_BACKUP_DEST_ROOT="$configured_volume" \
+    FAKE_MOUNT_POINT="$resolved_volume"
+  status=$?
+
+  if [[ "$status" == "0" ]] &&
+    grep -Fq "mount=$resolved_volume dest=$resolved_volume" "$TEST_HOME/backup.log" &&
+    grep -Fq "$resolved_volume/My Drive" "$RCLONE_LOG" &&
+    ! grep -Fq "$configured_volume/My Drive" "$RCLONE_LOG"; then
+    pass "$name"
+  else
+    fail "$name (status $status)"
+  fi
+}
+
+test_saved_apfs_uuid_mismatch_fails_closed() {
+  local name="saved APFS UUID mismatch stops before Drive access"
+  local status
+  prepare_test_environment
+  mkdir -p "$VOLUME"
+
+  run_backup \
+    GDRIVE_BACKUP_ENCRYPTION=none \
+    GDRIVE_BACKUP_VOLUME_UUID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee \
+    FAKE_VOLUME_UUID=11111111-2222-3333-4444-555555555555 \
+    FAKE_MOUNT_POINT="$VOLUME"
+  status=$?
+
+  if [[ "$status" == "69" ]] &&
+    { [[ ! -e "$RCLONE_LOG" ]] || ! grep -Eq '^(config|backend|copy)( |$)' "$RCLONE_LOG"; }; then
+    pass "$name"
+  else
+    fail "$name (status $status)"
+  fi
+}
+
+test_saved_apfs_uuid_accepts_a_mounted_apfs_image() {
+  local name="saved APFS UUID still supports a mounted APFS image"
+  local status
+  prepare_test_environment
+  mkdir -p "$VOLUME"
+
+  run_backup \
+    GDRIVE_BACKUP_ENCRYPTION=none \
+    GDRIVE_BACKUP_VOLUME_UUID=11111111-2222-3333-4444-555555555555 \
+    FAKE_EXTERNAL_VALUE=false \
+    FAKE_MOUNT_POINT="$VOLUME"
+  status=$?
+
+  if [[ "$status" == "0" ]] && grep -Eq '^copy( |$)' "$RCLONE_LOG"; then
+    pass "$name"
+  else
+    fail "$name (status $status)"
+  fi
+}
+
+test_malformed_saved_apfs_uuid_is_rejected() {
+  local name="malformed saved APFS UUID is rejected before disk access"
+  local status
+  prepare_test_environment
+  mkdir -p "$VOLUME"
+
+  run_backup \
+    GDRIVE_BACKUP_ENCRYPTION=none \
+    GDRIVE_BACKUP_VOLUME_UUID='../wrong-volume'
+  status=$?
+
+  if [[ "$status" == "64" && ! -s "$DISKUTIL_LOG" && ! -s "$RCLONE_LOG" ]]; then
+    pass "$name"
+  else
+    fail "$name (status $status)"
+  fi
+}
+
 test_invalid_encryption_mode_is_rejected
 test_apfs_encryption_mode_rejects_nas_target
+test_saved_apfs_uuid_resolves_the_current_mount_path
+test_saved_apfs_uuid_mismatch_fails_closed
+test_saved_apfs_uuid_accepts_a_mounted_apfs_image
+test_malformed_saved_apfs_uuid_is_rejected
 test_encrypted_mode_never_auto_creates_plain_volume
 test_unencrypted_apfs_volume_is_rejected
 test_encrypted_apfs_volume_is_accepted

@@ -9,6 +9,7 @@
 @property(nonatomic) NSInteger launchCalls;
 @property(nonatomic, copy) NSString *launchedTrigger;
 @property(nonatomic) BOOL launchedAssumeYes;
+@property(nonatomic, copy) NSDictionary<NSString *, NSString *> *testVolumeUUIDs;
 @end
 
 @implementation MountTriggerDelegate
@@ -29,6 +30,10 @@
 
 - (void)refreshOverviewStatus:(id)sender {
     (void)sender;
+}
+
+- (NSString *)volumeUUIDForPath:(NSString *)path {
+    return self.testVolumeUUIDs[path];
 }
 
 @end
@@ -75,6 +80,32 @@ int main(void) {
         [delegate workspaceVolumeDidMount:MountNotification(@"/Volumes/GoogleDrive-Backup")];
         Assert(delegate.launchCalls == 1,
                @"duplicate mount notifications are debounced");
+
+        MountTriggerDelegate *uuidDelegate = [[MountTriggerDelegate alloc] init];
+        uuidDelegate.testConfig = @{
+            @"GDRIVE_BACKUP_TARGET": @"nas",
+            @"GDRIVE_BACKUP_NAS_MOUNT": @"/Volumes/NAS",
+            @"GDRIVE_BACKUP_VOLUME": @"/Volumes/GoogleDrive-Backup",
+            @"GDRIVE_BACKUP_VOLUME_UUID": @"EXPECTED-UUID"
+        };
+        uuidDelegate.testVolumeUUIDs = @{
+            @"/Volumes/GoogleDrive-Backup": @"WRONG-UUID",
+            @"/Volumes/GoogleDrive-Backup 2": @"expected-uuid"
+        };
+        Assert(![uuidDelegate mountedVolumePath:@"/Volumes/GoogleDrive-Backup"
+                                  matchesConfig:uuidDelegate.testConfig] &&
+               [uuidDelegate mountedVolumePath:@"/Volumes/GoogleDrive-Backup 2"
+                                  matchesConfig:uuidDelegate.testConfig],
+               @"saved UUID selects the intended volume even when macOS changes its mount suffix");
+        [uuidDelegate workspaceVolumeDidMount:
+            MountNotification(@"/Volumes/GoogleDrive-Backup")];
+        Assert(uuidDelegate.launchCalls == 0,
+               @"a same-name volume with the wrong UUID cannot trigger a backup");
+        [uuidDelegate workspaceVolumeDidMount:
+            MountNotification(@"/Volumes/GoogleDrive-Backup 2")];
+        Assert(uuidDelegate.launchCalls == 1 &&
+               [uuidDelegate.launchedTrigger isEqualToString:@"mount"],
+               @"the matching UUID triggers the retained external target beside a NAS profile");
 
         MountTriggerDelegate *nasDelegate = [[MountTriggerDelegate alloc] init];
         nasDelegate.testConfig = @{

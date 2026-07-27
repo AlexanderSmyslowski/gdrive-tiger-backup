@@ -23,7 +23,7 @@ the backup does not preserve Google Drive's native document revision history.
 
 - A user LaunchAgent starts the lightweight menu bar controller at login.
 - Automatic schedule and mount-triggered runs can be paused from the menu bar without changing the saved schedule; manual backups remain available.
-- The controller observes macOS mount events and reacts only when the exact saved APFS backup volume was newly mounted. Unrelated disks and NAS mounts are ignored.
+- The controller observes macOS mount events and reacts only when the saved APFS volume UUID was newly mounted. A changed `/Volumes/… 2` suffix is resolved automatically; unrelated or merely same-name disks are ignored.
 - The overview shows the last verified run, configured schedule, exact local destination, and available destination capacity.
 - With notifications enabled, macOS reports a failed automatic run immediately and a daily 20:00 run that is still missing at 21:00. Alerts are deduplicated per profile and run; the menu bar warning remains until a newer successful backup.
 - Scheduled, mount-triggered, and menu-bar-only runs stay headless. Their live and final state remains available through the menu bar, with a macOS notification for automatic failures.
@@ -32,7 +32,7 @@ the backup does not preserve Google Drive's native document revision history.
 - In parallel, the setup window can configure a mounted NAS share, for example SMB, AFP, or NFS under `/Volumes`. A writable directory alone never counts as a NAS: the setup check and backup engine both require a verified network file-system mount.
 - The setup window can select already mounted NAS shares, run a small Bonjour search, show the exact resolved destination, save a schedule, and start a backup manually. Its system check verifies the required tools, Google Drive access, and destination before a run. Backup actions never save edited form values implicitly.
 - A `flock` lock prevents two backup jobs from running at the same time.
-- Before a real backup starts, the Tiger helper asks whether this volume or NAS destination should be used.
+- Before a real mount-triggered backup starts, the Tiger helper asks whether this volume should be used. The question stays visible on its normal Space without activating the app or appearing over another application's fullscreen Space.
 - External disks and NAS targets are independent: plugging in the configured external disk still opens the confirmation dialog even when NAS backups are configured.
 - A direct manual start from the visible overview or setup can open the native
   AppKit helper. It stays on its original Space, never joins another app's
@@ -190,6 +190,9 @@ The default config keeps confirmation enabled:
 
 ```bash
 GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME=/Volumes/GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=11111111-2222-3333-4444-555555555555
 GDRIVE_BACKUP_LANG=en
 GDRIVE_BACKUP_CONFIRM=1
 GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
@@ -214,6 +217,7 @@ GDRIVE_BACKUP_SCHEDULE=manual
 Supported values for `GDRIVE_BACKUP_LANG` are `de`, `en`, `fr`, `es`, `ja`, `yue`, and `ko`.
 Supported values for `GDRIVE_BACKUP_TARGET` are `apfs` and `nas`.
 Supported values for `GDRIVE_BACKUP_SCHEDULE` are `manual`, `login`, `hourly`, and `daily`.
+`GDRIVE_BACKUP_VOLUME_UUID` is the APFS volume UUID recorded by setup. When it is present, it is authoritative: the engine asks `diskutil` for the volume's current mount point and never falls back to a same-name path. Legacy profiles without the key retain exact-path behavior until setup saves the mounted external target.
 Saved schedules run unattended after the script verifies the configured destination. `GDRIVE_BACKUP_CONFIRM=1` still protects mount-triggered runs with a prompt. Set it to `0` only if you also deliberately want those mount-triggered backups to start unattended whenever the configured volume is mounted.
 Set `GDRIVE_BACKUP_PAUSED=1` to silence schedule and mount-triggered runs without changing the saved schedule. The menu bar toggles this setting; **Backup now** always remains manual and available.
 Set `GDRIVE_BACKUP_NOTIFY_FAILURES=0` to disable macOS alerts for automatic failures and missed daily runs. The menu bar and overview continue to show backup status even when alerts are disabled or macOS notification permission is denied.
@@ -418,7 +422,7 @@ Time Machine backup volumes can be protected by macOS ACLs. If the root of your 
 
 The built-in first-use setup does exactly that for APFS disks after confirmation. For non-APFS disks, create or format a suitable APFS volume yourself first.
 
-Thunderbolt, USB, SD-card, and other directly attached disks appear as mounted volumes to macOS. The menu bar controller compares each mount notification with the exact saved APFS destination before offering a backup, so unrelated media cannot trigger repeated prompts. NAS and Ethernet storage usually appear as network volumes under `/Volumes`; because they may stay mounted for a long time, NAS backups use manual or scheduled starts. These modes can be used together: the saved external disk remains mount-aware, while NAS backups run from the app or schedule.
+Thunderbolt, USB, SD-card, and other directly attached disks appear as mounted volumes to macOS. The menu bar controller compares each mount notification with the saved APFS volume UUID before offering a backup, so unrelated and same-name media cannot trigger repeated prompts. NAS and Ethernet storage usually appear as network volumes under `/Volumes`; because they may stay mounted for a long time, NAS backups use manual or scheduled starts. These modes can be used together: the saved external disk remains mount-aware, while NAS backups run from the app or schedule.
 
 ## rclone Community
 

@@ -118,6 +118,7 @@ case "$BACKUP_TARGET" in
 esac
 
 BACKUP_VOLUME_NAME="${GDRIVE_BACKUP_VOLUME_NAME:-GoogleDrive-Backup}"
+BACKUP_VOLUME_UUID="${GDRIVE_BACKUP_VOLUME_UUID:-}"
 NAS_URL="${GDRIVE_BACKUP_NAS_URL:-}"
 NAS_MOUNT="${GDRIVE_BACKUP_NAS_MOUNT:-}"
 NAS_SUBDIR="${GDRIVE_BACKUP_NAS_SUBDIR:-GoogleDrive-Backup}"
@@ -138,6 +139,8 @@ else
   VOLUME="${GDRIVE_BACKUP_VOLUME:-/Volumes/$BACKUP_VOLUME_NAME}"
   DEST_ROOT="${GDRIVE_BACKUP_DEST_ROOT:-$VOLUME}"
 fi
+CONFIGURED_APFS_VOLUME="$VOLUME"
+CONFIGURED_APFS_DEST_ROOT="$DEST_ROOT"
 REMOTE="${RCLONE_REMOTE:-gdrive}"
 REMOTE="${REMOTE%:}"
 
@@ -181,6 +184,10 @@ ENCRYPTED_VOLUME_REAL=""
 ENCRYPTED_VOLUME_DEVICE=""
 ENCRYPTED_VOLUME_UUID=""
 ENCRYPTED_VOLUME_IDENTIFIER=""
+APFS_VOLUME_REAL=""
+APFS_VOLUME_DEVICE=""
+APFS_VOLUME_UUID=""
+APFS_VOLUME_IDENTIFIER=""
 VERSION_RUN_ID=""
 TARGET_APPROVED=0
 COPY_INDEX=0
@@ -589,6 +596,104 @@ plist_data_value() {
   local plist_data="$1"
   local key="$2"
   printf '%s' "$plist_data" | /usr/bin/plutil -extract "$key" raw -o - - 2>/dev/null
+}
+
+normalized_apfs_uuid() {
+  printf '%s' "$1" | /usr/bin/tr '[:lower:]' '[:upper:]'
+}
+
+resolve_configured_apfs_volume() {
+  local plist_data filesystem mount_point volume_uuid writable_media
+  local configured_volume configured_destination resolved_mount destination_suffix
+
+  [[ "$BACKUP_TARGET" == "apfs" && -n "$BACKUP_VOLUME_UUID" ]] || return 0
+  if [[ ! "$BACKUP_VOLUME_UUID" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
+    log "FEHLER: GDRIVE_BACKUP_VOLUME_UUID ist keine gueltige APFS-Volume-UUID."
+    return 64
+  fi
+  if [[ ! -x "$DISKUTIL_BIN" ]]; then
+    log "FEHLER: diskutil fuer die APFS-Volume-Identitaet fehlt: $(safe_name "$DISKUTIL_BIN")"
+    return 127
+  fi
+  if ! plist_data="$(run_with_timeout 8 "$DISKUTIL_BIN" info -plist "$BACKUP_VOLUME_UUID" 2>/dev/null)"; then
+    log "FEHLER: Das konfigurierte APFS-Backup-Volume ist nicht verfuegbar."
+    return 69
+  fi
+
+  filesystem="$(plist_data_value "$plist_data" FilesystemType || true)"
+  mount_point="$(plist_data_value "$plist_data" MountPoint || true)"
+  volume_uuid="$(plist_data_value "$plist_data" VolumeUUID || true)"
+  writable_media="$(plist_data_value "$plist_data" WritableMedia || true)"
+  if [[ "$filesystem" != "apfs" || -z "$mount_point" ||
+        "$(normalized_apfs_uuid "$volume_uuid")" != "$(normalized_apfs_uuid "$BACKUP_VOLUME_UUID")" ||
+        "$writable_media" != "true" ]]; then
+    log "FEHLER: diskutil bestaetigt nicht das konfigurierte APFS-Backup-Volume."
+    return 69
+  fi
+  if ! resolved_mount="$(canonical_existing_directory "$mount_point")"; then
+    log "FEHLER: Das konfigurierte APFS-Backup-Volume ist nicht eingehängt."
+    return 69
+  fi
+
+  configured_volume="$CONFIGURED_APFS_VOLUME"
+  configured_destination="$CONFIGURED_APFS_DEST_ROOT"
+  if [[ "$configured_destination" == "$configured_volume" ]]; then
+    DEST_ROOT="$resolved_mount"
+  elif [[ "$configured_destination" == "$configured_volume/"* ]]; then
+    destination_suffix="${configured_destination#"$configured_volume"}"
+    DEST_ROOT="${resolved_mount}${destination_suffix}"
+  else
+    log "FEHLER: Das APFS-Ziel liegt ausserhalb des konfigurierten Backup-Volumes."
+    return 69
+  fi
+  VOLUME="$resolved_mount"
+  log "APFS-Backup-Volume per UUID aufgeloest: $VOLUME"
+  return 0
+}
+
+validate_configured_apfs_volume_identity() {
+  local plist_data filesystem mount_point volume_uuid volume_identifier
+  local mount_real current_real current_device
+
+  [[ "$BACKUP_TARGET" == "apfs" && -n "$BACKUP_VOLUME_UUID" ]] || return 0
+  if ! plist_data="$(run_with_timeout 8 "$DISKUTIL_BIN" info -plist "$BACKUP_VOLUME_UUID" 2>/dev/null)"; then
+    log "FEHLER: Identitaet des APFS-Backup-Volumes ist nicht mehr lesbar."
+    return 1
+  fi
+  filesystem="$(plist_data_value "$plist_data" FilesystemType || true)"
+  mount_point="$(plist_data_value "$plist_data" MountPoint || true)"
+  volume_uuid="$(plist_data_value "$plist_data" VolumeUUID || true)"
+  volume_identifier="$(plist_data_value "$plist_data" DeviceIdentifier || true)"
+  if [[ "$filesystem" != "apfs" || -z "$mount_point" || -z "$volume_identifier" ||
+        "$(normalized_apfs_uuid "$volume_uuid")" != "$(normalized_apfs_uuid "$BACKUP_VOLUME_UUID")" ]]; then
+    log "FEHLER: Identitaet des APFS-Backup-Volumes stimmt nicht mehr."
+    return 1
+  fi
+  if ! current_real="$(canonical_existing_directory "$VOLUME")" ||
+     ! mount_real="$(canonical_existing_directory "$mount_point")" ||
+     [[ "$current_real" != "$mount_real" ]]; then
+    log "FEHLER: Das APFS-Backup-Volume ist nicht mehr am aufgeloesten Mountpunkt."
+    return 1
+  fi
+  if ! current_device="$(/usr/bin/stat -f '%d' "$current_real" 2>/dev/null)" ||
+     [[ -z "$current_device" ]]; then
+    log "FEHLER: Dateisystem-ID des APFS-Backup-Volumes ist nicht lesbar."
+    return 1
+  fi
+
+  if [[ -z "$APFS_VOLUME_UUID" ]]; then
+    APFS_VOLUME_REAL="$current_real"
+    APFS_VOLUME_DEVICE="$current_device"
+    APFS_VOLUME_UUID="$volume_uuid"
+    APFS_VOLUME_IDENTIFIER="$volume_identifier"
+  elif [[ "$current_real" != "$APFS_VOLUME_REAL" ||
+          "$current_device" != "$APFS_VOLUME_DEVICE" ||
+          "$(normalized_apfs_uuid "$volume_uuid")" != "$(normalized_apfs_uuid "$APFS_VOLUME_UUID")" ||
+          "$volume_identifier" != "$APFS_VOLUME_IDENTIFIER" ]]; then
+    log "FEHLER: Das APFS-Backup-Volume wurde waehrend des Laufs ausgetauscht."
+    return 1
+  fi
+  return 0
 }
 
 validate_encrypted_apfs_destination() {
@@ -1839,6 +1944,8 @@ find_setup_candidate() {
 }
 
 persist_volume_config() {
+  local plist_data created_uuid
+
   mkdir -p "$(dirname "$CONFIG_FILE")"
   touch "$CONFIG_FILE"
   /bin/chmod 600 "$CONFIG_FILE"
@@ -1855,6 +1962,20 @@ persist_volume_config() {
   if ! grep -q '^GDRIVE_BACKUP_AUTO_CREATE_VOLUME=' "$CONFIG_FILE"; then
     printf 'GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1\n' >>"$CONFIG_FILE"
   fi
+  if ! grep -q '^GDRIVE_BACKUP_VOLUME_UUID=' "$CONFIG_FILE"; then
+    if ! plist_data="$(run_with_timeout 8 "$DISKUTIL_BIN" info -plist "$VOLUME" 2>/dev/null)"; then
+      log "FEHLER: UUID des neu angelegten APFS-Volumes ist nicht lesbar."
+      return 1
+    fi
+    created_uuid="$(plist_data_value "$plist_data" VolumeUUID || true)"
+    if [[ ! "$created_uuid" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
+      log "FEHLER: Neu angelegtes APFS-Volume hat keine gueltige Volume-UUID."
+      return 1
+    fi
+    LC_ALL=C printf 'GDRIVE_BACKUP_VOLUME_UUID=%q\n' "$created_uuid" >>"$CONFIG_FILE"
+    BACKUP_VOLUME_UUID="$created_uuid"
+  fi
+  return 0
 }
 
 create_apfs_backup_volume() {
@@ -1924,7 +2045,10 @@ ensure_backup_volume() {
   for _ in {1..30}; do
     if [[ -d "$VOLUME" ]]; then
       TARGET_APPROVED=1
-      persist_volume_config
+      if ! persist_volume_config; then
+        log "FEHLER: Identitaet des neuen APFS-Volumes konnte nicht gespeichert werden."
+        return 1
+      fi
       log "Backup-Volume bereit: $VOLUME"
       return 0
     fi
@@ -2072,6 +2196,11 @@ if [[ "$SETUP_UI" == "1" ]]; then
   exit 69
 fi
 
+resolve_status=0
+resolve_configured_apfs_volume || resolve_status=$?
+if [[ "$resolve_status" != "0" ]]; then
+  exit "$resolve_status"
+fi
 log "Start: remote=${REMOTE}: dry_run=$DRY_RUN target=$BACKUP_TARGET mount=$VOLUME dest=$DEST_ROOT"
 if [[ "$BACKUP_TARGET" == "invalid" ]]; then
   log "FEHLER: Ungueltiger Zieltyp '$REQUESTED_BACKUP_TARGET'. Erlaubt sind 'apfs' und 'nas'."
@@ -2107,6 +2236,11 @@ if ! ensure_backup_target; then
     exit 0
   fi
   log "FEHLER: Das konfigurierte Backup-Ziel ist nicht verfuegbar."
+  exit 69
+fi
+
+if ! validate_configured_apfs_volume_identity; then
+  log "FEHLER: Das konfigurierte APFS-Backup-Volume konnte nicht sicher bestaetigt werden."
   exit 69
 fi
 
@@ -2914,6 +3048,11 @@ copy_one() {
     errors=$((errors + 1))
     return
   fi
+  if ! validate_configured_apfs_volume_identity; then
+    log "FEHLER: APFS-Backup-Volume konnte vor '$label' nicht erneut bestaetigt werden."
+    errors=$((errors + 1))
+    return
+  fi
   if [[ "$ENCRYPTION" == "rclone-crypt" ]] && ! validate_rclone_crypt_config; then
     log "FEHLER: Crypt-Ziel konnte vor '$label' nicht erneut bestaetigt werden."
     errors=$((errors + 1))
@@ -2986,6 +3125,9 @@ copy_one() {
   # the startup disk. Revalidate after every transfer before attempting the
   # next destination, even when rclone itself returned success.
   if ! validate_live_nas_destination; then
+    copy_status=1
+  fi
+  if ! validate_configured_apfs_volume_identity; then
     copy_status=1
   fi
 

@@ -208,6 +208,12 @@ int main(void) {
         previewDelegate.nasSubdirField.stringValue = @"GoogleDrive-Backup";
         previewDelegate.destinationPreviewField = [[NSTextField alloc] init];
         previewDelegate.configuredAPFSVolumePath = @"/Volumes/Exact Backup Disk";
+        BOOL exposesAPFSVolumeUUID = [previewDelegate respondsToSelector:
+            NSSelectorFromString(@"setConfiguredAPFSVolumeUUID:")];
+        if (exposesAPFSVolumeUUID) {
+            [previewDelegate setValue:@"11111111-2222-3333-4444-555555555555"
+                               forKey:@"configuredAPFSVolumeUUID"];
+        }
         NSButton *notificationCheckbox = [[NSButton alloc] init];
         notificationCheckbox.buttonType = NSButtonTypeSwitch;
         notificationCheckbox.state = NSControlStateValueOn;
@@ -221,6 +227,12 @@ int main(void) {
                [previewDelegate.destinationPreviewField.toolTip isEqualToString:@"/Volumes/Exact Backup Disk"] &&
                [previewDelegate.destinationPreviewField.accessibilityLabel containsString:@"Exact Backup Disk"],
                @"setup always shows the exact saved external destination in full semantics");
+        NSDictionary<NSString *, NSString *> *externalUpdates =
+            [previewDelegate currentSetupUpdates];
+        Assert(exposesAPFSVolumeUUID &&
+               [externalUpdates[@"GDRIVE_BACKUP_VOLUME_UUID"]
+                   isEqualToString:@"11111111-2222-3333-4444-555555555555"],
+               @"setup saves the stable UUID with an external APFS destination");
 
         [previewDelegate.targetPopup selectItemAtIndex:1];
         previewDelegate.nasMountField.stringValue = @"/Volumes/Archive";

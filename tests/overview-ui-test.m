@@ -176,6 +176,24 @@ int main(void) {
                (progressCollectionBehavior & NSWindowCollectionBehaviorFullScreenNone) != 0,
                @"background progress and confirmation windows cannot enter another app's fullscreen Space");
 
+        SEL hidesOnDeactivateSelector =
+            NSSelectorFromString(@"statusWindowShouldHideOnDeactivate");
+        BOOL passiveConfirmationRemainsVisible = NO;
+        BOOL backgroundProgressHidesWhenInactive = NO;
+        if ([delegate respondsToSelector:hidesOnDeactivateSelector]) {
+            typedef BOOL (*HidesOnDeactivateMethod)(id, SEL);
+            HidesOnDeactivateMethod method =
+                (HidesOnDeactivateMethod)[delegate methodForSelector:hidesOnDeactivateSelector];
+            delegate.confirmMode = YES;
+            passiveConfirmationRemainsVisible =
+                !method(delegate, hidesOnDeactivateSelector);
+            delegate.confirmMode = NO;
+            backgroundProgressHidesWhenInactive =
+                method(delegate, hidesOnDeactivateSelector);
+        }
+        Assert(passiveConfirmationRemainsVisible && backgroundProgressHidesWhenInactive,
+               @"passive confirmation stays visible without making background progress intrusive");
+
         SEL showProgressSelector = NSSelectorFromString(@"shouldShowProgressForTrigger:fromVisibleWindow:");
         BOOL visibleOverviewShowsProgress = NO;
         BOOL hiddenOverviewStaysHeadless = NO;

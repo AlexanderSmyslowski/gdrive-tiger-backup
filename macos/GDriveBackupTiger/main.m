@@ -1460,6 +1460,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic) BOOL manualLaunchPending;
 @property(nonatomic) BOOL dryRunPending;
 @property(nonatomic, copy) NSString *configuredAPFSVolumePath;
+@property(nonatomic, copy) NSString *configuredAPFSVolumeUUID;
 @property(nonatomic, strong) NSStatusItem *statusItem;
 @property(nonatomic, strong) NSWindow *restoreWindow;
 @property(nonatomic, strong) GDTRestoreBrowserView *restoreView;
@@ -2124,6 +2125,19 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     [self refreshOverviewStatus:nil];
 }
 
+- (NSString *)volumeUUIDForPath:(NSString *)path {
+    if (!path.length) {
+        return @"";
+    }
+    NSURL *url = [NSURL fileURLWithPath:path];
+    NSString *volumeUUID = nil;
+    if (![url getResourceValue:&volumeUUID forKey:NSURLVolumeUUIDStringKey error:nil] ||
+        ![volumeUUID isKindOfClass:NSString.class]) {
+        return @"";
+    }
+    return volumeUUID.uppercaseString;
+}
+
 - (BOOL)mountedVolumePath:(NSString *)mountedPath
              matchesConfig:(NSDictionary<NSString *, NSString *> *)config {
     NSString *target = [config[@"GDRIVE_BACKUP_TARGET"] ?: @"apfs" lowercaseString];
@@ -2134,6 +2148,14 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSString *configuredPath = activeAPFSTarget
         ? GDTBackupCapacityPathForConfig(config)
         : config[@"GDRIVE_BACKUP_VOLUME"];
+    NSString *configuredUUID =
+        [config[@"GDRIVE_BACKUP_VOLUME_UUID"] stringByTrimmingCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (configuredUUID.length) {
+        NSString *mountedUUID = [self volumeUUIDForPath:mountedPath];
+        return mountedUUID.length &&
+            [mountedUUID caseInsensitiveCompare:configuredUUID] == NSOrderedSame;
+    }
     if (!mountedPath.length || !configuredPath.length) {
         return NO;
     }
@@ -2810,6 +2832,12 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         NSWindowCollectionBehaviorFullScreenNone;
 }
 
+- (BOOL)statusWindowShouldHideOnDeactivate {
+    // A mount-triggered confirmation never activates the app, so hiding it
+    // while inactive would make the safety question impossible to answer.
+    return !self.confirmMode;
+}
+
 - (BOOL)shouldShowProgressForTrigger:(NSString *)trigger
                    fromVisibleWindow:(BOOL)visibleWindow {
     if (![trigger isEqualToString:@"manual"] || !visibleWindow) {
@@ -3217,6 +3245,11 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSString *schedule = [config[@"GDRIVE_BACKUP_SCHEDULE"] ?: @"manual" lowercaseString];
     NSString *configuredVolumeName = config[@"GDRIVE_BACKUP_VOLUME_NAME"] ?: @"GoogleDrive-Backup";
     self.configuredAPFSVolumePath = config[@"GDRIVE_BACKUP_VOLUME"] ?: [@"/Volumes" stringByAppendingPathComponent:configuredVolumeName];
+    self.configuredAPFSVolumeUUID = config[@"GDRIVE_BACKUP_VOLUME_UUID"] ?: @"";
+    if (!self.configuredAPFSVolumeUUID.length) {
+        self.configuredAPFSVolumeUUID =
+            [self volumeUUIDForPath:self.configuredAPFSVolumePath];
+    }
 
     NSTextField *title = [self label:@"Google Drive Backup" frame:NSMakeRect(26, 16, 300, 22)];
     title.font = [NSFont fontWithName:@"Lucida Grande Bold" size:17] ?: [NSFont boldSystemFontOfSize:17];
@@ -3583,6 +3616,10 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         updates[@"GDRIVE_BACKUP_VOLUME"] = self.configuredAPFSVolumePath.length
             ? self.configuredAPFSVolumePath
             : @"/Volumes/GoogleDrive-Backup";
+        if (self.configuredAPFSVolumeUUID.length) {
+            updates[@"GDRIVE_BACKUP_VOLUME_UUID"] =
+                self.configuredAPFSVolumeUUID;
+        }
     }
     return updates;
 }
@@ -4073,7 +4110,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     self.window.hasShadow = YES;
     self.window.level = self.confirmMode ? NSFloatingWindowLevel : NSNormalWindowLevel;
     self.window.collectionBehavior = [self statusWindowCollectionBehavior];
-    self.window.hidesOnDeactivate = !self.confirmMode || !self.progressForegroundMode;
+    self.window.hidesOnDeactivate = [self statusWindowShouldHideOnDeactivate];
     TigerBackupView *contentView = [[TigerBackupView alloc] initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
     __weak typeof(self) weakSelf = self;
     contentView.confirmMode = self.confirmMode;

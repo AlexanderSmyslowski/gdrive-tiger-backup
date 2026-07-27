@@ -349,6 +349,9 @@ BOOL GDTWriteConfigUpdatesAtPath(NSDictionary<NSString *, NSString *> *updates,
 
     NSArray<NSString *> *orderedKeys = @[
         @"GDRIVE_BACKUP_TARGET",
+        @"GDRIVE_BACKUP_VOLUME",
+        @"GDRIVE_BACKUP_VOLUME_NAME",
+        @"GDRIVE_BACKUP_VOLUME_UUID",
         @"GDRIVE_BACKUP_NAS_MOUNT",
         @"GDRIVE_BACKUP_NAS_URL",
         @"GDRIVE_BACKUP_NAS_SUBDIR",

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep passive mount confirmations visible and clickable without activating the app or entering another application's fullscreen Space.
+- Bind external APFS targets to their stable volume UUID, resolve the current macOS mount path before every run, and reject same-name or swapped volumes before Drive access.
 - Open the visible overview when Finder reopens the already-running menu bar controller.
 - Let saved launchd schedules run unattended after the backup engine verifies the exact configured destination.
 - Link every required application source file from the source installer so local upgrades build successfully.
