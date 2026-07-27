@@ -1,4 +1,5 @@
 #import <Cocoa/Cocoa.h>
+#import <objc/runtime.h>
 
 #define main GDTApplicationMain
 #import "../macos/GDriveBackupTiger/main.m"
@@ -37,6 +38,117 @@
 
 - (void)restoreWindowFromDock {
     self.dockRestoreCalls++;
+}
+
+@end
+
+@interface SetupPresentationDelegate : AppDelegate
+@property(nonatomic) NSInteger mountedNASRefreshCalls;
+@property(nonatomic) BOOL sawVisibleSetupAtRefresh;
+@end
+
+@implementation SetupPresentationDelegate
+
+- (void)refreshMountedNASAllowingTargetAutoSelection:(BOOL)allowAutomaticTargetSelection {
+    (void)allowAutomaticTargetSelection;
+    self.mountedNASRefreshCalls++;
+    self.sawVisibleSetupAtRefresh = self.setupWindow.isVisible;
+}
+
+@end
+
+@interface AsyncMountedNASDelegate : AppDelegate
+@property(nonatomic, strong) dispatch_semaphore_t loadStarted;
+@property(nonatomic, strong) dispatch_semaphore_t allowLoadToFinish;
+@property(nonatomic) NSInteger loadCalls;
+@end
+
+@implementation AsyncMountedNASDelegate
+
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)mountedNetworkVolumes {
+    self.loadCalls++;
+    dispatch_semaphore_signal(self.loadStarted);
+    dispatch_semaphore_wait(self.allowLoadToFinish, DISPATCH_TIME_FOREVER);
+    return @[@{
+        @"name": @"Archive",
+        @"path": @"/Volumes/Archive",
+        @"url": @"smb://server/Archive",
+        @"writable": @"1",
+        @"readable": @"1"
+    }];
+}
+
+@end
+
+@interface FakeSetupWindow : NSObject
+@property(nonatomic) BOOL visible;
+@end
+
+@implementation FakeSetupWindow
+
+- (BOOL)isVisible {
+    return self.visible;
+}
+
+- (BOOL)isMiniaturized {
+    return NO;
+}
+
+- (void)setDelegate:(id)delegate {
+    (void)delegate;
+}
+
+- (void)orderOut:(id)sender {
+    (void)sender;
+    self.visible = NO;
+}
+
+- (void)close {
+    self.visible = NO;
+}
+
+@end
+
+@interface AppDelegate (MountedNASCompletionTesting)
+- (void)completeMountedNetworkVolumeDiscovery:
+    (NSArray<NSDictionary<NSString *, NSString *> *> *)volumes
+    generation:(NSUInteger)generation
+    allowingTargetAutoSelection:(BOOL)allowAutomaticTargetSelection;
+@end
+
+@interface RebuildMountedNASDelegate : AsyncMountedNASDelegate
+@property(nonatomic, strong) dispatch_semaphore_t completionObserved;
+@property(nonatomic) NSInteger completionCalls;
+@property(nonatomic) NSInteger rebuildShowCalls;
+@end
+
+@implementation RebuildMountedNASDelegate
+
+- (void)showSetupWindow {
+    self.rebuildShowCalls++;
+    FakeSetupWindow *window = [[FakeSetupWindow alloc] init];
+    window.visible = YES;
+    self.setupWindow = (NSWindow *)(id)window;
+    self.mountedNasPopup =
+        [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 0, 280, 28)];
+}
+
+- (void)completeMountedNetworkVolumeDiscovery:
+    (NSArray<NSDictionary<NSString *, NSString *> *> *)volumes
+    generation:(NSUInteger)generation
+    allowingTargetAutoSelection:(BOOL)allowAutomaticTargetSelection {
+    self.completionCalls++;
+    Method productionMethod = class_getInstanceMethod(AppDelegate.class, _cmd);
+    if (productionMethod) {
+        typedef void (*CompletionMethod)(
+            id, SEL, NSArray<NSDictionary<NSString *, NSString *> *> *,
+            NSUInteger, BOOL);
+        CompletionMethod completion =
+            (CompletionMethod)method_getImplementation(productionMethod);
+        completion(self, _cmd, volumes, generation,
+                   allowAutomaticTargetSelection);
+    }
+    dispatch_semaphore_signal(self.completionObserved);
 }
 
 @end
@@ -116,6 +228,193 @@ int main(void) {
         Assert(backupActions == 1 && settingsActions == 1 && restoreActions == 1,
                @"overview actions fire exactly once");
 
+        __block NSString *largeCommandOutput = nil;
+        __block int largeCommandStatus = -1;
+        dispatch_semaphore_t commandFinished = dispatch_semaphore_create(0);
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            largeCommandOutput = RunCommand(@"/usr/bin/awk", @[
+                @"BEGIN { for (i = 0; i < 20000; i++) print \"0123456789abcdef\" }"
+            ], nil, &largeCommandStatus);
+            dispatch_semaphore_signal(commandFinished);
+        });
+        BOOL largeCommandCompleted =
+            dispatch_semaphore_wait(commandFinished,
+                dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) == 0;
+        Assert(largeCommandCompleted &&
+               largeCommandStatus == 0 &&
+               largeCommandOutput.length > 300000,
+               @"command runner drains output larger than its pipe without deadlocking");
+
+        AsyncMountedNASDelegate *asyncMountedNAS =
+            [[AsyncMountedNASDelegate alloc] init];
+        asyncMountedNAS.language = @"en";
+        asyncMountedNAS.loadStarted = dispatch_semaphore_create(0);
+        asyncMountedNAS.allowLoadToFinish = dispatch_semaphore_create(0);
+        asyncMountedNAS.setupWindow = [[NSWindow alloc]
+            initWithContentRect:NSMakeRect(0, 0, 100, 100)
+                      styleMask:NSWindowStyleMaskTitled
+                        backing:NSBackingStoreBuffered
+                          defer:NO];
+        asyncMountedNAS.mountedNasPopup =
+            [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 0, 280, 28)];
+        [asyncMountedNAS refreshMountedNASAllowingTargetAutoSelection:NO];
+        BOOL mountedLoadStarted =
+            dispatch_semaphore_wait(asyncMountedNAS.loadStarted,
+                dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC)) == 0;
+        [asyncMountedNAS refreshMountedNASAllowingTargetAutoSelection:NO];
+        dispatch_semaphore_signal(asyncMountedNAS.allowLoadToFinish);
+        NSDate *mountedLoadDeadline = [NSDate dateWithTimeIntervalSinceNow:2.0];
+        while (!asyncMountedNAS.mountedNasPopup.enabled &&
+               [mountedLoadDeadline timeIntervalSinceNow] > 0) {
+            [NSRunLoop.currentRunLoop runUntilDate:
+                [NSDate dateWithTimeIntervalSinceNow:0.01]];
+        }
+        Assert(mountedLoadStarted &&
+               asyncMountedNAS.loadCalls == 1 &&
+               asyncMountedNAS.mountedNasPopup.enabled &&
+               asyncMountedNAS.mountedNasPopup.numberOfItems == 2,
+               @"mounted-volume discovery stays asynchronous and coalesces repeated refreshes");
+
+        RebuildMountedNASDelegate *staleMountedNAS =
+            [[RebuildMountedNASDelegate alloc] init];
+        staleMountedNAS.language = @"en";
+        staleMountedNAS.loadStarted = dispatch_semaphore_create(0);
+        staleMountedNAS.allowLoadToFinish = dispatch_semaphore_create(0);
+        staleMountedNAS.completionObserved = dispatch_semaphore_create(0);
+        FakeSetupWindow *staleSetupWindow = [[FakeSetupWindow alloc] init];
+        staleSetupWindow.visible = YES;
+        staleMountedNAS.setupWindow = (NSWindow *)(id)staleSetupWindow;
+        staleMountedNAS.mountedNasPopup =
+            [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 0, 280, 28)];
+        [staleMountedNAS refreshMountedNASAllowingTargetAutoSelection:NO];
+        BOOL staleLoadStarted =
+            dispatch_semaphore_wait(staleMountedNAS.loadStarted,
+                dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC)) == 0;
+        SEL rebuildForStaleSelector =
+            NSSelectorFromString(@"rebuildSetupWindowPreservingVisibility");
+        if ([staleMountedNAS respondsToSelector:rebuildForStaleSelector]) {
+            typedef void (*VoidMethod)(id, SEL);
+            ((VoidMethod)[staleMountedNAS methodForSelector:rebuildForStaleSelector])(
+                staleMountedNAS, rebuildForStaleSelector);
+        }
+        NSPopUpButton *replacementMountedPopup = staleMountedNAS.mountedNasPopup;
+        dispatch_semaphore_signal(staleMountedNAS.allowLoadToFinish);
+        NSDate *staleCompletionDeadline = [NSDate dateWithTimeIntervalSinceNow:2.0];
+        BOOL staleCompletionObserved = NO;
+        while (!staleCompletionObserved &&
+               [staleCompletionDeadline timeIntervalSinceNow] > 0) {
+            [NSRunLoop.currentRunLoop runUntilDate:
+                [NSDate dateWithTimeIntervalSinceNow:0.01]];
+            staleCompletionObserved =
+                dispatch_semaphore_wait(staleMountedNAS.completionObserved,
+                    DISPATCH_TIME_NOW) == 0;
+        }
+        Assert(class_getInstanceMethod(
+                   AppDelegate.class,
+                   @selector(completeMountedNetworkVolumeDiscovery:generation:
+                             allowingTargetAutoSelection:)) != NULL &&
+               staleLoadStarted &&
+               staleMountedNAS.loadCalls == 1 &&
+               staleMountedNAS.rebuildShowCalls == 1 &&
+               staleCompletionObserved &&
+               staleMountedNAS.completionCalls == 1 &&
+               replacementMountedPopup.numberOfItems == 0,
+               @"stale mounted-volume results cannot overwrite rebuilt setup controls");
+
+        NSString *originalConfigPath =
+            [NSProcessInfo.processInfo.environment[@"GDRIVE_BACKUP_CONFIG"] copy];
+        NSString *setupConfigPath = [NSTemporaryDirectory() stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"gdrive-setup-presentation-%@", NSUUID.UUID.UUIDString]];
+        [@"GDRIVE_BACKUP_TARGET=apfs\nGDRIVE_BACKUP_SCHEDULE=manual\n"
+            writeToFile:setupConfigPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        setenv("GDRIVE_BACKUP_CONFIG", setupConfigPath.UTF8String, 1);
+
+        SetupPresentationDelegate *setupPresenter = [[SetupPresentationDelegate alloc] init];
+        setupPresenter.language = @"en";
+        setupPresenter.overviewMode = YES;
+        setupPresenter.window = [[NSWindow alloc]
+            initWithContentRect:NSMakeRect(0, 0, 620, 420)
+                      styleMask:NSWindowStyleMaskTitled
+                        backing:NSBackingStoreBuffered
+                          defer:NO];
+        NSWindow *overviewWindow = setupPresenter.window;
+        [setupPresenter showBackupSetup:nil];
+        SEL setupWindowSelector = NSSelectorFromString(@"setupWindow");
+        NSWindow *firstSetupWindow = [setupPresenter respondsToSelector:setupWindowSelector]
+            ? [setupPresenter valueForKey:@"setupWindow"] : nil;
+        [setupPresenter showBackupSetup:nil];
+        NSWindow *secondSetupWindow = [setupPresenter respondsToSelector:setupWindowSelector]
+            ? [setupPresenter valueForKey:@"setupWindow"] : nil;
+        Assert(firstSetupWindow != nil &&
+               firstSetupWindow == secondSetupWindow &&
+               setupPresenter.window == overviewWindow &&
+               setupPresenter.mountedNASRefreshCalls == 1 &&
+               setupPresenter.sawVisibleSetupAtRefresh,
+               @"repeated setup clicks reuse one in-process window and preserve the overview");
+        setupPresenter.menubarOnlyMode = YES;
+        BOOL setupRequestsForegroundProgress =
+            [setupPresenter shouldShowProgressForTrigger:@"manual" fromVisibleWindow:YES];
+        BOOL persistentSetupStaysOwnedByController =
+            ![setupPresenter windowShouldClose:firstSetupWindow] &&
+            setupPresenter.window == overviewWindow &&
+            !firstSetupWindow.isVisible;
+        Assert(setupRequestsForegroundProgress && persistentSetupStaysOwnedByController,
+               @"embedded setup can request progress and closes without terminating its controller");
+
+        SEL rebuildSetupSelector =
+            NSSelectorFromString(@"rebuildSetupWindowPreservingVisibility");
+        BOOL exposesVisibilityPreservingRebuild =
+            [setupPresenter respondsToSelector:rebuildSetupSelector];
+        if (exposesVisibilityPreservingRebuild) {
+            typedef void (*VoidMethod)(id, SEL);
+            ((VoidMethod)[setupPresenter methodForSelector:rebuildSetupSelector])(
+                setupPresenter, rebuildSetupSelector);
+        }
+        NSWindow *hiddenSetupAfterRebuild =
+            [setupPresenter valueForKey:@"setupWindow"];
+        Assert(exposesVisibilityPreservingRebuild &&
+               !hiddenSetupAfterRebuild.isVisible,
+               @"rebuilding settings never reopens a setup window the user closed");
+
+        [setupPresenter showBackupSetup:nil];
+        NSWindow *visibleSetupBeforeRebuild =
+            [setupPresenter valueForKey:@"setupWindow"];
+        if (exposesVisibilityPreservingRebuild) {
+            typedef void (*VoidMethod)(id, SEL);
+            ((VoidMethod)[setupPresenter methodForSelector:rebuildSetupSelector])(
+                setupPresenter, rebuildSetupSelector);
+        }
+        NSWindow *visibleSetupAfterRebuild =
+            [setupPresenter valueForKey:@"setupWindow"];
+        Assert(exposesVisibilityPreservingRebuild &&
+               visibleSetupAfterRebuild.isVisible &&
+               visibleSetupAfterRebuild != visibleSetupBeforeRebuild,
+               @"rebuilding visible settings replaces only the setup window");
+
+        [setupPresenter windowShouldClose:visibleSetupAfterRebuild];
+        setupPresenter.overviewMode = NO;
+        setupPresenter.setupMode = YES;
+        BOOL handledSetupReopen =
+            ![setupPresenter applicationShouldHandleReopen:NSApp
+                                         hasVisibleWindows:NO];
+        setupPresenter.rebuildingSetupWindow = YES;
+        BOOL rebuildKeepsStandaloneAppAlive =
+            ![setupPresenter applicationShouldTerminateAfterLastWindowClosed:NSApp];
+        setupPresenter.rebuildingSetupWindow = NO;
+        Assert(handledSetupReopen &&
+               visibleSetupAfterRebuild.isVisible &&
+               !visibleSetupAfterRebuild.isMiniaturized &&
+               rebuildKeepsStandaloneAppAlive,
+               @"Dock reopen restores the standalone setup window instead of another window");
+        [visibleSetupAfterRebuild orderOut:nil];
+        if (originalConfigPath.length) {
+            setenv("GDRIVE_BACKUP_CONFIG", originalConfigPath.UTF8String, 1);
+        } else {
+            unsetenv("GDRIVE_BACKUP_CONFIG");
+        }
+        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:setupConfigPath]
+                                    resultingItemURL:nil error:nil];
+
         NSString *successGlyph = view.statusSymbolLabel.stringValue;
         NSString *successDescription = view.statusSymbolLabel.accessibilityLabel;
         view.status = @"failure";
@@ -130,7 +429,7 @@ int main(void) {
                [[delegate applicationModeForArguments:@[@"app", @"--setup"]] isEqualToString:@"setup"] &&
                [[delegate applicationModeForArguments:@[@"app", @"--confirm"]] isEqualToString:@"confirm"] &&
                [[delegate applicationModeForArguments:@[@"app", @"/tmp/sentinel"]] isEqualToString:@"progress"],
-               @"overview, setup, confirmation, and progress processes stay isolated");
+               @"standalone setup, confirmation, and progress entry modes remain explicit");
         Assert([delegate shouldInstallStatusItemForMode:@"overview"] &&
                [delegate shouldInstallStatusItemForMode:@"menubar"] &&
                ![delegate shouldInstallStatusItemForMode:@"setup"] &&

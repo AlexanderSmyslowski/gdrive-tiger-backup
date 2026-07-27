@@ -66,6 +66,18 @@
 
 @end
 
+@interface EmbeddedSetupDismissDelegate : AppDelegate
+@property(nonatomic) NSInteger dockHandoffCalls;
+@end
+
+@implementation EmbeddedSetupDismissDelegate
+
+- (void)handoffOverviewDockPresenceToManualProgress {
+    self.dockHandoffCalls++;
+}
+
+@end
+
 static int failures = 0;
 
 static void Assert(BOOL condition, NSString *name) {
@@ -155,6 +167,22 @@ int main(void) {
                savedDelegate.dismissCalls == 1 &&
                [savedDelegate.statusField.stringValue isEqualToString:T(@"en", @"statusBackupPreparing")],
                @"Backup now launches once, reports preparation, and dismisses setup once");
+
+        EmbeddedSetupDismissDelegate *embeddedDismiss =
+            [[EmbeddedSetupDismissDelegate alloc] init];
+        embeddedDismiss.overviewMode = YES;
+        embeddedDismiss.manualLaunchPending = YES;
+        embeddedDismiss.setupWindow = [[NSWindow alloc]
+            initWithContentRect:NSMakeRect(0, 0, 100, 100)
+                      styleMask:NSWindowStyleMaskTitled
+                        backing:NSBackingStoreBuffered
+                          defer:NO];
+        [embeddedDismiss.setupWindow orderFront:nil];
+        [embeddedDismiss dismissSetupAfterBackupLaunch];
+        Assert(embeddedDismiss.dockHandoffCalls == 1 &&
+               !embeddedDismiss.manualLaunchPending &&
+               !embeddedDismiss.setupWindow.isVisible,
+               @"embedded setup yields its Dock presence to one foreground progress window");
 
         SetupSafetyDelegate *failedDelegate = Delegate(saved, saved);
         failedDelegate.launchSucceeds = NO;

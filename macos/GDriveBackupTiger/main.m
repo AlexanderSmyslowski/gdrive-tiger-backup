@@ -82,8 +82,12 @@ static NSString *RunCommand(NSString *launchPath, NSArray<NSString *> *arguments
     NSPipe *pipe = [NSPipe pipe];
     task.standardOutput = pipe;
     task.standardError = pipe;
+    NSData *data = nil;
     @try {
         [task launch];
+        // A child can fill the pipe before it exits. Drain while it is running
+        // so commands with verbose output cannot deadlock their caller.
+        data = [pipe.fileHandleForReading readDataToEndOfFile];
         [task waitUntilExit];
     } @catch (NSException *exception) {
         if (statusOut) {
@@ -95,7 +99,6 @@ static NSString *RunCommand(NSString *launchPath, NSArray<NSString *> *arguments
     if (statusOut) {
         *statusOut = task.terminationStatus;
     }
-    NSData *data = [pipe.fileHandleForReading readDataToEndOfFile];
     return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"";
 }
 
@@ -1462,6 +1465,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, copy) NSString *configuredAPFSVolumePath;
 @property(nonatomic, copy) NSString *configuredAPFSVolumeUUID;
 @property(nonatomic, strong) NSStatusItem *statusItem;
+@property(nonatomic, strong) NSWindow *setupWindow;
+@property(nonatomic) BOOL mountedNASRefreshInFlight;
+@property(nonatomic) NSUInteger mountedNASRefreshGeneration;
+@property(nonatomic) BOOL rebuildingSetupWindow;
 @property(nonatomic, strong) NSWindow *restoreWindow;
 @property(nonatomic, strong) GDTRestoreBrowserView *restoreView;
 @property(nonatomic, strong) id restoreCatalog;
@@ -1483,6 +1490,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, strong) NSMutableSet<NSString *> *pendingBackupNotificationIdentifiers;
 - (void)requestCancelBackup:(id)sender;
 - (BOOL)cancelRunningBackup;
+- (void)completeMountedNetworkVolumeDiscovery:
+    (NSArray<NSDictionary<NSString *, NSString *> *> *)volumes
+    generation:(NSUInteger)generation
+    allowingTargetAutoSelection:(BOOL)allowAutomaticTargetSelection;
 @end
 
 static NSString *GDTSafeDestinationLabelComponent(NSString *value) {
@@ -2773,18 +2784,20 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 
 - (void)showBackupSetup:(id)sender {
     (void)sender;
-    NSString *bundlePath = NSBundle.mainBundle.bundlePath;
-    if (![bundlePath.pathExtension.lowercaseString isEqualToString:@"app"]) {
+    [self showSetupWindow];
+}
+
+- (void)updateControllerActivationPolicy {
+    if (!self.overviewMode) {
         return;
     }
-    NSTask *task = [[NSTask alloc] init];
-    task.launchPath = @"/usr/bin/open";
-    task.arguments = @[@"-n", bundlePath, @"--args", @"--setup"];
-    @try {
-        [task launch];
-    } @catch (NSException *exception) {
-        (void)exception;
-    }
+    BOOL hasVisibleWindow = self.window.isVisible ||
+        self.setupWindow.isVisible ||
+        self.restoreWindow.isVisible ||
+        self.diagnosticsWindow.isVisible;
+    [NSApp setActivationPolicy:hasVisibleWindow
+        ? NSApplicationActivationPolicyRegular
+        : NSApplicationActivationPolicyAccessory];
 }
 
 - (void)startOverviewBackup:(id)sender {
@@ -2857,7 +2870,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     if (![trigger isEqualToString:@"manual"] || !visibleWindow) {
         return NO;
     }
-    return self.setupMode || (self.overviewMode && !self.menubarOnlyMode);
+    return self.setupMode || self.setupWindow.isVisible ||
+        (self.overviewMode && !self.menubarOnlyMode);
 }
 
 - (NSTimeInterval)confirmationTimeout {
@@ -2992,11 +3006,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         [self configureBackupNotificationsForConfig:GDTReadConfigDictionary()];
         [self refreshOverviewStatus:nil];
     }
-    if (self.setupMode) {
-        [self.window orderOut:nil];
-        self.window = nil;
-        [self showSetupWindow];
-    }
+    [self rebuildSetupWindowPreservingVisibility];
 }
 
 - (NSString *)displayNameForProfile:(NSDictionary<NSString *, NSString *> *)profile {
@@ -3116,10 +3126,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 }
 
 - (void)reloadSetupForActiveProfile {
-    if (!self.setupMode) return;
-    [self.window orderOut:nil];
-    self.window = nil;
-    [self showSetupWindow];
+    if (!self.setupWindow) return;
+    [self rebuildSetupWindowPreservingVisibility];
 }
 
 - (void)profileSelectionChanged:(id)sender {
@@ -3229,25 +3237,59 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     [contentView addSubview:self.setupHealthView];
 }
 
+- (void)rebuildSetupWindowPreservingVisibility {
+    if (!self.setupWindow) {
+        return;
+    }
+    NSWindow *previousWindow = self.setupWindow;
+    BOOL shouldPresent = previousWindow.isVisible || previousWindow.isMiniaturized;
+    self.mountedNASRefreshGeneration++;
+    self.mountedNASRefreshInFlight = NO;
+    self.setupHealthGeneration++;
+    self.rebuildingSetupWindow = YES;
+    previousWindow.delegate = nil;
+    [previousWindow orderOut:nil];
+    self.setupWindow = nil;
+    if (shouldPresent) {
+        [self showSetupWindow];
+    }
+    [previousWindow close];
+    self.rebuildingSetupWindow = NO;
+    if (!shouldPresent) {
+        [self updateControllerActivationPolicy];
+    }
+}
+
 - (void)showSetupWindow {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     [self buildMainMenu];
     [NSApp setApplicationIconImage:CreateApplicationIcon()];
 
+    if (self.setupWindow) {
+        [self.setupWindow deminiaturize:nil];
+        [self.setupWindow makeKeyAndOrderFront:nil];
+        [NSApp activateIgnoringOtherApps:YES];
+        return;
+    }
+
     NSSize size = NSMakeSize(650, 690);
     NSRect screenFrame = NSScreen.mainScreen ? NSScreen.mainScreen.visibleFrame : NSMakeRect(0, 0, 1200, 800);
     NSPoint origin = NSMakePoint(NSMidX(screenFrame) - size.width / 2, NSMidY(screenFrame) - size.height / 2);
 
-    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(origin.x, origin.y, size.width, size.height)
-                                             styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
-                                               backing:NSBackingStoreBuffered
-                                                 defer:NO];
-    self.window.title = @"GDrive Backup Tiger";
-    self.window.releasedWhenClosed = NO;
+    self.setupWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(origin.x, origin.y, size.width, size.height)
+                                                  styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
+                                                    backing:NSBackingStoreBuffered
+                                                      defer:NO];
+    self.setupWindow.title = @"GDrive Backup Tiger";
+    self.setupWindow.releasedWhenClosed = NO;
+    self.setupWindow.delegate = self;
+    self.setupWindow.level = NSNormalWindowLevel;
+    self.setupWindow.collectionBehavior = NSWindowCollectionBehaviorManaged |
+        NSWindowCollectionBehaviorFullScreenNone;
 
     TigerSetupView *content = [[TigerSetupView alloc] initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
     content.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    self.window.contentView = content;
+    self.setupWindow.contentView = content;
     [self installProfileControlsInContentView:content];
     [self installSetupHealthViewInContentView:content];
 
@@ -3389,10 +3431,11 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     [content addSubview:saveButton];
     [content addSubview:self.setupDryRunButton];
     [content addSubview:self.setupBackupButton];
+    [self updateSetupActionAvailability];
 
-    [self refreshMountedNASAllowingTargetAutoSelection:!preserveConfiguredAPFSTarget];
-    [self.window makeKeyAndOrderFront:nil];
+    [self.setupWindow makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
+    [self refreshMountedNASAllowingTargetAutoSelection:!preserveConfiguredAPFSTarget];
 }
 
 - (void)targetChanged:(id)sender {
@@ -3466,12 +3509,60 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     [self refreshMountedNASAllowingTargetAutoSelection:YES];
 }
 
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)mountedNetworkVolumes {
+    return MountedNetworkVolumes();
+}
+
+- (void)completeMountedNetworkVolumeDiscovery:
+    (NSArray<NSDictionary<NSString *, NSString *> *> *)volumes
+    generation:(NSUInteger)generation
+    allowingTargetAutoSelection:(BOOL)allowAutomaticTargetSelection {
+    if (generation != self.mountedNASRefreshGeneration) {
+        return;
+    }
+    self.mountedNASRefreshInFlight = NO;
+    if (!self.setupWindow || !self.mountedNasPopup) {
+        return;
+    }
+    [self applyMountedNetworkVolumes:volumes
+         allowingTargetAutoSelection:allowAutomaticTargetSelection];
+}
+
 - (void)refreshMountedNASAllowingTargetAutoSelection:(BOOL)allowAutomaticTargetSelection {
+    if (!self.mountedNasPopup || self.mountedNASRefreshInFlight) {
+        return;
+    }
+    self.mountedNASRefreshInFlight = YES;
+    NSUInteger generation = ++self.mountedNASRefreshGeneration;
     [self.mountedNasPopup removeAllItems];
     [self.mountedNasPopup addItemWithTitle:T(self.language, @"selectMountedVolume")];
     self.mountedNasPopup.lastItem.representedObject = @{};
+    self.mountedNasPopup.enabled = NO;
 
-    NSArray<NSDictionary<NSString *, NSString *> *> *volumes = MountedNetworkVolumes();
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) {
+            return;
+        }
+        NSArray<NSDictionary<NSString *, NSString *> *> *volumes =
+            [strongSelf mountedNetworkVolumes];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) innerSelf = weakSelf;
+            if (!innerSelf) {
+                return;
+            }
+            [innerSelf completeMountedNetworkVolumeDiscovery:volumes
+                                                  generation:generation
+                                allowingTargetAutoSelection:allowAutomaticTargetSelection];
+        });
+    });
+}
+
+- (void)applyMountedNetworkVolumes:
+    (NSArray<NSDictionary<NSString *, NSString *> *> *)volumes
+    allowingTargetAutoSelection:(BOOL)allowAutomaticTargetSelection {
+    self.mountedNasPopup.enabled = YES;
     NSString *currentMount = self.nasMountField.stringValue;
     NSString *wantedHost = [self hostPartFromURLString:self.nasURLField.stringValue];
     NSDictionary<NSString *, NSString *> *autoSelection = nil;
@@ -3811,7 +3902,13 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 }
 
 - (void)dismissSetupAfterBackupLaunch {
-    [self.window orderOut:nil];
+    [self.setupWindow orderOut:nil];
+    if (self.overviewMode) {
+        self.manualLaunchPending = NO;
+        [self updateSetupActionAvailability];
+        [self handoffOverviewDockPresenceToManualProgress];
+        return;
+    }
     [NSApp terminate:nil];
 }
 
@@ -3890,8 +3987,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     environment[@"HOME"] = NSHomeDirectory();
     environment[@"PATH"] = @"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
     environment[@"GDRIVE_BACKUP_TRIGGER"] = trigger.length ? trigger : @"manual";
+    BOOL actionWindowVisible = self.setupWindow.isVisible || self.window.isVisible;
     environment[@"BACKUP_PROGRESS_FOREGROUND"] = [self shouldShowProgressForTrigger:trigger
-        fromVisibleWindow:self.window.isVisible] ? @"1" : @"0";
+        fromVisibleWindow:actionWindowVisible] ? @"1" : @"0";
     if (assumeYes) {
         environment[@"BACKUP_ASSUME_YES"] = @"1";
     }
@@ -4191,10 +4289,18 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
-    return self.setupMode;
+    return self.setupMode && !self.overviewMode && !self.rebuildingSetupWindow;
 }
 
 - (BOOL)windowShouldClose:(NSWindow *)sender {
+    if (sender == self.setupWindow) {
+        if (self.overviewMode) {
+            [self.setupWindow orderOut:nil];
+            [self updateControllerActivationPolicy];
+            return NO;
+        }
+        return YES;
+    }
     if (sender == self.restoreWindow) {
         self.restoreLoadGeneration++;
         return YES;
@@ -4206,7 +4312,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     }
     if (self.overviewMode) {
         [self.window orderOut:nil];
-        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        [self updateControllerActivationPolicy];
         return NO;
     }
     if (self.setupMode) {
@@ -4222,6 +4328,27 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     }
     [self minimizeWindow];
     return NO;
+}
+
+- (void)windowWillClose:(NSNotification *)notification {
+    NSWindow *closingWindow = notification.object;
+    if (closingWindow == self.restoreWindow) {
+        self.restoreWindow = nil;
+        self.restoreView = nil;
+        self.restoreCatalog = nil;
+        self.restoreCopier = nil;
+    } else if (closingWindow == self.diagnosticsWindow) {
+        self.diagnosticsWindow = nil;
+        self.diagnosticsView = nil;
+    } else if (closingWindow == self.setupWindow) {
+        self.setupWindow = nil;
+    }
+    if (self.overviewMode) {
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf updateControllerActivationPolicy];
+        });
+    }
 }
 
 - (BOOL)windowShouldMiniaturize:(NSWindow *)window {
@@ -4253,6 +4380,12 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)flag {
     if (self.completing) {
         [self.window makeKeyAndOrderFront:nil];
+        return NO;
+    }
+
+    if ((self.setupWindow && self.setupWindow.isMiniaturized) ||
+        (self.setupMode && (!self.setupWindow || !flag))) {
+        [self showSetupWindow];
         return NO;
     }
 

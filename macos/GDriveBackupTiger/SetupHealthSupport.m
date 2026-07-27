@@ -1,4 +1,5 @@
 #import "SetupHealthSupport.h"
+#include <signal.h>
 
 static NSDictionary<NSString *, id> *GDTSetupRow(NSString *status,
                                                   NSString *detailKey,
@@ -177,7 +178,8 @@ static NSString *GDTExecutablePath(NSString *command) {
 }
 
 static NSDictionary<NSString *, id> *GDTRunSetupCommand(NSString *command,
-                                                         NSArray<NSString *> *arguments) {
+                                                         NSArray<NSString *> *arguments,
+                                                         NSTimeInterval commandTimeout) {
     NSString *launchPath = GDTExecutablePath(command);
     if (!launchPath.length) {
         return @{@"status": @127, @"output": @"", @"timedOut": @NO};
@@ -197,17 +199,83 @@ static NSDictionary<NSString *, id> *GDTRunSetupCommand(NSString *command,
         return @{@"status": @127, @"output": @"", @"timedOut": @NO};
     }
 
-    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:20.0];
+    NSFileHandle *outputHandle = outputPipe.fileHandleForReading;
+    NSMutableData *capturedOutput = [NSMutableData data];
+    dispatch_group_t readerGroup = dispatch_group_create();
+    dispatch_group_async(readerGroup,
+                         dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        @try {
+            while (YES) {
+                NSData *chunk = outputHandle.availableData;
+                if (!chunk.length) {
+                    break;
+                }
+                // Keep enough data for every supported health probe while
+                // continuing to drain excess output so the child cannot block.
+                @synchronized (capturedOutput) {
+                    static const NSUInteger maximumCapturedBytes = 1024 * 1024;
+                    NSUInteger remaining = maximumCapturedBytes > capturedOutput.length
+                        ? maximumCapturedBytes - capturedOutput.length : 0;
+                    if (remaining > 0) {
+                        NSUInteger length = MIN(remaining, chunk.length);
+                        [capturedOutput appendData:
+                            [chunk subdataWithRange:NSMakeRange(0, length)]];
+                    }
+                }
+            }
+        } @catch (NSException *exception) {
+            (void)exception;
+        }
+    });
+
+    NSTimeInterval effectiveTimeout =
+        commandTimeout > 0.0 ? MIN(commandTimeout, 20.0) : 20.0;
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:effectiveTimeout];
     while (task.running && [deadline timeIntervalSinceNow] > 0) {
         [NSThread sleepForTimeInterval:0.05];
     }
     BOOL timedOut = task.running;
     if (timedOut) {
         [task terminate];
+        NSTimeInterval terminationGrace = MIN(2.0, MAX(0.1, effectiveTimeout));
+        NSDate *terminationDeadline =
+            [NSDate dateWithTimeIntervalSinceNow:terminationGrace];
+        while (task.running && [terminationDeadline timeIntervalSinceNow] > 0) {
+            [NSThread sleepForTimeInterval:0.05];
+        }
+        if (task.running && task.processIdentifier > 0) {
+            kill(task.processIdentifier, SIGKILL);
+        }
+        NSDate *killDeadline = [NSDate dateWithTimeIntervalSinceNow:0.5];
+        while (task.running && [killDeadline timeIntervalSinceNow] > 0) {
+            [NSThread sleepForTimeInterval:0.05];
+        }
     }
-    [task waitUntilExit];
+    if (task.running) {
+        // A child stuck below userspace must not keep the setup check in-flight.
+        // Retain and reap it away from the caller if even SIGKILL is delayed.
+        NSTask *taskToReap = task;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            [taskToReap waitUntilExit];
+        });
+    } else {
+        [task waitUntilExit];
+    }
 
-    NSData *outputData = [outputPipe.fileHandleForReading readDataToEndOfFile];
+    if (dispatch_group_wait(readerGroup,
+            dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC)) != 0) {
+        @try {
+            [outputHandle closeFile];
+        } @catch (NSException *exception) {
+            (void)exception;
+        }
+        dispatch_group_wait(readerGroup,
+            dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC));
+    }
+    NSData *outputData = nil;
+    @synchronized (capturedOutput) {
+        outputData = [capturedOutput copy];
+    }
     NSString *output = [[NSString alloc] initWithData:outputData
                                              encoding:NSUTF8StringEncoding] ?: @"";
     return @{
@@ -228,13 +296,18 @@ static NSDictionary<NSString *, id> *GDTRunSetupCommand(NSString *command,
 }
 
 + (instancetype)productionChecker {
+    return [self productionCheckerWithCommandTimeoutForTesting:20.0];
+}
+
++ (instancetype)productionCheckerWithCommandTimeoutForTesting:
+    (NSTimeInterval)commandTimeout {
     GDTSetupHealthChecker *checker = [[self alloc] init];
     checker.commandAvailability = ^BOOL(NSString *command) {
         return GDTExecutablePath(command).length > 0;
     };
     checker.commandRunner = ^NSDictionary<NSString *, id> *(NSString *command,
                                                              NSArray<NSString *> *arguments) {
-        return GDTRunSetupCommand(command, arguments);
+        return GDTRunSetupCommand(command, arguments, commandTimeout);
     };
     return checker;
 }

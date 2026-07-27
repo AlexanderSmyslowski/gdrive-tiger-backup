@@ -50,6 +50,17 @@ static id ProductionChecker(void) {
     return method(checkerClass, selector);
 }
 
+static id ProductionCheckerWithTimeout(NSTimeInterval timeout) {
+    Class checkerClass = NSClassFromString(@"GDTSetupHealthChecker");
+    SEL selector = NSSelectorFromString(@"productionCheckerWithCommandTimeoutForTesting:");
+    if (!checkerClass || ![checkerClass respondsToSelector:selector]) {
+        return nil;
+    }
+    typedef id (*ProductionMethod)(id, SEL, NSTimeInterval);
+    ProductionMethod method = (ProductionMethod)[checkerClass methodForSelector:selector];
+    return method(checkerClass, selector, timeout);
+}
+
 int main(void) {
     @autoreleasepool {
         NSFileManager *fileManager = NSFileManager.defaultManager;
@@ -395,7 +406,15 @@ int main(void) {
                                 attributes:nil
                                      error:nil];
         NSString *fakeCommand = [fakeBin stringByAppendingPathComponent:@"health-probe"];
-        NSData *fakeContents = [@"#!/bin/sh\nprintf 'probe-ok\\n'\n"
+        NSData *fakeContents = [@"#!/bin/sh\n"
+            "if [ \"${1:-}\" = large-output ]; then\n"
+            "  exec /usr/bin/awk 'BEGIN { for (i = 0; i < 20000; i++) print \"0123456789abcdef\" }'\n"
+            "fi\n"
+            "if [ \"${1:-}\" = ignore-term ]; then\n"
+            "  trap '' TERM\n"
+            "  while :; do /bin/sleep 1; done\n"
+            "fi\n"
+            "printf 'probe-ok\\n'\n"
             dataUsingEncoding:NSUTF8StringEncoding];
         [fileManager createFileAtPath:fakeCommand
                             contents:fakeContents
@@ -411,6 +430,9 @@ int main(void) {
         NSDictionary<NSString *, id> *probeResult = productionRunner
             ? productionRunner(@"health-probe", @[@"literal argument"])
             : nil;
+        NSDictionary<NSString *, id> *largeProbeResult = productionRunner
+            ? productionRunner(@"health-probe", @[@"large-output"])
+            : nil;
         Assert(productionChecker && productionAvailability && productionRunner &&
                productionAvailability(@"health-probe") &&
                !productionAvailability(@"definitely-not-installed"),
@@ -418,6 +440,22 @@ int main(void) {
         Assert([probeResult[@"status"] isEqual:@0] &&
                [probeResult[@"output"] isEqualToString:@"probe-ok\n"],
                @"production runner executes arguments directly and captures bounded output");
+        Assert([largeProbeResult[@"status"] isEqual:@0] &&
+               [largeProbeResult[@"output"] length] > 300000,
+               @"production setup health drains output larger than its pipe without timing out");
+        id shortTimeoutChecker = ProductionCheckerWithTimeout(0.1);
+        GDTTestCommandRunner shortTimeoutRunner =
+            [shortTimeoutChecker valueForKey:@"commandRunner"];
+        NSDate *timeoutStarted = NSDate.date;
+        NSDictionary<NSString *, id> *ignoredTermResult = shortTimeoutRunner
+            ? shortTimeoutRunner(@"health-probe", @[@"ignore-term"])
+            : nil;
+        NSTimeInterval timeoutElapsed = -[timeoutStarted timeIntervalSinceNow];
+        Assert(shortTimeoutChecker &&
+               [ignoredTermResult[@"status"] isEqual:@124] &&
+               [ignoredTermResult[@"timedOut"] boolValue] &&
+               timeoutElapsed < 5.0,
+               @"production setup health stays bounded when a command ignores TERM");
         setenv("PATH", originalPath.fileSystemRepresentation, 1);
 
         [fileManager trashItemAtURL:[NSURL fileURLWithPath:destination]

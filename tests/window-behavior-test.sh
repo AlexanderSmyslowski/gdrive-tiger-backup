@@ -205,7 +205,7 @@ fi
 
 if [[ "$close_method" == *'if (self.overviewMode) {'* &&
       "$close_method" == *'[self.window orderOut:nil];'* &&
-      "$termination_policy_method" == *'return self.setupMode;'* ]]; then
+      "$termination_policy_method" == *'return self.setupMode && !self.overviewMode && !self.rebuildingSetupWindow;'* ]]; then
   printf '%s\n' 'ok - closing the overview hides it while the menu bar controller remains alive'
 else
   printf '%s\n' 'not ok - closing the overview can terminate the menu bar controller'
