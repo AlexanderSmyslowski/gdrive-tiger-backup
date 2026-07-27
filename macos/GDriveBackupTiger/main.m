@@ -2138,6 +2138,20 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     return volumeUUID.uppercaseString;
 }
 
+- (void)loadConfiguredAPFSIdentityFromConfig:
+    (NSDictionary<NSString *, NSString *> *)config {
+    NSString *volumeName =
+        config[@"GDRIVE_BACKUP_VOLUME_NAME"] ?: @"GoogleDrive-Backup";
+    self.configuredAPFSVolumePath =
+        config[@"GDRIVE_BACKUP_VOLUME"] ?:
+        [@"/Volumes" stringByAppendingPathComponent:volumeName];
+    self.configuredAPFSVolumeUUID =
+        [[config[@"GDRIVE_BACKUP_VOLUME_UUID"] ?: @""
+            stringByTrimmingCharactersInSet:
+                NSCharacterSet.whitespaceAndNewlineCharacterSet]
+            uppercaseString];
+}
+
 - (BOOL)mountedVolumePath:(NSString *)mountedPath
              matchesConfig:(NSDictionary<NSString *, NSString *> *)config {
     NSString *target = [config[@"GDRIVE_BACKUP_TARGET"] ?: @"apfs" lowercaseString];
@@ -3243,13 +3257,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     BOOL preserveConfiguredAPFSTarget = [configuredTarget isEqualToString:@"apfs"];
     NSString *encryption = [config[@"GDRIVE_BACKUP_ENCRYPTION"] ?: @"none" lowercaseString];
     NSString *schedule = [config[@"GDRIVE_BACKUP_SCHEDULE"] ?: @"manual" lowercaseString];
-    NSString *configuredVolumeName = config[@"GDRIVE_BACKUP_VOLUME_NAME"] ?: @"GoogleDrive-Backup";
-    self.configuredAPFSVolumePath = config[@"GDRIVE_BACKUP_VOLUME"] ?: [@"/Volumes" stringByAppendingPathComponent:configuredVolumeName];
-    self.configuredAPFSVolumeUUID = config[@"GDRIVE_BACKUP_VOLUME_UUID"] ?: @"";
-    if (!self.configuredAPFSVolumeUUID.length) {
-        self.configuredAPFSVolumeUUID =
-            [self volumeUUIDForPath:self.configuredAPFSVolumePath];
-    }
+    [self loadConfiguredAPFSIdentityFromConfig:config];
 
     NSTextField *title = [self label:@"Google Drive Backup" frame:NSMakeRect(26, 16, 300, 22)];
     title.font = [NSFont fontWithName:@"Lucida Grande Bold" size:17] ?: [NSFont boldSystemFontOfSize:17];

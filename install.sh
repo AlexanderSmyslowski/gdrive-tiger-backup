@@ -8,6 +8,19 @@ lowercase() {
 
 BACKUP_VOLUME="${BACKUP_VOLUME:-/Volumes/GoogleDrive-Backup}"
 BACKUP_VOLUME_NAME="${BACKUP_VOLUME_NAME:-$(basename "$BACKUP_VOLUME")}"
+BACKUP_VOLUME_UUID_INPUT_SET=0
+if [[ "${GDRIVE_BACKUP_VOLUME_UUID+x}" == "x" ]]; then
+  BACKUP_VOLUME_UUID_INPUT_SET=1
+  BACKUP_VOLUME_UUID="$GDRIVE_BACKUP_VOLUME_UUID"
+elif [[ "${BACKUP_VOLUME_UUID+x}" == "x" ]]; then
+  BACKUP_VOLUME_UUID_INPUT_SET=1
+else
+  BACKUP_VOLUME_UUID=""
+fi
+if [[ "$BACKUP_VOLUME_UUID_INPUT_SET" == "1" && -z "$BACKUP_VOLUME_UUID" ]]; then
+  echo "An explicitly supplied APFS UUID cannot be empty." >&2
+  exit 64
+fi
 BACKUP_TARGET="${GDRIVE_BACKUP_TARGET:-${BACKUP_TARGET:-apfs}}"
 BACKUP_TARGET="$(lowercase "$BACKUP_TARGET")"
 case "$BACKUP_TARGET" in
@@ -15,6 +28,17 @@ case "$BACKUP_TARGET" in
   nas|network|smb|afp|nfs) BACKUP_TARGET="nas" ;;
   *) echo "Invalid BACKUP_TARGET/GDRIVE_BACKUP_TARGET: $BACKUP_TARGET" >&2; exit 64 ;;
 esac
+if [[ -n "$BACKUP_VOLUME_UUID" ]]; then
+  if [[ "$BACKUP_TARGET" != "apfs" ]]; then
+    echo "GDRIVE_BACKUP_VOLUME_UUID is valid only for an APFS target." >&2
+    exit 64
+  fi
+  if [[ ! "$BACKUP_VOLUME_UUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; then
+    echo "Invalid GDRIVE_BACKUP_VOLUME_UUID: $BACKUP_VOLUME_UUID" >&2
+    exit 64
+  fi
+  BACKUP_VOLUME_UUID="$(printf '%s' "$BACKUP_VOLUME_UUID" | tr '[:lower:]' '[:upper:]')"
+fi
 NAS_MOUNT="${GDRIVE_BACKUP_NAS_MOUNT:-${NAS_MOUNT:-}}"
 NAS_URL="${GDRIVE_BACKUP_NAS_URL:-${NAS_URL:-}}"
 NAS_SUBDIR="${GDRIVE_BACKUP_NAS_SUBDIR:-${NAS_SUBDIR:-GoogleDrive-Backup}}"
@@ -22,6 +46,8 @@ RCLONE_REMOTE="${RCLONE_REMOTE:-gdrive}"
 INSTALL_LANG="${GDRIVE_BACKUP_LANG:-${INSTALL_LANG:-auto}}"
 CONFIG_DIR="$HOME/.config/gdrive-tiger-backup"
 CONFIG_FILE="$CONFIG_DIR/config"
+PROFILES_DIR="$CONFIG_DIR/profiles"
+ACTIVE_PROFILE_FILE="$CONFIG_DIR/active-profile"
 APP_DIR="${APP_DIR:-/Applications/GDrive Backup Tiger.app}"
 APP_CONTENTS="$APP_DIR/Contents"
 AGENT_SRC="$ROOT/launchd/com.commcats.gdrivebackup.plist"
@@ -47,6 +73,53 @@ fi
 if [[ ! -x /usr/libexec/PlistBuddy ]]; then
   echo "Missing required command: /usr/libexec/PlistBuddy" >&2
   exit 127
+fi
+if [[ -n "$BACKUP_VOLUME_UUID" ]]; then
+  if [[ ! -d "$BACKUP_VOLUME" || -L "$BACKUP_VOLUME" ]]; then
+    echo "The APFS target must be mounted at the exact nonsymlink path: $BACKUP_VOLUME" >&2
+    exit 69
+  fi
+  if ! VOLUME_INFO_PLIST="$(/usr/sbin/diskutil info -plist "$BACKUP_VOLUME" 2>/dev/null)"; then
+    echo "The mounted APFS identity could not be read: $BACKUP_VOLUME" >&2
+    exit 69
+  fi
+  if ! MOUNTED_FILESYSTEM_TYPE="$(
+    printf '%s' "$VOLUME_INFO_PLIST" |
+      /usr/bin/plutil -extract FilesystemType raw -o - - 2>/dev/null
+  )" ||
+     ! MOUNTED_WRITABLE_MEDIA="$(
+       printf '%s' "$VOLUME_INFO_PLIST" |
+         /usr/bin/plutil -extract WritableMedia raw -o - - 2>/dev/null
+     )" ||
+     [[ "$MOUNTED_FILESYSTEM_TYPE" != "apfs" ||
+        "$MOUNTED_WRITABLE_MEDIA" != "true" ]]; then
+    echo "The mounted target is not a writable APFS volume: $BACKUP_VOLUME" >&2
+    exit 69
+  fi
+  if ! MOUNTED_VOLUME_UUID="$(
+    printf '%s' "$VOLUME_INFO_PLIST" |
+      /usr/bin/plutil -extract VolumeUUID raw -o - - 2>/dev/null
+  )"; then
+    echo "The mounted target has no readable APFS volume UUID: $BACKUP_VOLUME" >&2
+    exit 69
+  fi
+  MOUNTED_VOLUME_UUID="$(
+    printf '%s' "$MOUNTED_VOLUME_UUID" | tr '[:lower:]' '[:upper:]'
+  )"
+  if [[ "$MOUNTED_VOLUME_UUID" != "$BACKUP_VOLUME_UUID" ]]; then
+    echo "The supplied APFS UUID does not belong to the mounted target: $BACKUP_VOLUME" >&2
+    exit 69
+  fi
+  if ! MOUNTED_VOLUME_PATH="$(
+    printf '%s' "$VOLUME_INFO_PLIST" |
+      /usr/bin/plutil -extract MountPoint raw -o - - 2>/dev/null
+  )" ||
+     ! BACKUP_VOLUME_REAL="$(cd "$BACKUP_VOLUME" 2>/dev/null && /bin/pwd -P)" ||
+     ! MOUNTED_VOLUME_REAL="$(cd "$MOUNTED_VOLUME_PATH" 2>/dev/null && /bin/pwd -P)" ||
+     [[ "$BACKUP_VOLUME_REAL" != "$MOUNTED_VOLUME_REAL" ]]; then
+    echo "The supplied APFS path is not the exact mounted volume root: $BACKUP_VOLUME" >&2
+    exit 69
+  fi
 fi
 
 mkdir -p "$CONFIG_DIR" "$APP_CONTENTS/MacOS" "$APP_CONTENTS/Resources" "$HOME/Library/LaunchAgents"
@@ -169,6 +242,8 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
     else
       LC_ALL=C printf 'GDRIVE_BACKUP_VOLUME=%q\n' "$BACKUP_VOLUME"
       LC_ALL=C printf 'GDRIVE_BACKUP_VOLUME_NAME=%q\n' "$BACKUP_VOLUME_NAME"
+      [[ -n "$BACKUP_VOLUME_UUID" ]] &&
+        LC_ALL=C printf 'GDRIVE_BACKUP_VOLUME_UUID=%q\n' "$BACKUP_VOLUME_UUID"
     fi
     LC_ALL=C printf 'RCLONE_REMOTE=%q\n' "$RCLONE_REMOTE"
     LC_ALL=C printf 'GDRIVE_BACKUP_LANG=%q\n' "$CONFIG_LANG"
@@ -209,6 +284,81 @@ if [[ -f "$CONFIG_FILE" && "$BACKUP_TARGET" == "nas" ]]; then
   if ! grep -q '^GDRIVE_BACKUP_NAS_SUBDIR=' "$CONFIG_FILE"; then
     LC_ALL=C printf 'GDRIVE_BACKUP_NAS_SUBDIR=%q\n' "$NAS_SUBDIR" >>"$CONFIG_FILE"
   fi
+fi
+
+UUID_CONFIG_TMP=""
+cleanup_uuid_config_tmp() {
+  if [[ -n "$UUID_CONFIG_TMP" && -e "$UUID_CONFIG_TMP" ]]; then
+    "$ROOT/scripts/trash-path.sh" "$UUID_CONFIG_TMP" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_uuid_config_tmp EXIT
+
+trusted_active_profile_config() {
+  local profile_id profile_config profile_line id_matches=0
+  if [[ ! -f "$ACTIVE_PROFILE_FILE" || -L "$ACTIVE_PROFILE_FILE" ]]; then
+    echo "The active profile pointer is not a trusted regular file." >&2
+    return 73
+  fi
+  profile_id="$(<"$ACTIVE_PROFILE_FILE")"
+  if [[ ! "$profile_id" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ||
+        ! -d "$PROFILES_DIR" || -L "$PROFILES_DIR" ]]; then
+    echo "The active profile store is not trusted." >&2
+    return 73
+  fi
+  profile_config="$PROFILES_DIR/$profile_id.conf"
+  if [[ ! -f "$profile_config" || -L "$profile_config" ]]; then
+    echo "The active profile configuration is not a trusted regular file." >&2
+    return 73
+  fi
+  while IFS= read -r profile_line || [[ -n "$profile_line" ]]; do
+    case "$profile_line" in
+      "GDRIVE_BACKUP_PROFILE_ID=$profile_id"|"GDRIVE_BACKUP_PROFILE_ID='$profile_id'"|"GDRIVE_BACKUP_PROFILE_ID=\"$profile_id\"")
+        id_matches=1
+        break
+        ;;
+    esac
+  done <"$profile_config"
+  if [[ "$id_matches" != "1" ]]; then
+    echo "The active profile identity does not match its file name." >&2
+    return 73
+  fi
+  printf '%s' "$profile_config"
+}
+
+upsert_volume_identity() {
+  local target="$1"
+  if [[ ! -f "$target" || -L "$target" ]]; then
+    echo "Refusing to update an untrusted configuration file: $target" >&2
+    return 73
+  fi
+  UUID_CONFIG_TMP="$(/usr/bin/mktemp "${target}.uuid.XXXXXX")"
+  /usr/bin/awk '
+    !/^GDRIVE_BACKUP_VOLUME=/ &&
+    !/^GDRIVE_BACKUP_VOLUME_NAME=/ &&
+    !/^GDRIVE_BACKUP_VOLUME_UUID=/
+  ' "$target" >"$UUID_CONFIG_TMP"
+  {
+    LC_ALL=C printf 'GDRIVE_BACKUP_VOLUME=%q\n' "$BACKUP_VOLUME"
+    LC_ALL=C printf 'GDRIVE_BACKUP_VOLUME_NAME=%q\n' "$BACKUP_VOLUME_NAME"
+    LC_ALL=C printf 'GDRIVE_BACKUP_VOLUME_UUID=%q\n' "$BACKUP_VOLUME_UUID"
+  } >>"$UUID_CONFIG_TMP"
+  /bin/chmod 600 "$UUID_CONFIG_TMP"
+  /bin/mv "$UUID_CONFIG_TMP" "$target"
+  UUID_CONFIG_TMP=""
+}
+
+if [[ "$BACKUP_TARGET" == "apfs" && -n "$BACKUP_VOLUME_UUID" ]]; then
+  ACTIVE_PROFILE_CONFIG=""
+  if [[ -e "$ACTIVE_PROFILE_FILE" || -L "$ACTIVE_PROFILE_FILE" ]]; then
+    if ! ACTIVE_PROFILE_CONFIG="$(trusted_active_profile_config)"; then
+      exit 73
+    fi
+  fi
+  if [[ -n "$ACTIVE_PROFILE_CONFIG" ]]; then
+    upsert_volume_identity "$ACTIVE_PROFILE_CONFIG"
+  fi
+  upsert_volume_identity "$CONFIG_FILE"
 fi
 /bin/chmod 600 "$CONFIG_FILE"
 

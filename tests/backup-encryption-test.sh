@@ -31,6 +31,7 @@ prepare_test_environment() {
   VOLUME="$TEST_HOME/GoogleDrive-Backup"
   DISKUTIL_LOG="$TEST_HOME/diskutil.log"
   DISKUTIL_COUNT_FILE="$TEST_HOME/diskutil-count"
+  OSASCRIPT_LOG="$TEST_HOME/osascript.log"
   RCLONE_LOG="$TEST_HOME/rclone.log"
   CRYPT_CONFIG_COUNT="$TEST_HOME/crypt-config-count"
   RETENTION_TRASH="$TEST_HOME/retention-trash"
@@ -74,6 +75,17 @@ case "${1:-}" in
         *"${FAKE_CRYPT_KEEPER_VERSION:-never-keeper}") printf '["cipher-versions/cipher-keeper"]\n' ;;
         *) printf '[]\n' ;;
       esac
+    elif [[ "${2:-}" == "query" ]]; then
+      printf '%s\n' "${FAKE_RCLONE_COLLISION_QUERY_JSON:-[]}"
+    elif [[ "${2:-}" == "copyid" ]]; then
+      if [[ "${FAKE_RCLONE_ARCHIVE_STATUS:-0}" == "0" ]]; then
+        mkdir -p "${5:-}"
+        : >"${5:-}/${FAKE_RCLONE_ARCHIVE_FILE_NAME:-image.heic}"
+        if [[ -n "${FAKE_COLLISION_IDENTITY_SWAP_MARKER:-}" ]]; then
+          : >"$FAKE_COLLISION_IDENTITY_SWAP_MARKER"
+        fi
+      fi
+      exit "${FAKE_RCLONE_ARCHIVE_STATUS:-0}"
     else
       printf '[]\n'
     fi
@@ -83,7 +95,18 @@ case "${1:-}" in
     printf '%s' "${FAKE_CRYPT_VERSION_NAMES-}"
     exit "${FAKE_CRYPT_LSF_STATUS:-0}"
     ;;
-  copy) exit "${FAKE_RCLONE_COPY_STATUS:-0}" ;;
+  copy)
+    if [[ -n "${FAKE_RCLONE_COPY_OUTPUT:-}" ]]; then
+      if [[ -z "${FAKE_RCLONE_COPY_ONCE_MARKER:-}" ||
+            ! -e "$FAKE_RCLONE_COPY_ONCE_MARKER" ]]; then
+        printf '%s\n' "$FAKE_RCLONE_COPY_OUTPUT"
+        if [[ -n "${FAKE_RCLONE_COPY_ONCE_MARKER:-}" ]]; then
+          : >"$FAKE_RCLONE_COPY_ONCE_MARKER"
+        fi
+      fi
+    fi
+    exit "${FAKE_RCLONE_COPY_STATUS:-0}"
+    ;;
 esac
 exit 64
 SH
@@ -91,17 +114,42 @@ SH
   cat >"$FAKE_BIN/trash" <<'SH'
 #!/bin/bash
 set -u
+if [[ -n "${FAKE_RETENTION_SWAP_ON_TRASH_FAILURE:-}" ]]; then
+  : >"$FAKE_RETENTION_SWAP_ON_TRASH_FAILURE"
+  exit 1
+fi
 mkdir -p "${FAKE_RETENTION_TRASH:?}"
 for path in "$@"; do
   /bin/mv "$path" "$FAKE_RETENTION_TRASH/${path##*/}" || exit $?
 done
+if [[ -n "${FAKE_RETENTION_SWAP_AFTER_TRASH:-}" ]]; then
+  : >"$FAKE_RETENTION_SWAP_AFTER_TRASH"
+fi
 SH
 
   cat >"$FAKE_BIN/jq" <<'SH'
 #!/bin/bash
+if [[ "${FAKE_JQ_USE_SYSTEM:-0}" == "1" ]]; then
+  exec /usr/bin/jq "$@"
+fi
+if [[ "$*" == *"APFSVolumeUUID"* ]]; then
+  printf '%s\n' "${FAKE_EXISTING_APFS_UUID:-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa}"
+  if [[ -f "${FAKE_APFS_CREATED_MARKER:-/missing-created-marker}" ]]; then
+    printf '%s\n' "${FAKE_NEW_APFS_UUID:-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb}"
+    if [[ -n "${FAKE_SECOND_NEW_APFS_UUID:-}" ]]; then
+      printf '%s\n' "$FAKE_SECOND_NEW_APFS_UUID"
+    fi
+  fi
+  exit 0
+fi
 case "${1:-}" in
   length) printf '0\n' ;;
-  -r) exit 0 ;;
+  -r)
+    if [[ -n "${FAKE_RETENTION_START_SWAP_MARKER:-}" ]]; then
+      : >"$FAKE_RETENTION_START_SWAP_MARKER"
+    fi
+    exit 0
+    ;;
   *) exit 64 ;;
 esac
 SH
@@ -127,9 +175,26 @@ if [[ "${1:-}" == "info" && "${2:-}" == "-plist" ]]; then
   fi
   encryption_value="${FAKE_ENCRYPTION_VALUE:-false}"
   volume_uuid="${FAKE_VOLUME_UUID:-11111111-2222-3333-4444-555555555555}"
-  if (( count > 1 )); then
+  mount_point="${FAKE_MOUNT_POINT:-/missing-test-mount}"
+  volume_name="${FAKE_VOLUME_NAME:-GoogleDrive-Backup}"
+  container_reference="${FAKE_CONTAINER_REFERENCE:-disk99}"
+  requested_identifier="$(printf '%s' "${3:-}" | /usr/bin/tr '[:upper:]' '[:lower:]')"
+  new_identifier="$(printf '%s' "${FAKE_NEW_APFS_UUID:-/missing-new-uuid}" | /usr/bin/tr '[:upper:]' '[:lower:]')"
+  if [[ "${3:-}" == "${FAKE_CANDIDATE_MOUNT:-/missing-candidate}" ]]; then
+    mount_point="$FAKE_CANDIDATE_MOUNT"
+    volume_uuid="${FAKE_CANDIDATE_UUID:-cccccccc-cccc-cccc-cccc-cccccccccccc}"
+    volume_name="${FAKE_CANDIDATE_NAME:-TOSHIBA_4TB}"
+  elif [[ "$requested_identifier" == "$new_identifier" ]]; then
+    mount_point="${FAKE_CREATED_MOUNT:-/missing-created-mount}"
+    volume_uuid="$FAKE_NEW_APFS_UUID"
+    volume_name="${FAKE_CREATED_NAME:-GoogleDrive-Backup}"
+  fi
+  if (( count > ${FAKE_DISKUTIL_CHANGE_AFTER:-1} )); then
     encryption_value="${FAKE_ENCRYPTION_AFTER_FIRST-$encryption_value}"
     volume_uuid="${FAKE_VOLUME_UUID_AFTER_FIRST-$volume_uuid}"
+  fi
+  if [[ -f "${FAKE_IDENTITY_SWAP_MARKER:-/missing-identity-swap-marker}" ]]; then
+    volume_uuid="${FAKE_VOLUME_UUID_AFTER_MARKER:-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}"
   fi
   cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -137,7 +202,7 @@ if [[ "${1:-}" == "info" && "${2:-}" == "-plist" ]]; then
 <plist version="1.0">
 <dict>
   <key>FilesystemType</key><string>${FAKE_FILESYSTEM_TYPE:-apfs}</string>
-  <key>MountPoint</key><string>${FAKE_MOUNT_POINT:-/missing-test-mount}</string>
+  <key>MountPoint</key><string>${mount_point}</string>
   <key>RemovableMediaOrExternalDevice</key><${FAKE_EXTERNAL_VALUE:-true}/>
   <key>WritableMedia</key><true/>
   $(if [[ "${FAKE_PLIST_MODE:-valid}" != "missing-encryption" ]]; then
@@ -145,20 +210,45 @@ if [[ "${1:-}" == "info" && "${2:-}" == "-plist" ]]; then
     fi)
   <key>Locked</key><${FAKE_LOCKED_VALUE:-false}/>
   <key>VolumeUUID</key><string>${volume_uuid}</string>
+  <key>VolumeName</key><string>${volume_name}</string>
+  <key>APFSContainerReference</key><string>${container_reference}</string>
+  <key>SystemImage</key><false/>
   <key>DeviceIdentifier</key><string>${FAKE_DEVICE_IDENTIFIER:-disk99s1}</string>
 </dict>
 </plist>
 PLIST
   exit 0
 fi
+if [[ "${1:-}" == "apfs" && "${2:-}" == "list" && "${3:-}" == "-plist" ]]; then
+  cat <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>Containers</key><array/></dict></plist>
+PLIST
+  exit 0
+fi
 if [[ "${1:-}" == "apfs" && "${2:-}" == "addVolume" ]]; then
+  if [[ "${FAKE_UNPRIVILEGED_ADD_STATUS:-0}" != "0" ]]; then
+    exit "$FAKE_UNPRIVILEGED_ADD_STATUS"
+  fi
+  : >"${FAKE_APFS_CREATED_MARKER:?}"
+  mkdir -p "${FAKE_CREATED_MOUNT:?}"
   exit 0
 fi
 exit 64
 SH
 
+  cat >"$FAKE_BIN/osascript" <<'SH'
+#!/bin/bash
+set -u
+printf '%s\n' "$*" >>"${FAKE_OSASCRIPT_LOG:?}"
+: >"${FAKE_APFS_CREATED_MARKER:?}"
+mkdir -p "${FAKE_CREATED_MOUNT:?}"
+exit "${FAKE_PRIVILEGED_ADD_STATUS:-0}"
+SH
+
   chmod +x "$FAKE_BIN/rclone" "$FAKE_BIN/jq" "$FAKE_BIN/flock" "$FAKE_BIN/diskutil" \
-    "$FAKE_BIN/trash"
+    "$FAKE_BIN/osascript" "$FAKE_BIN/trash"
 }
 
 run_backup_command() {
@@ -168,8 +258,10 @@ run_backup_command() {
     HOME="$TEST_HOME" \
     GDRIVE_BACKUP_PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     GDRIVE_BACKUP_DISKUTIL="$FAKE_BIN/diskutil" \
+    GDRIVE_BACKUP_OSASCRIPT="$FAKE_BIN/osascript" \
     FAKE_DISKUTIL_LOG="$DISKUTIL_LOG" \
     FAKE_DISKUTIL_COUNT_FILE="$DISKUTIL_COUNT_FILE" \
+    FAKE_OSASCRIPT_LOG="$OSASCRIPT_LOG" \
     FAKE_RCLONE_LOG="$RCLONE_LOG" \
     FAKE_CRYPT_CONFIG_COUNT="$CRYPT_CONFIG_COUNT" \
     FAKE_CRYPT_REMOTE="${FAKE_CRYPT_REMOTE:-backup-crypt}" \
@@ -731,12 +823,609 @@ test_malformed_saved_apfs_uuid_is_rejected() {
   fi
 }
 
+test_saved_apfs_uuid_rejects_parent_component_escape() {
+  local name="saved APFS UUID rejects a destination containing a parent traversal"
+  local configured_volume resolved_volume outside status
+  prepare_test_environment
+  configured_volume="$TEST_HOME/Configured Backup"
+  resolved_volume="$TEST_HOME/Resolved Backup"
+  outside="$TEST_HOME/outside"
+  mkdir -p "$configured_volume" "$resolved_volume" "$outside"
+
+  run_backup \
+    GDRIVE_BACKUP_ENCRYPTION=none \
+    GDRIVE_BACKUP_VOLUME_UUID=11111111-2222-3333-4444-555555555555 \
+    GDRIVE_BACKUP_VOLUME="$configured_volume" \
+    GDRIVE_BACKUP_DEST_ROOT="$configured_volume/../outside" \
+    FAKE_MOUNT_POINT="$resolved_volume"
+  status=$?
+
+  if [[ "$status" == "69" ]] &&
+    { [[ ! -e "$RCLONE_LOG" ]] || ! grep -Eq '^copy( |$)' "$RCLONE_LOG"; }; then
+    pass "$name"
+  else
+    fail "$name (status $status)"
+  fi
+}
+
+test_saved_apfs_uuid_rejects_destination_symlink_escape() {
+  local name="saved APFS UUID rejects a destination symlink leaving the volume"
+  local configured_volume resolved_volume outside status
+  prepare_test_environment
+  configured_volume="$TEST_HOME/Configured Backup"
+  resolved_volume="$TEST_HOME/Resolved Backup"
+  outside="$TEST_HOME/outside"
+  mkdir -p "$configured_volume" "$resolved_volume" "$outside"
+  /bin/ln -s "$outside" "$resolved_volume/subdir"
+
+  run_backup \
+    GDRIVE_BACKUP_ENCRYPTION=none \
+    GDRIVE_BACKUP_VOLUME_UUID=11111111-2222-3333-4444-555555555555 \
+    GDRIVE_BACKUP_VOLUME="$configured_volume" \
+    GDRIVE_BACKUP_DEST_ROOT="$configured_volume/subdir" \
+    FAKE_MOUNT_POINT="$resolved_volume"
+  status=$?
+
+  if [[ "$status" == "69" ]] &&
+    { [[ ! -e "$RCLONE_LOG" ]] || ! grep -Eq '^copy( |$)' "$RCLONE_LOG"; }; then
+    pass "$name"
+  else
+    fail "$name (status $status)"
+  fi
+}
+
+test_saved_apfs_uuid_accepts_nested_destination() {
+  local name="saved APFS UUID allows a normal nested destination on the volume"
+  local configured_volume resolved_volume resolved_real status
+  prepare_test_environment
+  configured_volume="$TEST_HOME/Configured Backup"
+  resolved_volume="$TEST_HOME/Resolved Backup"
+  mkdir -p "$configured_volume" "$resolved_volume"
+  resolved_real="$(cd "$resolved_volume" && /bin/pwd -P)"
+
+  run_backup \
+    GDRIVE_BACKUP_ENCRYPTION=none \
+    GDRIVE_BACKUP_VOLUME_UUID=11111111-2222-3333-4444-555555555555 \
+    GDRIVE_BACKUP_VOLUME="$configured_volume" \
+    GDRIVE_BACKUP_DEST_ROOT="$configured_volume/nested/backup" \
+    FAKE_MOUNT_POINT="$resolved_volume"
+  status=$?
+
+  if [[ "$status" == "0" ]] &&
+    grep -Fq "$resolved_real/nested/backup/My Drive" "$RCLONE_LOG"; then
+    pass "$name"
+  else
+    fail "$name (status $status)"
+  fi
+}
+
+test_saved_apfs_uuid_revalidates_before_creating_destination() {
+  local name="saved APFS UUID is revalidated after approval before destination creation"
+  local configured_volume resolved_volume destination status
+  prepare_test_environment
+  configured_volume="$TEST_HOME/Configured Backup"
+  resolved_volume="$TEST_HOME/Resolved Backup"
+  destination="$resolved_volume/new-destination"
+  mkdir -p "$configured_volume" "$resolved_volume"
+
+  run_backup \
+    GDRIVE_BACKUP_ENCRYPTION=none \
+    GDRIVE_BACKUP_VOLUME_UUID=11111111-2222-3333-4444-555555555555 \
+    GDRIVE_BACKUP_VOLUME="$configured_volume" \
+    GDRIVE_BACKUP_DEST_ROOT="$configured_volume/new-destination" \
+    FAKE_MOUNT_POINT="$resolved_volume" \
+    FAKE_DISKUTIL_CHANGE_AFTER=2 \
+    FAKE_VOLUME_UUID_AFTER_FIRST=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+  status=$?
+
+  if [[ "$status" == "69" && ! -e "$destination" ]] &&
+    { [[ ! -e "$RCLONE_LOG" ]] || ! grep -Eq '^copy( |$)' "$RCLONE_LOG"; }; then
+    pass "$name"
+  else
+    fail "$name (status $status)"
+  fi
+}
+
+test_saved_apfs_uuid_rejects_copy_child_symlink_escape() {
+  local name="saved APFS UUID rejects active and version child symlinks leaving the volume"
+  local mode outside status bad_pattern volume_real rejected=0
+  local active_status="unset" versions_status="unset"
+
+  for mode in active versions; do
+    prepare_test_environment
+    mkdir -p "$VOLUME"
+    volume_real="$(cd "$VOLUME" && /bin/pwd -P)"
+    outside="$TEST_HOME/outside-$mode"
+    mkdir -p "$outside"
+    if [[ "$mode" == "active" ]]; then
+      /bin/ln -s "$outside" "$VOLUME/My Drive"
+      bad_pattern="$volume_real/My Drive"
+      run_backup \
+        GDRIVE_BACKUP_ENCRYPTION=none \
+        GDRIVE_BACKUP_VOLUME_UUID=11111111-2222-3333-4444-555555555555 \
+        FAKE_MOUNT_POINT="$VOLUME"
+    else
+      /bin/ln -s "$outside" "$VOLUME/.gdrive-versions"
+      bad_pattern="--backup-dir $volume_real/.gdrive-versions"
+      run_backup \
+        GDRIVE_BACKUP_ENCRYPTION=none \
+        GDRIVE_BACKUP_VOLUME_UUID=11111111-2222-3333-4444-555555555555 \
+        FAKE_MOUNT_POINT="$VOLUME" \
+        GDRIVE_BACKUP_VERSIONING=1
+    fi
+    status=$?
+    if [[ "$mode" == "active" ]]; then
+      active_status="$status"
+    else
+      versions_status="$status"
+    fi
+    if [[ "$status" != "0" ]] &&
+      { [[ ! -e "$RCLONE_LOG" ]] || ! grep -Fq -- "$bad_pattern" "$RCLONE_LOG"; }; then
+      rejected=$((rejected + 1))
+    fi
+  done
+
+  if [[ "$rejected" == "2" ]]; then
+    pass "$name"
+  else
+    fail "$name ($rejected of 2 escapes rejected; active=$active_status versions=$versions_status)"
+  fi
+}
+
+test_saved_apfs_uuid_rejects_deep_tree_symlink_escape() {
+  local name="saved APFS UUID rejects deep symlinks in active and version trees"
+  local mode outside status rejected=0
+
+  for mode in active versions; do
+    prepare_test_environment
+    mkdir -p "$VOLUME"
+    outside="$TEST_HOME/deep-outside-$mode"
+    mkdir -p "$outside"
+    if [[ "$mode" == "active" ]]; then
+      mkdir -p "$VOLUME/My Drive/Nested Parent"
+      /bin/ln -s "$outside" "$VOLUME/My Drive/Nested Parent/Escape"
+      run_backup \
+        GDRIVE_BACKUP_ENCRYPTION=none \
+        GDRIVE_BACKUP_VOLUME_UUID=11111111-2222-3333-4444-555555555555 \
+        FAKE_MOUNT_POINT="$VOLUME"
+    else
+      mkdir -p "$VOLUME/.gdrive-versions/old/Nested Parent"
+      /bin/ln -s "$outside" \
+        "$VOLUME/.gdrive-versions/old/Nested Parent/Escape"
+      run_backup \
+        GDRIVE_BACKUP_ENCRYPTION=none \
+        GDRIVE_BACKUP_VOLUME_UUID=11111111-2222-3333-4444-555555555555 \
+        FAKE_MOUNT_POINT="$VOLUME" \
+        GDRIVE_BACKUP_VERSIONING=1
+    fi
+    status=$?
+    if [[ "$status" != "0" ]] &&
+      { [[ ! -e "$RCLONE_LOG" ]] || ! grep -Eq '^copy( |$)' "$RCLONE_LOG"; }; then
+      rejected=$((rejected + 1))
+    fi
+  done
+
+  if [[ "$rejected" == "2" ]]; then
+    pass "$name"
+  else
+    fail "$name ($rejected of 2 deep escapes rejected)"
+  fi
+}
+
+test_saved_apfs_uuid_scans_history_once_and_current_version_paths_per_copy() {
+  local name="saved APFS UUID scans old history once and only current version paths per copy"
+  local trace_env validation_log volume_real history_root status
+  local full_scans scoped_scans
+  prepare_test_environment
+  mkdir -p "$VOLUME/.gdrive-versions/old/Nested"
+  trace_env="$TEST_HOME/trace-apfs-tree-validation.sh"
+  validation_log="$TEST_HOME/apfs-tree-validations.log"
+  volume_real="$(cd "$VOLUME" && /bin/pwd -P)"
+  history_root="${volume_real%/}/.gdrive-versions"
+  cat >"$trace_env" <<'SH'
+if [[ -n "${FAKE_APFS_VALIDATION_LOG:-}" ]]; then
+  set -T
+  trap 'if [[ "${FUNCNAME[0]:-}" == "validate_configured_apfs_tree" ]]; then
+          printf "%s\n" "${1:-}" >>"$FAKE_APFS_VALIDATION_LOG"
+        fi' RETURN
+fi
+SH
+
+  run_backup \
+    GDRIVE_BACKUP_ENCRYPTION=none \
+    GDRIVE_BACKUP_VOLUME_UUID=11111111-2222-3333-4444-555555555555 \
+    FAKE_MOUNT_POINT="$VOLUME" \
+    GDRIVE_BACKUP_VERSIONING=1 \
+    GDRIVE_BACKUP_RETENTION=0 \
+    BASH_ENV="$trace_env" \
+    FAKE_APFS_VALIDATION_LOG="$validation_log"
+  status=$?
+  full_scans="$(grep -Fxc "$history_root" "$validation_log" 2>/dev/null || true)"
+  scoped_scans="$(/usr/bin/awk -v prefix="$history_root/" '
+    index($0, prefix) == 1 { count++ }
+    END { print count + 0 }
+  ' "$validation_log" 2>/dev/null)"
+
+  if [[ "$status" == "0" && "$full_scans" == "1" && "$scoped_scans" == "4" ]]; then
+    pass "$name"
+  else
+    fail "$name (status $status, full history scans $full_scans, scoped scans $scoped_scans)"
+  fi
+}
+
+test_apfs_tree_device_validation_streams_its_inventory() {
+  local name="APFS tree device validation streams instead of materializing its inventory"
+  local function_text
+  function_text="$(/usr/bin/awk '
+    /^validate_configured_apfs_tree\(\)/ { capture = 1 }
+    capture { print }
+    capture && /^}$/ { exit }
+  ' "$BACKUP_SCRIPT")"
+
+  if [[ "$function_text" != *"device_listing="* &&
+        "$function_text" == *"/usr/bin/find -x"* &&
+        "$function_text" == *"/usr/bin/awk -v expected_device="* ]]; then
+    pass "$name"
+  else
+    fail "$name"
+  fi
+}
+
+test_auto_created_apfs_volume_uses_the_new_uuid_and_mount_path() {
+  local name="auto-created APFS volume persists and uses only the newly added UUID"
+  local volumes_root configured_volume created_mount created_real candidate_mount
+  local config marker status saved_volume saved_uuid uuid_lines
+  prepare_test_environment
+  volumes_root="$TEST_HOME/Volumes"
+  configured_volume="$volumes_root/Missing Configured Backup"
+  created_mount="$volumes_root/GoogleDrive-Backup 2"
+  candidate_mount="$volumes_root/TOSHIBA_4TB"
+  config="$TEST_HOME/auto-create.conf"
+  marker="$TEST_HOME/apfs-created"
+  mkdir -p "$volumes_root/GoogleDrive-Backup" "$candidate_mount"
+  cat >"$config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$configured_volume'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    FAKE_APFS_CREATED_MARKER="$marker" \
+    FAKE_CANDIDATE_MOUNT="$candidate_mount" \
+    FAKE_CREATED_MOUNT="$created_mount" \
+    FAKE_NEW_APFS_UUID=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+  status=$?
+  created_real="$(cd "$created_mount" 2>/dev/null && /bin/pwd -P || true)"
+  saved_volume="$(/bin/bash -c 'source "$1"; printf "%s" "${GDRIVE_BACKUP_VOLUME:-}"' _ "$config")"
+  saved_uuid="$(/bin/bash -c 'source "$1"; printf "%s" "${GDRIVE_BACKUP_VOLUME_UUID:-}"' _ "$config")"
+  uuid_lines="$(grep -Ec '^GDRIVE_BACKUP_VOLUME_UUID=' "$config")"
+
+  if [[ "$status" == "0" && -n "$created_real" &&
+        "$saved_volume" == "$created_real" &&
+        "$saved_uuid" == "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB" &&
+        "$uuid_lines" == "1" ]] &&
+    grep -Fq "$created_real/My Drive" "$RCLONE_LOG" &&
+    ! grep -Fq "$volumes_root/GoogleDrive-Backup/My Drive" "$RCLONE_LOG"; then
+    pass "$name"
+  else
+    fail "$name (status $status, volume $saved_volume, uuid $saved_uuid, lines $uuid_lines)"
+  fi
+}
+
+test_auto_created_apfs_volume_rejects_ambiguous_new_uuids() {
+  local name="auto-created APFS volume fails closed when more than one new UUID appears"
+  local volumes_root configured_volume created_mount candidate_mount
+  local config marker status
+  prepare_test_environment
+  volumes_root="$TEST_HOME/Volumes"
+  configured_volume="$volumes_root/Missing Configured Backup"
+  created_mount="$volumes_root/GoogleDrive-Backup 2"
+  candidate_mount="$volumes_root/TOSHIBA_4TB"
+  config="$TEST_HOME/ambiguous-auto-create.conf"
+  marker="$TEST_HOME/apfs-created"
+  mkdir -p "$volumes_root/GoogleDrive-Backup" "$candidate_mount"
+  cat >"$config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$configured_volume'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    FAKE_APFS_CREATED_MARKER="$marker" \
+    FAKE_CANDIDATE_MOUNT="$candidate_mount" \
+    FAKE_CREATED_MOUNT="$created_mount" \
+    FAKE_NEW_APFS_UUID=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb \
+    FAKE_SECOND_NEW_APFS_UUID=dddddddd-dddd-dddd-dddd-dddddddddddd
+  status=$?
+
+  if [[ "$status" == "69" ]] &&
+    grep -Fxq 'GDRIVE_BACKUP_VOLUME_UUID=' "$config" &&
+    { [[ ! -e "$RCLONE_LOG" ]] || ! grep -Eq '^(config|backend|copy)( |$)' "$RCLONE_LOG"; }; then
+    pass "$name"
+  else
+    fail "$name (status $status)"
+  fi
+}
+
+test_auto_created_apfs_volume_recovers_privileged_partial_failure() {
+  local name="auto-created APFS volume detects a privileged partial success before retrying"
+  local volumes_root configured_volume created_mount candidate_mount
+  local config marker status saved_uuid
+  prepare_test_environment
+  volumes_root="$TEST_HOME/Volumes"
+  configured_volume="$volumes_root/Missing Configured Backup"
+  created_mount="$volumes_root/GoogleDrive-Backup 2"
+  candidate_mount="$volumes_root/TOSHIBA_4TB"
+  config="$TEST_HOME/privileged-partial-auto-create.conf"
+  marker="$TEST_HOME/apfs-created"
+  mkdir -p "$volumes_root/GoogleDrive-Backup" "$candidate_mount"
+  cat >"$config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$configured_volume'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    FAKE_APFS_CREATED_MARKER="$marker" \
+    FAKE_CANDIDATE_MOUNT="$candidate_mount" \
+    FAKE_CREATED_MOUNT="$created_mount" \
+    FAKE_NEW_APFS_UUID=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb \
+    FAKE_UNPRIVILEGED_ADD_STATUS=1 \
+    FAKE_PRIVILEGED_ADD_STATUS=1
+  status=$?
+  saved_uuid="$(/bin/bash -c 'source "$1"; printf "%s" "${GDRIVE_BACKUP_VOLUME_UUID:-}"' _ "$config")"
+
+  if [[ "$status" == "0" &&
+        "$saved_uuid" == "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB" &&
+        "$(/usr/bin/wc -l <"$OSASCRIPT_LOG" | /usr/bin/tr -d '[:space:]')" == "1" ]]; then
+    pass "$name"
+  else
+    fail "$name (status $status, uuid $saved_uuid)"
+  fi
+}
+
+test_saved_apfs_uuid_blocks_retention_after_copy_swap() {
+  local name="saved APFS UUID is revalidated before retention starts"
+  local version marker status
+  prepare_test_environment
+  mkdir -p "$VOLUME"
+  version="2020-01-01T00-00-00+0000-00000000-0000-4000-8000-000000000101"
+  mkdir -p "$VOLUME/.gdrive-versions/$version"
+  marker="$TEST_HOME/retention-start-swap"
+
+  run_backup \
+    GDRIVE_BACKUP_ENCRYPTION=none \
+    GDRIVE_BACKUP_VOLUME_UUID=11111111-2222-3333-4444-555555555555 \
+    FAKE_MOUNT_POINT="$VOLUME" \
+    FAKE_RETENTION_START_SWAP_MARKER="$marker" \
+    FAKE_IDENTITY_SWAP_MARKER="$marker" \
+    GDRIVE_BACKUP_VERSIONING=1 \
+    GDRIVE_BACKUP_RETENTION=1
+  status=$?
+
+  if [[ "$status" == "1" && -d "$VOLUME/.gdrive-versions/$version" &&
+        ! -e "$RETENTION_TRASH/$version" ]]; then
+    pass "$name"
+  else
+    fail "$name (status $status)"
+  fi
+}
+
+test_saved_apfs_uuid_revalidates_before_each_retention_trash() {
+  local name="saved APFS UUID is revalidated before every retention trash operation"
+  local first second marker status remaining trashed
+  prepare_test_environment
+  mkdir -p "$VOLUME"
+  first="2020-01-01T00-00-00+0000-00000000-0000-4000-8000-000000000201"
+  second="2020-01-02T00-00-00+0000-00000000-0000-4000-8000-000000000202"
+  mkdir -p "$VOLUME/.gdrive-versions/$first" "$VOLUME/.gdrive-versions/$second"
+  marker="$TEST_HOME/retention-trash-swap"
+
+  run_backup \
+    GDRIVE_BACKUP_ENCRYPTION=none \
+    GDRIVE_BACKUP_VOLUME_UUID=11111111-2222-3333-4444-555555555555 \
+    FAKE_MOUNT_POINT="$VOLUME" \
+    FAKE_RETENTION_SWAP_AFTER_TRASH="$marker" \
+    FAKE_IDENTITY_SWAP_MARKER="$marker" \
+    GDRIVE_BACKUP_VERSIONING=1 \
+    GDRIVE_BACKUP_RETENTION=1
+  status=$?
+  remaining="$(/usr/bin/find "$VOLUME/.gdrive-versions" -mindepth 1 -maxdepth 1 -type d ! -name .retention-trash | /usr/bin/wc -l | /usr/bin/tr -d '[:space:]')"
+  trashed="$(/usr/bin/find "$RETENTION_TRASH" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | /usr/bin/wc -l | /usr/bin/tr -d '[:space:]')"
+
+  if [[ "$status" == "1" && "$remaining" == "1" && "$trashed" == "1" ]]; then
+    pass "$name"
+  else
+    fail "$name (status $status, remaining $remaining, trashed $trashed)"
+  fi
+}
+
+test_saved_apfs_uuid_blocks_retention_fallback_move_after_swap() {
+  local name="saved APFS UUID blocks a retention fallback move after trash failure"
+  local version marker status
+  prepare_test_environment
+  mkdir -p "$VOLUME"
+  version="2020-01-03T00-00-00+0000-00000000-0000-4000-8000-000000000301"
+  mkdir -p "$VOLUME/.gdrive-versions/$version"
+  marker="$TEST_HOME/retention-fallback-swap"
+
+  run_backup \
+    GDRIVE_BACKUP_ENCRYPTION=none \
+    GDRIVE_BACKUP_VOLUME_UUID=11111111-2222-3333-4444-555555555555 \
+    FAKE_MOUNT_POINT="$VOLUME" \
+    FAKE_RETENTION_SWAP_ON_TRASH_FAILURE="$marker" \
+    FAKE_IDENTITY_SWAP_MARKER="$marker" \
+    GDRIVE_BACKUP_VERSIONING=1 \
+    GDRIVE_BACKUP_RETENTION=1
+  status=$?
+
+  if [[ "$status" == "1" && -d "$VOLUME/.gdrive-versions/$version" &&
+        ! -e "$VOLUME/.gdrive-versions/.retention-trash/$version" ]]; then
+    pass "$name"
+  else
+    fail "$name (status $status)"
+  fi
+}
+
+test_saved_apfs_uuid_blocks_collision_publication_after_archive_copy_swap() {
+  local name="saved APFS UUID blocks collision publication after an archive copy swap"
+  local marker once_marker status manifest_count published_object_count
+  prepare_test_environment
+  mkdir -p "$VOLUME"
+  marker="$TEST_HOME/collision-copy-swap"
+  once_marker="$TEST_HOME/collision-notice-seen"
+
+  run_backup \
+    GDRIVE_BACKUP_ENCRYPTION=none \
+    GDRIVE_BACKUP_VOLUME_UUID=11111111-2222-3333-4444-555555555555 \
+    FAKE_MOUNT_POINT="$VOLUME" \
+    FAKE_JQ_USE_SYSTEM=1 \
+    FAKE_RCLONE_COPY_OUTPUT='NOTICE: image.heic: Duplicate object found in source - ignoring' \
+    FAKE_RCLONE_COPY_ONCE_MARKER="$once_marker" \
+    FAKE_RCLONE_COLLISION_QUERY_JSON='[
+      {"id":"file-id-a","name":"image.heic","mimeType":"image/heic","parents":["root-id"]},
+      {"id":"file-id-b","name":"image.heic","mimeType":"image/heic","parents":["root-id"]}
+    ]' \
+    FAKE_COLLISION_IDENTITY_SWAP_MARKER="$marker" \
+    FAKE_IDENTITY_SWAP_MARKER="$marker"
+  status=$?
+  manifest_count="$(/usr/bin/find "$VOLUME/.gdrive-collisions" -name '*.json' -type f \
+    2>/dev/null | /usr/bin/wc -l | /usr/bin/tr -d '[:space:]')"
+  published_object_count="$(/usr/bin/find "$VOLUME/.gdrive-collisions" \
+    -path '*/objects/*' -mindepth 1 -maxdepth 5 -type d ! -name '.*' \
+    2>/dev/null | /usr/bin/wc -l | /usr/bin/tr -d '[:space:]')"
+
+  if [[ "$status" == "1" && -e "$marker" && "$manifest_count" == "0" &&
+        "$published_object_count" == "0" ]]; then
+    pass "$name"
+  else
+    fail "$name (status $status, manifests $manifest_count, published objects $published_object_count)"
+  fi
+}
+
+test_collision_archive_scans_inventory_once_then_only_mutation_scopes() {
+  local name="collision archive scans global inventory once and only affected paths during publication"
+  local trace_env validation_log volume_real collision_root versions_root
+  local scope_hash object_key_a object_key_b once_marker status
+  local collision_full version_history_full version_run_full
+  local collision_scoped version_scoped
+  prepare_test_environment
+  mkdir -p "$VOLUME"
+  volume_real="$(cd "$VOLUME" && /bin/pwd -P)"
+  collision_root="${volume_real%/}/.gdrive-collisions"
+  versions_root="${volume_real%/}/.gdrive-versions"
+  scope_hash="$(printf '%s' 'My Drive' | /usr/bin/shasum -a 256)"
+  scope_hash="${scope_hash%% *}"
+  object_key_a="$(printf '%s' $'drive-object-id\037file-id-a' |
+    /usr/bin/shasum -a 256)"
+  object_key_a="${object_key_a%% *}"
+  object_key_b="$(printf '%s' $'drive-object-id\037file-id-b' |
+    /usr/bin/shasum -a 256)"
+  object_key_b="${object_key_b%% *}"
+  mkdir -p \
+    "$collision_root/$scope_hash/objects/$object_key_a" \
+    "$collision_root/$scope_hash/objects/$object_key_b"
+  : >"$collision_root/$scope_hash/objects/$object_key_a/old.dat"
+  : >"$collision_root/$scope_hash/objects/$object_key_b/old.dat"
+
+  trace_env="$TEST_HOME/trace-collision-apfs-validation.sh"
+  validation_log="$TEST_HOME/collision-apfs-validations.log"
+  once_marker="$TEST_HOME/collision-performance-notice-seen"
+  cat >"$trace_env" <<'SH'
+if [[ -n "${FAKE_APFS_VALIDATION_LOG:-}" ]]; then
+  set -T
+  trap 'if [[ "${FUNCNAME[0]:-}" == "validate_configured_apfs_tree" ]]; then
+          printf "%s\n" "${1:-}" >>"$FAKE_APFS_VALIDATION_LOG"
+        fi' RETURN
+fi
+SH
+
+  run_backup \
+    GDRIVE_BACKUP_ENCRYPTION=none \
+    GDRIVE_BACKUP_VOLUME_UUID=11111111-2222-3333-4444-555555555555 \
+    FAKE_MOUNT_POINT="$VOLUME" \
+    FAKE_JQ_USE_SYSTEM=1 \
+    FAKE_RCLONE_COPY_OUTPUT='NOTICE: image.heic: Duplicate object found in source - ignoring' \
+    FAKE_RCLONE_COPY_ONCE_MARKER="$once_marker" \
+    FAKE_RCLONE_COLLISION_QUERY_JSON='[
+      {"id":"file-id-a","name":"image.heic","mimeType":"image/heic","parents":["root-id"]},
+      {"id":"file-id-b","name":"image.heic","mimeType":"image/heic","parents":["root-id"]}
+    ]' \
+    GDRIVE_BACKUP_VERSIONING=1 \
+    GDRIVE_BACKUP_RETENTION=0 \
+    BASH_ENV="$trace_env" \
+    FAKE_APFS_VALIDATION_LOG="$validation_log"
+  status=$?
+
+  collision_full="$(/usr/bin/grep -Fxc "$collision_root" \
+    "$validation_log" 2>/dev/null || true)"
+  version_history_full="$(/usr/bin/grep -Fxc "$versions_root" \
+    "$validation_log" 2>/dev/null || true)"
+  version_run_full="$(/usr/bin/awk -v prefix="$versions_root/" '
+    index($0, prefix) == 1 {
+      suffix = substr($0, length(prefix) + 1)
+      if (suffix !~ /\//) count++
+    }
+    END { print count + 0 }
+  ' "$validation_log" 2>/dev/null)"
+  collision_scoped="$(/usr/bin/awk -v prefix="$collision_root/" '
+    index($0, prefix) == 1 { count++ }
+    END { print count + 0 }
+  ' "$validation_log" 2>/dev/null)"
+  version_scoped="$(/usr/bin/awk -v prefix="$versions_root/" '
+    index($0, prefix) == 1 {
+      suffix = substr($0, length(prefix) + 1)
+      if (suffix ~ /\//) count++
+    }
+    END { print count + 0 }
+  ' "$validation_log" 2>/dev/null)"
+
+  if [[ "$status" == "0" && "$collision_full" == "1" &&
+        "$version_history_full" == "1" && "$version_run_full" == "0" &&
+        "$collision_scoped" -gt 0 && "$version_scoped" -gt 0 ]]; then
+    pass "$name"
+  else
+    fail "$name (status $status, collision full/scoped $collision_full/$collision_scoped, version history/run/scoped $version_history_full/$version_run_full/$version_scoped)"
+  fi
+}
+
 test_invalid_encryption_mode_is_rejected
 test_apfs_encryption_mode_rejects_nas_target
 test_saved_apfs_uuid_resolves_the_current_mount_path
 test_saved_apfs_uuid_mismatch_fails_closed
 test_saved_apfs_uuid_accepts_a_mounted_apfs_image
 test_malformed_saved_apfs_uuid_is_rejected
+test_saved_apfs_uuid_rejects_parent_component_escape
+test_saved_apfs_uuid_rejects_destination_symlink_escape
+test_saved_apfs_uuid_accepts_nested_destination
+test_saved_apfs_uuid_revalidates_before_creating_destination
+test_saved_apfs_uuid_rejects_copy_child_symlink_escape
+test_saved_apfs_uuid_rejects_deep_tree_symlink_escape
+test_saved_apfs_uuid_scans_history_once_and_current_version_paths_per_copy
+test_apfs_tree_device_validation_streams_its_inventory
+test_auto_created_apfs_volume_uses_the_new_uuid_and_mount_path
+test_auto_created_apfs_volume_rejects_ambiguous_new_uuids
+test_auto_created_apfs_volume_recovers_privileged_partial_failure
+test_saved_apfs_uuid_blocks_retention_after_copy_swap
+test_saved_apfs_uuid_revalidates_before_each_retention_trash
+test_saved_apfs_uuid_blocks_retention_fallback_move_after_swap
+test_saved_apfs_uuid_blocks_collision_publication_after_archive_copy_swap
+test_collision_archive_scans_inventory_once_then_only_mutation_scopes
 test_encrypted_mode_never_auto_creates_plain_volume
 test_unencrypted_apfs_volume_is_rejected
 test_encrypted_apfs_volume_is_accepted

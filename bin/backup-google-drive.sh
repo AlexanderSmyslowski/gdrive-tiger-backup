@@ -119,6 +119,7 @@ esac
 
 BACKUP_VOLUME_NAME="${GDRIVE_BACKUP_VOLUME_NAME:-GoogleDrive-Backup}"
 BACKUP_VOLUME_UUID="${GDRIVE_BACKUP_VOLUME_UUID:-}"
+VOLUMES_ROOT="${GDRIVE_BACKUP_VOLUMES_ROOT:-/Volumes}"
 NAS_URL="${GDRIVE_BACKUP_NAS_URL:-}"
 NAS_MOUNT="${GDRIVE_BACKUP_NAS_MOUNT:-}"
 NAS_SUBDIR="${GDRIVE_BACKUP_NAS_SUBDIR:-GoogleDrive-Backup}"
@@ -179,6 +180,7 @@ RETENTION_APP_TRASH_BIN="${GDRIVE_BACKUP_APP_TRASH_BIN-${ANIMATION_APP%/}/Conten
 ENCRYPTION="$(lowercase "${GDRIVE_BACKUP_ENCRYPTION-none}")"
 CRYPT_REMOTE="${GDRIVE_BACKUP_CRYPT_REMOTE-}"
 DISKUTIL_BIN="${GDRIVE_BACKUP_DISKUTIL-/usr/sbin/diskutil}"
+OSASCRIPT_BIN="${GDRIVE_BACKUP_OSASCRIPT-/usr/bin/osascript}"
 MOUNT_BIN="${GDRIVE_BACKUP_MOUNT_BIN-/sbin/mount}"
 ENCRYPTED_VOLUME_REAL=""
 ENCRYPTED_VOLUME_DEVICE=""
@@ -188,6 +190,7 @@ APFS_VOLUME_REAL=""
 APFS_VOLUME_DEVICE=""
 APFS_VOLUME_UUID=""
 APFS_VOLUME_IDENTIFIER=""
+CREATED_APFS_VOLUME_UUID=""
 VERSION_RUN_ID=""
 TARGET_APPROVED=0
 COPY_INDEX=0
@@ -605,6 +608,7 @@ normalized_apfs_uuid() {
 resolve_configured_apfs_volume() {
   local plist_data filesystem mount_point volume_uuid writable_media
   local configured_volume configured_destination resolved_mount destination_suffix
+  local resolved_destination existing_ancestor mount_device destination_device
 
   [[ "$BACKUP_TARGET" == "apfs" && -n "$BACKUP_VOLUME_UUID" ]] || return 0
   if [[ ! "$BACKUP_VOLUME_UUID" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
@@ -641,7 +645,31 @@ resolve_configured_apfs_volume() {
     DEST_ROOT="$resolved_mount"
   elif [[ "$configured_destination" == "$configured_volume/"* ]]; then
     destination_suffix="${configured_destination#"$configured_volume"}"
-    DEST_ROOT="${resolved_mount}${destination_suffix}"
+    case "/${destination_suffix#/}/" in
+      *"//"*|*"/./"*|*"/../"*)
+        log "FEHLER: Das APFS-Ziel enthaelt unsichere Pfadbestandteile."
+        return 69
+        ;;
+    esac
+    resolved_destination="${resolved_mount}${destination_suffix}"
+    if ! existing_ancestor="$(canonical_existing_ancestor "$resolved_destination")"; then
+      log "FEHLER: Das APFS-Ziel kann nicht sicher aufgeloest werden."
+      return 69
+    fi
+    case "$existing_ancestor/" in
+      "$resolved_mount/"*) ;;
+      *)
+        log "FEHLER: Das APFS-Ziel verlaesst das konfigurierte Backup-Volume."
+        return 69
+        ;;
+    esac
+    if ! mount_device="$(/usr/bin/stat -f '%d' "$resolved_mount" 2>/dev/null)" ||
+       ! destination_device="$(/usr/bin/stat -f '%d' "$existing_ancestor" 2>/dev/null)" ||
+       [[ -z "$mount_device" || "$mount_device" != "$destination_device" ]]; then
+      log "FEHLER: Das APFS-Ziel liegt nicht auf dem konfigurierten Backup-Volume."
+      return 69
+    fi
+    DEST_ROOT="$resolved_destination"
   else
     log "FEHLER: Das APFS-Ziel liegt ausserhalb des konfigurierten Backup-Volumes."
     return 69
@@ -649,6 +677,111 @@ resolve_configured_apfs_volume() {
   VOLUME="$resolved_mount"
   log "APFS-Backup-Volume per UUID aufgeloest: $VOLUME"
   return 0
+}
+
+validate_configured_apfs_paths() {
+  local path probe existing_ancestor destination_device
+  local -a paths
+
+  [[ "$BACKUP_TARGET" == "apfs" && -n "$BACKUP_VOLUME_UUID" ]] || return 0
+  [[ -n "$APFS_VOLUME_REAL" && -n "$APFS_VOLUME_DEVICE" ]] || return 1
+
+  paths=("$DEST_ROOT" "$@")
+  for path in "${paths[@]}"; do
+    [[ -n "$path" && "$path" == /* ]] || {
+      log "FEHLER: APFS-Pfad ist nicht absolut."
+      return 1
+    }
+    case "/${path#/}/" in
+      *"//"*|*"/./"*|*"/../"*)
+        log "FEHLER: APFS-Pfad enthaelt unsichere Pfadbestandteile."
+        return 1
+        ;;
+    esac
+    probe="$path"
+    if [[ ( -e "$probe" || -L "$probe" ) && ! -d "$probe" ]]; then
+      probe="$(/usr/bin/dirname "$probe")"
+    fi
+    if ! existing_ancestor="$(canonical_existing_ancestor "$probe")"; then
+      log "FEHLER: APFS-Pfad kann nicht sicher aufgeloest werden."
+      return 1
+    fi
+    case "$existing_ancestor/" in
+      "$APFS_VOLUME_REAL/"*) ;;
+      *)
+        log "FEHLER: APFS-Pfad verlaesst das konfigurierte Backup-Volume."
+        return 1
+        ;;
+    esac
+    if ! destination_device="$(/usr/bin/stat -f '%d' "$existing_ancestor" 2>/dev/null)" ||
+       [[ -z "$destination_device" ||
+          "$destination_device" != "$APFS_VOLUME_DEVICE" ]]; then
+      log "FEHLER: APFS-Pfad liegt nicht mehr auf dem konfigurierten Backup-Volume."
+      return 1
+    fi
+  done
+  return 0
+}
+
+validate_configured_apfs_tree() {
+  local root="$1"
+
+  [[ "$BACKUP_TARGET" == "apfs" && -n "$BACKUP_VOLUME_UUID" ]] || return 0
+  [[ -e "$root" || -L "$root" ]] || return 0
+  if ! validate_configured_apfs_paths "$root"; then
+    return 1
+  fi
+  if [[ -L "$root" ]]; then
+    log "FEHLER: Symbolischer Link im UUID-gebundenen APFS-Ziel ist nicht zulaessig: $(safe_name "$root")"
+    return 1
+  fi
+  # One streamed walk catches both link redirections and nested mount points.
+  # Device IDs stay bounded by find's argv batches instead of being retained
+  # as one shell variable for a potentially very large backup history.
+  if ! /usr/bin/find -x "$root" \
+      \( -type l -print \) -o \
+      \( -type d -exec /bin/bash -c '
+        /usr/bin/stat -f "%d" "$@" 2>/dev/null ||
+          printf "%s\n" "__GDRIVE_APFS_STAT_FAILED__"
+      ' _ {} + \) 2>/dev/null |
+      /usr/bin/awk -v expected_device="$APFS_VOLUME_DEVICE" '
+        $0 != expected_device { unsafe = 1 }
+        END { exit unsafe ? 1 : 0 }
+      '; then
+    log "FEHLER: APFS-Zielbaum enthaelt einen symbolischen Link, ein fremdes Dateisystem oder einen unlesbaren Pfad: $(safe_name "$root")"
+    return 1
+  fi
+  return 0
+}
+
+validate_all_configured_apfs_trees() {
+  local tree
+
+  [[ "$BACKUP_TARGET" == "apfs" && -n "$BACKUP_VOLUME_UUID" ]] || return 0
+  for tree in \
+    "$DEST_ROOT/My Drive" \
+    "$DEST_ROOT/Shared with me" \
+    "$DEST_ROOT/Shared Drives" \
+    "$DEST_ROOT/.gdrive-collisions"; do
+    if ! validate_configured_apfs_tree "$tree"; then
+      return 1
+    fi
+  done
+  if [[ "$VERSIONING" == "1" ]] &&
+     ! validate_configured_apfs_tree "${DEST_ROOT%/}/$VERSIONS_SUBDIR"; then
+    return 1
+  fi
+  return 0
+}
+
+validate_configured_apfs_target() {
+  validate_configured_apfs_volume_identity &&
+    validate_configured_apfs_paths
+}
+
+validate_configured_apfs_target_paths() {
+  validate_configured_apfs_volume_identity &&
+    validate_configured_apfs_paths "$@"
 }
 
 validate_configured_apfs_volume_identity() {
@@ -887,9 +1020,52 @@ crypt_physical_path_for_logical() {
   printf '%s' "$physical_real"
 }
 
+validate_retention_destination_identity() {
+  local path probe existing_ancestor destination_device
+  local -a paths
+
+  if ! validate_live_nas_destination ||
+     ! validate_configured_apfs_target; then
+    log "FEHLER: Backup-Ziel konnte fuer die Aufbewahrung nicht erneut bestaetigt werden."
+    return 1
+  fi
+  [[ "$BACKUP_TARGET" == "apfs" && -n "$BACKUP_VOLUME_UUID" ]] ||
+    return 0
+
+  if (( $# == 0 )); then
+    paths=("$DEST_ROOT")
+  else
+    paths=("$@")
+  fi
+  for path in "${paths[@]}"; do
+    probe="$path"
+    if [[ ( -e "$probe" || -L "$probe" ) && ! -d "$probe" ]]; then
+      probe="$(/usr/bin/dirname "$probe")"
+    fi
+    if ! existing_ancestor="$(canonical_existing_ancestor "$probe")"; then
+      log "FEHLER: Aufbewahrungspfad kann nicht sicher aufgeloest werden."
+      return 1
+    fi
+    case "$existing_ancestor/" in
+      "$APFS_VOLUME_REAL/"*) ;;
+      *)
+        log "FEHLER: Aufbewahrungspfad verlaesst das konfigurierte APFS-Volume."
+        return 1
+        ;;
+    esac
+    if ! destination_device="$(/usr/bin/stat -f '%d' "$existing_ancestor" 2>/dev/null)" ||
+       [[ -z "$destination_device" ||
+          "$destination_device" != "$APFS_VOLUME_DEVICE" ]]; then
+      log "FEHLER: Aufbewahrungspfad liegt nicht mehr auf dem konfigurierten APFS-Volume."
+      return 1
+    fi
+  done
+  return 0
+}
+
 retry_crypt_retention_quarantine() {
   local quarantine="${DEST_ROOT%/}/.retention-trash"
-  local root_real path path_real name remaining=0 moved=0
+  local root_real path path_real name remaining=0 moved=0 trash_status
 
   [[ -e "$quarantine" || -L "$quarantine" ]] || return 0
   if [[ ! -d "$quarantine" || -L "$quarantine" ]] ||
@@ -911,15 +1087,20 @@ retry_crypt_retention_quarantine() {
     if [[ "$DRY_RUN" == "1" ]]; then
       log "DRY-RUN verschluesselte Quarantaene-Papierkorb: $(safe_name "$name")"
       remaining=$((remaining + 1))
-    elif trash_retention_path "$path"; then
-      moved=$((moved + 1))
     else
-      remaining=$((remaining + 1))
+      trash_status=0
+      trash_retention_path "$path" || trash_status=$?
+      case "$trash_status" in
+        0) moved=$((moved + 1)) ;;
+        2) return 1 ;;
+        *) remaining=$((remaining + 1)) ;;
+      esac
     fi
   done
   if (( moved > 0 || remaining > 0 )); then
     log "Aufbewahrung: verschluesselte Quarantaene nachgeprueft, papierkorb=$moved verbleibend=$remaining"
   fi
+  return 0
 }
 
 merge_retention_candidate_into_keeper() {
@@ -946,7 +1127,8 @@ merge_retention_candidate_into_keeper() {
     if [[ "$BACKUP_TARGET" == "nas" ]]; then
       merge_options+=(--multi-thread-streams 0 --transfers 1)
     fi
-    if ! rclone copy "$source" "$keeper" "${merge_options[@]}"; then
+    if ! validate_retention_destination_identity "$DEST_ROOT" ||
+       ! rclone copy "$source" "$keeper" "${merge_options[@]}"; then
       log "FEHLER: Verschluesselte Dateiversionen konnten nicht zusammengefuehrt werden."
       return 1
     fi
@@ -973,7 +1155,8 @@ merge_retention_candidate_into_keeper() {
     # preserves names verbatim while keeping writes serialized for SMB.
     merge_options+=(--multi-thread-streams 0 --transfers 1)
   fi
-  if ! rclone copy "$source" "$keeper" "${merge_options[@]}"; then
+  if ! validate_retention_destination_identity "$source" "$keeper" ||
+     ! rclone copy "$source" "$keeper" "${merge_options[@]}"; then
     log "FEHLER: Dateiversionen konnten nicht in den Aufbewahrungsstand uebernommen werden: ${source##*/}"
     return 1
   fi
@@ -988,7 +1171,7 @@ move_retention_candidate() {
   local name="${path##*/}"
   local quarantine="$versions_root/.retention-trash"
   local quarantine_target="$quarantine/$name"
-  local physical_path physical_name root_real quarantine_real
+  local physical_path physical_name root_real quarantine_real trash_status
 
   if [[ "$DRY_RUN" == "1" ]]; then
     log "DRY-RUN Aufbewahrungskandidat: $name ($reason)"
@@ -1002,15 +1185,21 @@ move_retention_candidate() {
       log "FEHLER: Verschluesselter Aufbewahrungskandidat kann nicht sicher zugeordnet werden: $name"
       return 1
     fi
-    if trash_retention_path "$physical_path"; then
-      log "Aufbewahrung: verschluesselter Stand in den Papierkorb verschoben: $name ($reason)."
-      return 0
-    fi
+    trash_status=0
+    trash_retention_path "$physical_path" || trash_status=$?
+    case "$trash_status" in
+      0)
+        log "Aufbewahrung: verschluesselter Stand in den Papierkorb verschoben: $name ($reason)."
+        return 0
+        ;;
+      2) return 1 ;;
+    esac
 
     physical_name="${physical_path##*/}"
     quarantine="${DEST_ROOT%/}/.retention-trash"
     quarantine_target="$quarantine/$physical_name"
-    if ! root_real="$(canonical_existing_directory "$DEST_ROOT")" ||
+    if ! validate_retention_destination_identity "$physical_path" "$quarantine" ||
+       ! root_real="$(canonical_existing_directory "$DEST_ROOT")" ||
        ! mkdir -p "$quarantine" ||
        ! quarantine_real="$(canonical_existing_directory "$quarantine")"; then
       log "FEHLER: Verschluesselte Aufbewahrungs-Quarantaene kann nicht sicher angelegt werden."
@@ -1021,6 +1210,7 @@ move_retention_candidate() {
       *) log "FEHLER: Verschluesselte Aufbewahrungs-Quarantaene verlaesst das Backup-Ziel."; return 1 ;;
     esac
     if [[ -e "$quarantine_target" || -L "$quarantine_target" ]] ||
+       ! validate_retention_destination_identity "$physical_path" "$quarantine_target" ||
        ! /bin/mv "$physical_path" "$quarantine_target"; then
       log "FEHLER: Verschluesselter Aufbewahrungskandidat bleibt erhalten: $name"
       return 1
@@ -1029,15 +1219,21 @@ move_retention_candidate() {
     return 0
   fi
 
-  if trash_retention_path "$path"; then
-    log "Aufbewahrung: $name in den Papierkorb verschoben ($reason)."
-    return 0
-  fi
+  trash_status=0
+  trash_retention_path "$path" || trash_status=$?
+  case "$trash_status" in
+    0)
+      log "Aufbewahrung: $name in den Papierkorb verschoben ($reason)."
+      return 0
+      ;;
+    2) return 1 ;;
+  esac
   if [[ -n "$RETENTION_TRASH_BIN" || -x /usr/bin/trash || -x "$RETENTION_APP_TRASH_BIN" ]]; then
     log "WARNUNG: Papierkorb fehlgeschlagen; verwende lokale Quarantaene fuer $name."
   fi
 
-  if ! path_is_on_encrypted_volume "$quarantine" ||
+  if ! validate_retention_destination_identity "$path" "$quarantine" ||
+     ! path_is_on_encrypted_volume "$quarantine" ||
      ! path_is_on_encrypted_volume "$quarantine_target"; then
     log "FEHLER: Aufbewahrungs-Quarantaene verlaesst das verschluesselte Volume: $name"
     return 1
@@ -1050,7 +1246,8 @@ move_retention_candidate() {
     log "FEHLER: Aufbewahrungskandidat bleibt erhalten; Quarantaeneziel existiert bereits: $name"
     return 1
   fi
-  if ! /bin/mv "$path" "$quarantine_target"; then
+  if ! validate_retention_destination_identity "$path" "$quarantine_target" ||
+     ! /bin/mv "$path" "$quarantine_target"; then
     log "FEHLER: Aufbewahrungskandidat konnte nicht in die Quarantaene verschoben werden: $name"
     return 1
   fi
@@ -1063,16 +1260,25 @@ trash_retention_path() {
 
   if [[ -n "$RETENTION_TRASH_BIN" ]]; then
     [[ -x "$RETENTION_TRASH_BIN" ]] || return 1
-    "$RETENTION_TRASH_BIN" "$path" >/dev/null 2>&1
-    return
+    validate_retention_destination_identity "$path" || return 2
+    if "$RETENTION_TRASH_BIN" "$path" >/dev/null 2>&1; then
+      return 0
+    fi
+    return 1
   fi
   if [[ -x /usr/bin/trash ]]; then
-    /usr/bin/trash "$path" >/dev/null 2>&1
-    return
+    validate_retention_destination_identity "$path" || return 2
+    if /usr/bin/trash "$path" >/dev/null 2>&1; then
+      return 0
+    fi
+    return 1
   fi
   if [[ -x "$RETENTION_APP_TRASH_BIN" ]]; then
-    "$RETENTION_APP_TRASH_BIN" --trash "$path" >/dev/null 2>&1
-    return
+    validate_retention_destination_identity "$path" || return 2
+    if "$RETENTION_APP_TRASH_BIN" --trash "$path" >/dev/null 2>&1; then
+      return 0
+    fi
+    return 1
   fi
   return 1
 }
@@ -1080,7 +1286,7 @@ trash_retention_path() {
 retry_retention_quarantine() {
   local versions_root="$1"
   local quarantine="$versions_root/.retention-trash"
-  local path name remaining=0 moved=0
+  local path name remaining=0 moved=0 trash_status
 
   [[ -e "$quarantine" || -L "$quarantine" ]] || return 0
   if [[ ! -d "$quarantine" || -L "$quarantine" ]]; then
@@ -1098,17 +1304,24 @@ retry_retention_quarantine() {
     if [[ "$DRY_RUN" == "1" ]]; then
       log "DRY-RUN Quarantaene-Papierkorb: $name"
       remaining=$((remaining + 1))
-    elif trash_retention_path "$path"; then
-      log "Aufbewahrung: Quarantaene nachtraeglich in den Papierkorb verschoben: $name"
-      moved=$((moved + 1))
     else
-      remaining=$((remaining + 1))
+      trash_status=0
+      trash_retention_path "$path" || trash_status=$?
+      case "$trash_status" in
+        0)
+          log "Aufbewahrung: Quarantaene nachtraeglich in den Papierkorb verschoben: $name"
+          moved=$((moved + 1))
+          ;;
+        2) return 1 ;;
+        *) remaining=$((remaining + 1)) ;;
+      esac
     fi
   done
 
   if (( moved > 0 || remaining > 0 )); then
     log "Aufbewahrung: Quarantaene nachgeprueft, papierkorb=$moved verbleibend=$remaining"
   fi
+  return 0
 }
 
 prune_version_history() {
@@ -1123,12 +1336,22 @@ prune_version_history() {
   local -a weekly_buckets weekly_keeper_epochs weekly_keeper_paths
   local -a retention_paths
 
+  if ! validate_retention_destination_identity "$versions_root"; then
+    return 1
+  fi
+  if ! validate_configured_apfs_tree "$versions_root"; then
+    log "FEHLER: Versionsbaum enthaelt einen unsicheren APFS-Pfad oder ein fremdes Dateisystem."
+    return 1
+  fi
+
   if [[ "$ENCRYPTION" == "rclone-crypt" ]]; then
     if ! validate_rclone_crypt_config; then
       log "FEHLER: Crypt-Konfiguration konnte vor der Aufbewahrung nicht erneut bestaetigt werden."
       return 1
     fi
-    retry_crypt_retention_quarantine
+    if ! retry_crypt_retention_quarantine; then
+      return 1
+    fi
     if ! listing="$(rclone lsf "${CRYPT_REMOTE}:${VERSIONS_SUBDIR}" --dirs-only --max-depth 1 2>/dev/null)"; then
       log "FEHLER: Verschluesselte Versionsstaende konnten nicht sicher aufgelistet werden."
       return 1
@@ -1170,7 +1393,9 @@ prune_version_history() {
       return 1
     fi
 
-    retry_retention_quarantine "$versions_root"
+    if ! retry_retention_quarantine "$versions_root"; then
+      return 1
+    fi
 
     if ! validate_encrypted_destination_tree "$versions_root"; then
       log "FEHLER: Versionsbaum enthaelt einen unsicheren Link oder Mount."
@@ -1905,14 +2130,14 @@ find_setup_candidate() {
   local best_name=""
   local mount plist fs external container name system_image writable_media mtime
 
-  for mount in /Volumes/*; do
+  for mount in "$VOLUMES_ROOT"/*; do
     [[ -d "$mount" ]] || continue
     [[ "$mount" != "$VOLUME" ]] || continue
     [[ "$(basename "$mount")" != "$BACKUP_VOLUME_NAME" ]] || continue
 
     plist="$(mktemp "${TMPDIR:-/tmp}/gdrive-volume-info.XXXXXX")" || continue
-    if ! run_with_timeout 6 /usr/sbin/diskutil info -plist "$mount" >"$plist"; then
-      cleanup_temp_file "$plist"
+    if ! run_with_timeout 6 "$DISKUTIL_BIN" info -plist "$mount" >"$plist"; then
+      cleanup_temp_file "$plist" >/dev/null
       continue
     fi
 
@@ -1922,7 +2147,7 @@ find_setup_candidate() {
     name="$(plist_value "$plist" VolumeName)"
     system_image="$(plist_value "$plist" SystemImage)"
     writable_media="$(plist_value "$plist" WritableMedia)"
-    cleanup_temp_file "$plist"
+    cleanup_temp_file "$plist" >/dev/null
 
     [[ "$fs" == "apfs" ]] || continue
     [[ "$external" == "true" ]] || continue
@@ -1943,50 +2168,149 @@ find_setup_candidate() {
   printf '%s\t%s\t%s\n' "$best_mount" "$best_container" "$best_name"
 }
 
+capture_named_apfs_volume_uuids() {
+  local container="$1"
+  local output_file="$2"
+  local plist_data json_data uuid invalid_uuid=0
+  local unsorted_file
+
+  unsorted_file="$(mktemp "${TMPDIR:-/tmp}/gdrive-apfs-uuids.XXXXXX")" ||
+    return 1
+  : >"$unsorted_file"
+  if ! plist_data="$(run_with_timeout 8 "$DISKUTIL_BIN" apfs list -plist "$container" 2>/dev/null)" ||
+     ! json_data="$(printf '%s' "$plist_data" |
+       /usr/bin/plutil -convert json -o - - 2>/dev/null)" ||
+     ! printf '%s' "$json_data" |
+       jq -r --arg name "$BACKUP_VOLUME_NAME" \
+         '.Containers[]?.Volumes[]? |
+          select(.Name == $name) |
+          (.APFSVolumeUUID // empty)' >"$unsorted_file"; then
+    cleanup_temp_file "$unsorted_file"
+    return 1
+  fi
+
+  : >"$output_file"
+  while IFS= read -r uuid; do
+    [[ -n "$uuid" ]] || continue
+    if [[ ! "$uuid" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
+      invalid_uuid=1
+      continue
+    fi
+    normalized_apfs_uuid "$uuid" >>"$output_file"
+    printf '\n' >>"$output_file"
+  done <"$unsorted_file"
+  cleanup_temp_file "$unsorted_file"
+  [[ "$invalid_uuid" == "0" ]] || return 1
+  /usr/bin/sort -u -o "$output_file" "$output_file"
+}
+
+new_apfs_volume_uuid_since() {
+  local before_file="$1"
+  local after_file="$2"
+  local diff_file count
+
+  diff_file="$(mktemp "${TMPDIR:-/tmp}/gdrive-new-apfs-uuid.XXXXXX")" ||
+    return 3
+  /usr/bin/comm -13 "$before_file" "$after_file" >"$diff_file"
+  count="$(/usr/bin/wc -l <"$diff_file" | /usr/bin/tr -d '[:space:]')"
+  case "$count" in
+    1)
+      cat "$diff_file"
+      cleanup_temp_file "$diff_file" >/dev/null
+      return 0
+      ;;
+    0)
+      cleanup_temp_file "$diff_file" >/dev/null
+      return 1
+      ;;
+    *)
+      cleanup_temp_file "$diff_file" >/dev/null
+      return 2
+      ;;
+  esac
+}
+
 persist_volume_config() {
-  local plist_data created_uuid
+  local created_uuid="$1"
+  local config_dir temp_config
 
-  mkdir -p "$(dirname "$CONFIG_FILE")"
-  touch "$CONFIG_FILE"
-  /bin/chmod 600 "$CONFIG_FILE"
-
-  if ! grep -q '^GDRIVE_BACKUP_TARGET=' "$CONFIG_FILE"; then
-    printf 'GDRIVE_BACKUP_TARGET=apfs\n' >>"$CONFIG_FILE"
+  if [[ ! "$created_uuid" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
+    log "FEHLER: Neu angelegtes APFS-Volume hat keine gueltige Volume-UUID."
+    return 1
   fi
-  if ! grep -q '^GDRIVE_BACKUP_VOLUME=' "$CONFIG_FILE"; then
-    LC_ALL=C printf 'GDRIVE_BACKUP_VOLUME=%q\n' "$VOLUME" >>"$CONFIG_FILE"
-  fi
-  if ! grep -q '^GDRIVE_BACKUP_VOLUME_NAME=' "$CONFIG_FILE"; then
-    LC_ALL=C printf 'GDRIVE_BACKUP_VOLUME_NAME=%q\n' "$BACKUP_VOLUME_NAME" >>"$CONFIG_FILE"
-  fi
-  if ! grep -q '^GDRIVE_BACKUP_AUTO_CREATE_VOLUME=' "$CONFIG_FILE"; then
-    printf 'GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1\n' >>"$CONFIG_FILE"
-  fi
-  if ! grep -q '^GDRIVE_BACKUP_VOLUME_UUID=' "$CONFIG_FILE"; then
-    if ! plist_data="$(run_with_timeout 8 "$DISKUTIL_BIN" info -plist "$VOLUME" 2>/dev/null)"; then
-      log "FEHLER: UUID des neu angelegten APFS-Volumes ist nicht lesbar."
+  config_dir="$(/usr/bin/dirname "$CONFIG_FILE")"
+  mkdir -p "$config_dir" || return 1
+  temp_config="$(mktemp "${CONFIG_FILE}.tmp.XXXXXX")" || return 1
+  if [[ -f "$CONFIG_FILE" ]]; then
+    /usr/bin/awk '
+      !/^GDRIVE_BACKUP_TARGET=/ &&
+      !/^GDRIVE_BACKUP_VOLUME=/ &&
+      !/^GDRIVE_BACKUP_VOLUME_NAME=/ &&
+      !/^GDRIVE_BACKUP_VOLUME_UUID=/ &&
+      !/^GDRIVE_BACKUP_AUTO_CREATE_VOLUME=/
+    ' "$CONFIG_FILE" >"$temp_config" || {
+      cleanup_temp_file "$temp_config"
       return 1
-    fi
-    created_uuid="$(plist_data_value "$plist_data" VolumeUUID || true)"
-    if [[ ! "$created_uuid" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
-      log "FEHLER: Neu angelegtes APFS-Volume hat keine gueltige Volume-UUID."
-      return 1
-    fi
-    LC_ALL=C printf 'GDRIVE_BACKUP_VOLUME_UUID=%q\n' "$created_uuid" >>"$CONFIG_FILE"
-    BACKUP_VOLUME_UUID="$created_uuid"
+    }
   fi
+  {
+    printf 'GDRIVE_BACKUP_TARGET=apfs\n'
+    LC_ALL=C printf 'GDRIVE_BACKUP_VOLUME=%q\n' "$VOLUME"
+    LC_ALL=C printf 'GDRIVE_BACKUP_VOLUME_NAME=%q\n' "$BACKUP_VOLUME_NAME"
+    LC_ALL=C printf 'GDRIVE_BACKUP_VOLUME_UUID=%q\n' "$created_uuid"
+    printf 'GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1\n'
+  } >>"$temp_config"
+  /bin/chmod 600 "$temp_config" || {
+    cleanup_temp_file "$temp_config"
+    return 1
+  }
+  if ! /bin/mv "$temp_config" "$CONFIG_FILE"; then
+    cleanup_temp_file "$temp_config"
+    return 1
+  fi
+  BACKUP_VOLUME_UUID="$created_uuid"
   return 0
 }
 
 create_apfs_backup_volume() {
   local container="$1"
+  local before_file="$2"
+  local after_file candidate_uuid detect_status admin_status=0
 
-  if /usr/sbin/diskutil apfs addVolume "$container" APFS "$BACKUP_VOLUME_NAME"; then
+  CREATED_APFS_VOLUME_UUID=""
+  if "$DISKUTIL_BIN" apfs addVolume "$container" APFS "$BACKUP_VOLUME_NAME"; then
     return 0
   fi
 
+  # diskutil can create a volume successfully and still report a later mount
+  # failure. Confirm the set difference before ever attempting a second add.
+  for _ in 1 2 3; do
+    after_file="$(mktemp "${TMPDIR:-/tmp}/gdrive-apfs-after.XXXXXX")" ||
+      return 1
+    if ! capture_named_apfs_volume_uuids "$container" "$after_file"; then
+      cleanup_temp_file "$after_file"
+      log "FEHLER: APFS-Volumes konnten nach dem fehlgeschlagenen Anlegen nicht sicher verglichen werden."
+      return 1
+    fi
+    detect_status=0
+    candidate_uuid="$(new_apfs_volume_uuid_since "$before_file" "$after_file")" ||
+      detect_status=$?
+    cleanup_temp_file "$after_file"
+    case "$detect_status" in
+      0)
+        CREATED_APFS_VOLUME_UUID="$candidate_uuid"
+        return 0
+        ;;
+      1) sleep 1 ;;
+      *)
+        log "FEHLER: Das neu angelegte APFS-Volume ist nicht eindeutig."
+        return 1
+        ;;
+    esac
+  done
+
   log "APFS-Volume konnte ohne Adminrechte nicht angelegt werden; frage nach Administratorrechten."
-  /usr/bin/osascript - "$container" "$BACKUP_VOLUME_NAME" <<'OSA'
+  "$OSASCRIPT_BIN" - "$container" "$BACKUP_VOLUME_NAME" <<'OSA' || admin_status=$?
 on run argv
   set containerRef to item 1 of argv
   set volumeName to item 2 of argv
@@ -1994,6 +2318,12 @@ on run argv
   do shell script cmd with administrator privileges
 end run
 OSA
+  if [[ "$admin_status" != "0" ]]; then
+    # diskutil can create the APFS volume and still report a later mount error.
+    # Let the caller compare UUID sets before deciding whether creation failed.
+    log "WARNUNG: Der privilegierte APFS-Aufruf meldete Status $admin_status; pruefe die Volume-UUIDs vor einem Abbruch."
+  fi
+  return 0
 }
 
 ensure_backup_volume() {
@@ -2019,6 +2349,7 @@ ensure_backup_volume() {
   fi
 
   local candidate source_mount container source_name
+  local before_file after_file candidate_uuid detect_status resolve_status
   candidate="$(find_setup_candidate || true)"
   if [[ -z "$candidate" ]]; then
     log "Kein geeignetes externes APFS-Volume fuer die Einrichtung gefunden."
@@ -2032,30 +2363,69 @@ ensure_backup_volume() {
   fi
 
   log "Lege APFS-Volume '$BACKUP_VOLUME_NAME' im Container $container an (Ausgangsvolume: $source_mount)."
-  if ! create_apfs_backup_volume "$container"; then
+  before_file="$(mktemp "${TMPDIR:-/tmp}/gdrive-apfs-before.XXXXXX")" ||
+    return 1
+  if ! capture_named_apfs_volume_uuids "$container" "$before_file"; then
+    cleanup_temp_file "$before_file"
+    log "FEHLER: Vorhandene APFS-Volumes konnten nicht sicher erfasst werden."
+    return 1
+  fi
+  if ! create_apfs_backup_volume "$container" "$before_file"; then
+    cleanup_temp_file "$before_file"
     log "FEHLER: APFS-Volume konnte nicht angelegt werden."
     return 1
   fi
 
-  VOLUME="/Volumes/$BACKUP_VOLUME_NAME"
-  if [[ -z "${GDRIVE_BACKUP_DEST_ROOT:-}" ]]; then
-    DEST_ROOT="$VOLUME"
-  fi
-
   for _ in {1..30}; do
-    if [[ -d "$VOLUME" ]]; then
-      TARGET_APPROVED=1
-      if ! persist_volume_config; then
-        log "FEHLER: Identitaet des neuen APFS-Volumes konnte nicht gespeichert werden."
+    candidate_uuid="$CREATED_APFS_VOLUME_UUID"
+    detect_status=0
+    if [[ -z "$candidate_uuid" ]]; then
+      after_file="$(mktemp "${TMPDIR:-/tmp}/gdrive-apfs-after.XXXXXX")" || {
+        cleanup_temp_file "$before_file"
+        return 1
+      }
+      if ! capture_named_apfs_volume_uuids "$container" "$after_file"; then
+        cleanup_temp_file "$after_file"
+        cleanup_temp_file "$before_file"
+        log "FEHLER: APFS-Volumes konnten nach dem Anlegen nicht sicher verglichen werden."
         return 1
       fi
-      log "Backup-Volume bereit: $VOLUME"
-      return 0
+      candidate_uuid="$(new_apfs_volume_uuid_since "$before_file" "$after_file")" ||
+        detect_status=$?
+      cleanup_temp_file "$after_file"
+    fi
+    case "$detect_status" in
+      0)
+        BACKUP_VOLUME_UUID="$candidate_uuid"
+        resolve_status=0
+        resolve_configured_apfs_volume || resolve_status=$?
+        if [[ "$resolve_status" == "0" ]]; then
+          cleanup_temp_file "$before_file"
+          TARGET_APPROVED=1
+          if ! persist_volume_config "$candidate_uuid"; then
+            log "FEHLER: Identitaet des neuen APFS-Volumes konnte nicht gespeichert werden."
+            return 1
+          fi
+          log "Backup-Volume bereit: $VOLUME"
+          return 0
+        fi
+        ;;
+      1) ;;
+      *)
+        cleanup_temp_file "$before_file"
+        log "FEHLER: Mehr als ein neues gleichnamiges APFS-Volume wurde gefunden."
+        return 1
+        ;;
+    esac
+    if [[ -n "$CREATED_APFS_VOLUME_UUID" ]]; then
+      # The UUID is known, but the volume is not safely mounted yet.
+      BACKUP_VOLUME_UUID=""
     fi
     sleep 1
   done
 
-  log "FEHLER: Neues APFS-Volume ist nicht unter $VOLUME erschienen."
+  cleanup_temp_file "$before_file"
+  log "FEHLER: Neues APFS-Volume konnte nicht eindeutig gemountet werden."
   return 1
 }
 
@@ -2239,7 +2609,7 @@ if ! ensure_backup_target; then
   exit 69
 fi
 
-if ! validate_configured_apfs_volume_identity; then
+if ! validate_configured_apfs_target; then
   log "FEHLER: Das konfigurierte APFS-Backup-Volume konnte nicht sicher bestaetigt werden."
   exit 69
 fi
@@ -2261,10 +2631,19 @@ if ! confirm_backup_target; then
 fi
 write_last_run_summary "running"
 
+if ! validate_configured_apfs_target; then
+  log "FEHLER: Das konfigurierte APFS-Backup-Volume ist nach der Bestaetigung nicht mehr sicher verfuegbar."
+  exit 69
+fi
+
 if [[ "$DRY_RUN" == "0" ]]; then
   if ! mkdir -p "$DEST_ROOT"; then
     log "FEHLER: Zielordner kann nicht angelegt werden: $DEST_ROOT"
     exit 73
+  fi
+  if ! validate_configured_apfs_target; then
+    log "FEHLER: Der angelegte Zielordner liegt nicht mehr sicher auf dem konfigurierten APFS-Volume."
+    exit 69
   fi
 fi
 
@@ -2274,6 +2653,10 @@ fi
 
 if ! validate_all_encrypted_active_trees; then
   log "FEHLER: Der vorhandene Zielbaum erfuellt die Verschluesselungsrichtlinie nicht."
+  exit 69
+fi
+if ! validate_all_configured_apfs_trees; then
+  log "FEHLER: Der vorhandene Zielbaum verlaesst das UUID-gebundene APFS-Backup-Volume."
   exit 69
 fi
 if ! prepare_nas_name_codec; then
@@ -2370,6 +2753,105 @@ drive_query_literal() {
   printf "'%s'" "$value"
 }
 
+validate_collision_path_components() {
+  local path="$1"
+  local destination_root current relative component
+
+  [[ "$BACKUP_TARGET" == "apfs" && -n "$BACKUP_VOLUME_UUID" ]] || return 0
+  destination_root="${DEST_ROOT%/}"
+  [[ -n "$path" && "$path" == "$destination_root"/* ]] || return 1
+  if [[ -L "$DEST_ROOT" ]]; then
+    return 1
+  fi
+
+  current="$destination_root"
+  relative="${path#"$destination_root"/}"
+  while [[ -n "$relative" ]]; do
+    if [[ "$relative" == */* ]]; then
+      component="${relative%%/*}"
+      relative="${relative#*/}"
+    else
+      component="$relative"
+      relative=""
+    fi
+    [[ -n "$component" ]] || return 1
+    current="$current/$component"
+    if [[ -L "$current" ||
+          ( -n "$relative" && -e "$current" && ! -d "$current" ) ]]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+validate_collision_archive_write_boundary() {
+  local archive_root="$1"
+  local groups_root="$2"
+  local objects_root="$3"
+  local candidate
+  local -a paths
+  shift 3
+
+  if ! validate_live_nas_destination; then
+    return 1
+  fi
+
+  paths=(
+    "${DEST_ROOT%/}/.gdrive-collisions"
+    "$archive_root"
+    "$groups_root"
+    "$objects_root"
+  )
+  for candidate in "$@"; do
+    [[ -n "$candidate" ]] || continue
+    paths[${#paths[@]}]="$candidate"
+  done
+
+  if ! validate_configured_apfs_target_paths "${paths[@]}"; then
+    log "FEHLER: Das Drive-ID-Archiv liegt nicht mehr sicher auf dem konfigurierten Backup-Ziel."
+    return 1
+  fi
+
+  # The complete archive and version history were inventoried once before any
+  # copy starts. Mutation guards must still reject swapped ancestors, but only
+  # the paths touched by this operation need another recursive walk.
+  for candidate in \
+      "${DEST_ROOT%/}/.gdrive-collisions" \
+      "$archive_root" "$groups_root" "$objects_root"; do
+    if ! validate_collision_path_components "$candidate" ||
+       [[ -L "$candidate" ||
+          ( -e "$candidate" && ! -d "$candidate" ) ]]; then
+      log "FEHLER: Das Drive-ID-Archiv enthaelt einen unsicheren Basispfad."
+      return 1
+    fi
+  done
+  for candidate in "$@"; do
+    [[ -n "$candidate" ]] || continue
+    if ! validate_collision_path_components "$candidate" ||
+       ! validate_configured_apfs_tree "$candidate"; then
+      log "FEHLER: Ein veraenderter Pfad des Drive-ID-Archivs ist nicht mehr sicher."
+      return 1
+    fi
+  done
+  return 0
+}
+
+cleanup_collision_target_if_safe() {
+  local archive_root="$1"
+  local groups_root="$2"
+  local objects_root="$3"
+  local target="$4"
+
+  [[ -n "$target" && ( -e "$target" || -L "$target" ) ]] || return 0
+  if ! validate_collision_archive_write_boundary \
+      "$archive_root" "$groups_root" "$objects_root" "$target"; then
+    return 1
+  fi
+  cleanup_temp_file "$target"
+  validate_collision_archive_write_boundary \
+    "$archive_root" "$groups_root" "$objects_root"
+}
+
 archive_source_collisions() {
   local label="$1"
   local phase="$2"
@@ -2393,9 +2875,11 @@ archive_source_collisions() {
   local object_directory object_destination copy_status nested_report
   local archived_file entry_count local_md5 local_sha256 object_stage=""
   local recorded_sha256=""
-  local existing_is_current old_destination replacement_root
+  local existing_is_current old_destination old_destination_parent
+  local old_destination_moved=0 replacement_root
   local verification_report verification_status folder_backup_dir
   local manifest_objects manifest_path manifest_temp generated_at archive_path
+  local archive_destination_untrusted=0
   local option uses_shared_with_me=0 shared_root=0 provider_root=0
   local team_drive_id="" expect_team_drive_id=0 provider_parent_id=""
   local proof_count manifest_umask
@@ -2458,14 +2942,33 @@ archive_source_collisions() {
       return 1
     fi
   done
-  if [[ "$DRY_RUN" == "0" ]] &&
-     ! mkdir -p "$groups_root" "$objects_root"; then
-    RUN_STATE_REASON="destination_permission_denied"
-    log "FEHLER: Das ID-Archiv konnte auf dem Backup-Ziel nicht angelegt werden."
+  if ! validate_collision_archive_write_boundary \
+      "$archive_root" "$groups_root" "$objects_root"; then
+    log "FEHLER: Das ID-Archiv verlaesst das UUID-gebundene APFS-Backup-Volume."
     return 1
+  fi
+  if [[ "$DRY_RUN" == "0" ]]; then
+    if ! validate_collision_archive_write_boundary \
+        "$archive_root" "$groups_root" "$objects_root"; then
+      return 1
+    fi
+    if ! mkdir -p "$groups_root" "$objects_root"; then
+      RUN_STATE_REASON="destination_permission_denied"
+      log "FEHLER: Das ID-Archiv konnte auf dem Backup-Ziel nicht angelegt werden."
+      return 1
+    fi
+    if ! validate_collision_archive_write_boundary \
+        "$archive_root" "$groups_root" "$objects_root"; then
+      log "FEHLER: Das angelegte ID-Archiv liegt nicht sicher auf dem UUID-gebundenen APFS-Backup-Volume."
+      return 1
+    fi
   fi
 
   while IFS=$'\t' read -r collision_kind logical_path; do
+    if ! validate_collision_archive_write_boundary \
+        "$archive_root" "$groups_root" "$objects_root"; then
+      return 1
+    fi
     if [[ ( "$collision_kind" != "file" && "$collision_kind" != "directory" ) ||
           -z "$logical_path" || "$logical_path" == /* ||
           "$logical_path" =~ [[:cntrl:]] ]]; then
@@ -2525,6 +3028,10 @@ archive_source_collisions() {
       parent_remaining="$parent_path"
       first_component=1
       while [[ -n "$parent_remaining" ]]; do
+        if ! validate_collision_archive_write_boundary \
+            "$archive_root" "$groups_root" "$objects_root"; then
+          return 1
+        fi
         if [[ "$parent_remaining" == */* ]]; then
           parent_component="${parent_remaining%%/*}"
           parent_remaining="${parent_remaining#*/}"
@@ -2613,6 +3120,10 @@ archive_source_collisions() {
           return 1
         fi
         cleanup_temp_file "$parent_query_json" "$parent_query_errors"
+        if ! validate_collision_archive_write_boundary \
+            "$archive_root" "$groups_root" "$objects_root"; then
+          return 1
+        fi
         first_component=0
       done
       query="'$parent_id' in parents and trashed = false"
@@ -2738,6 +3249,11 @@ archive_source_collisions() {
       log "FEHLER: Nicht jede inventarisierte Drive-ID kann verarbeitet werden."
       return 1
     fi
+    if ! validate_collision_archive_write_boundary \
+        "$archive_root" "$groups_root" "$objects_root"; then
+      cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+      return 1
+    fi
 
     copied_count=0
     # Every failure path returns immediately after cleanup, so moving the
@@ -2746,6 +3262,11 @@ archive_source_collisions() {
     # shellcheck disable=SC2094
     while IFS=$'\t' read -r object_id mime_type archive_name source_md5 source_size \
         source_modified_time; do
+      if ! validate_collision_archive_write_boundary \
+          "$archive_root" "$groups_root" "$objects_root" "$manifest_path"; then
+        cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+        return 1
+      fi
       [[ "$object_id" =~ ^[A-Za-z0-9_-]{3,255}$ &&
           -n "$mime_type" && "$archive_name" == "$leaf_name" ]] || {
         cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
@@ -2766,25 +3287,61 @@ archive_source_collisions() {
         log "FEHLER: Ein Drive-ID-Ziel ist kein sicherer Ordner."
         return 1
       fi
+      if ! validate_collision_archive_write_boundary \
+          "$archive_root" "$groups_root" "$objects_root" \
+          "$manifest_path" "$object_directory"; then
+        cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+        return 1
+      fi
 
       copy_status=0
+      archive_destination_untrusted=0
       LAST_RCLONE_COLLISION_REPORT=""
       if [[ "$mime_type" == "application/vnd.google-apps.folder" ]]; then
-        if [[ "$DRY_RUN" == "0" ]] && ! mkdir -p "$object_directory"; then
-          cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
-          RUN_STATE_REASON="destination_permission_denied"
-          return 1
+        if [[ "$DRY_RUN" == "0" ]]; then
+          if ! validate_collision_archive_write_boundary \
+              "$archive_root" "$groups_root" "$objects_root" \
+              "$manifest_path" "$object_directory"; then
+            cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+            return 1
+          fi
+          if ! mkdir -p "$object_directory"; then
+            cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+            RUN_STATE_REASON="destination_permission_denied"
+            return 1
+          fi
+          if ! validate_collision_archive_write_boundary \
+              "$archive_root" "$groups_root" "$objects_root" \
+              "$manifest_path" "$object_directory"; then
+            cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+            return 1
+          fi
         fi
         object_destination="$object_directory/root"
+        folder_backup_dir=""
         folder_options=(--drive-root-folder-id "$object_id")
         if [[ "$VERSIONING" == "1" ]]; then
           folder_backup_dir="${DEST_ROOT%/}/$VERSIONS_SUBDIR/$VERSION_RUN_ID/.gdrive-collisions/$scope_hash/objects/$object_key/root"
           folder_options+=(--backup-dir "$folder_backup_dir")
         fi
+        if ! validate_collision_archive_write_boundary \
+            "$archive_root" "$groups_root" "$objects_root" \
+            "$manifest_path" "$object_directory" "$object_destination" \
+            "$folder_backup_dir"; then
+          cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+          return 1
+        fi
         run_rclone_with_progress "$label (ID-Archiv)" "$phase" \
           rclone copy "$source" "$object_destination" \
           "${folder_options[@]}" "${id_source_options[@]}" \
           "${RCLONE_OPTS[@]}" || copy_status=$?
+        if ! validate_collision_archive_write_boundary \
+            "$archive_root" "$groups_root" "$objects_root" \
+            "$manifest_path" "$object_directory" "$object_destination" \
+            "$folder_backup_dir"; then
+          copy_status=1
+          archive_destination_untrusted=1
+        fi
       else
         existing_is_current=0
         archived_file="$object_directory/$archive_name"
@@ -2823,17 +3380,55 @@ archive_source_collisions() {
         fi
         if [[ "$DRY_RUN" == "1" ]]; then
           file_options=(--retries 3 --low-level-retries 10 --dry-run)
+          if ! validate_collision_archive_write_boundary \
+              "$archive_root" "$groups_root" "$objects_root" \
+              "$manifest_path" "$object_directory"; then
+            cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+            return 1
+          fi
           run_rclone_with_progress "$label (ID-Archiv)" "$phase" \
             rclone backend copyid "$source" "$object_id" "${object_directory%/}/" \
             "${id_source_options[@]}" "${file_options[@]}" || copy_status=$?
+          if ! validate_collision_archive_write_boundary \
+              "$archive_root" "$groups_root" "$objects_root" \
+              "$manifest_path" "$object_directory"; then
+            copy_status=1
+            archive_destination_untrusted=1
+          fi
         elif [[ "$existing_is_current" != "1" ]]; then
+          if ! validate_collision_archive_write_boundary \
+              "$archive_root" "$groups_root" "$objects_root" \
+              "$manifest_path" "$object_directory"; then
+            cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+            return 1
+          fi
           object_stage="$(/usr/bin/mktemp -d \
             "${objects_root}/.${object_key}.stage.XXXXXX")" || copy_status=70
+          if ! validate_collision_archive_write_boundary \
+              "$archive_root" "$groups_root" "$objects_root" \
+              "$manifest_path" "$object_directory" "$object_stage"; then
+            copy_status=1
+            archive_destination_untrusted=1
+          fi
           if [[ "$copy_status" == "0" ]]; then
             file_options=(--retries 3 --low-level-retries 10)
+            if ! validate_collision_archive_write_boundary \
+                "$archive_root" "$groups_root" "$objects_root" \
+                "$manifest_path" "$object_directory" "$object_stage"; then
+              copy_status=1
+              archive_destination_untrusted=1
+            fi
+          fi
+          if [[ "$copy_status" == "0" ]]; then
             run_rclone_with_progress "$label (ID-Archiv)" "$phase" \
               rclone backend copyid "$source" "$object_id" "${object_stage%/}/" \
               "${id_source_options[@]}" "${file_options[@]}" || copy_status=$?
+            if ! validate_collision_archive_write_boundary \
+                "$archive_root" "$groups_root" "$objects_root" \
+                "$manifest_path" "$object_directory" "$object_stage"; then
+              copy_status=1
+              archive_destination_untrusted=1
+            fi
           fi
           archived_file="$object_stage/$archive_name"
           if [[ "$copy_status" == "0" ]]; then
@@ -2856,38 +3451,109 @@ archive_source_collisions() {
           fi
           if [[ "$copy_status" == "0" ]]; then
             old_destination=""
+            old_destination_parent=""
+            old_destination_moved=0
             if [[ -d "$object_directory" ]]; then
               if [[ "$VERSIONING" == "1" ]]; then
                 old_destination="${DEST_ROOT%/}/$VERSIONS_SUBDIR/$VERSION_RUN_ID/.gdrive-collisions/$scope_hash/objects/$object_key"
               else
                 replacement_root="$archive_root/.replacement-trash/$object_key"
-                if ! mkdir -p "$replacement_root"; then
+                if ! validate_collision_archive_write_boundary \
+                    "$archive_root" "$groups_root" "$objects_root" \
+                    "$manifest_path" "$object_directory" "$object_stage" \
+                    "$replacement_root"; then
+                  copy_status=1
+                  archive_destination_untrusted=1
+                elif ! mkdir -p "$replacement_root"; then
                   copy_status=1
                 else
-                  old_destination="$replacement_root/$(date -u '+%Y%m%dT%H%M%SZ')-$(/usr/bin/uuidgen | /usr/bin/tr '[:upper:]' '[:lower:]')"
+                  if ! validate_collision_archive_write_boundary \
+                      "$archive_root" "$groups_root" "$objects_root" \
+                      "$manifest_path" "$object_directory" "$object_stage" \
+                      "$replacement_root"; then
+                    copy_status=1
+                    archive_destination_untrusted=1
+                  else
+                    old_destination="$replacement_root/$(date -u '+%Y%m%dT%H%M%SZ')-$(/usr/bin/uuidgen | /usr/bin/tr '[:upper:]' '[:lower:]')"
+                  fi
                 fi
               fi
               if [[ "$copy_status" == "0" &&
                     ( -e "$old_destination" || -L "$old_destination" ) ]]; then
                 copy_status=1
-              elif [[ "$copy_status" == "0" ]] &&
-                   ! mkdir -p "$(/usr/bin/dirname "$old_destination")"; then
-                copy_status=1
-              elif [[ "$copy_status" == "0" ]] &&
-                   ! /bin/mv "$object_directory" "$old_destination"; then
-                copy_status=1
+              elif [[ "$copy_status" == "0" ]]; then
+                old_destination_parent="$(/usr/bin/dirname "$old_destination")"
+                if ! validate_collision_archive_write_boundary \
+                    "$archive_root" "$groups_root" "$objects_root" \
+                    "$manifest_path" "$object_directory" "$object_stage" \
+                    "$old_destination_parent" "$old_destination"; then
+                  copy_status=1
+                  archive_destination_untrusted=1
+                elif ! mkdir -p "$old_destination_parent"; then
+                  copy_status=1
+                elif ! validate_collision_archive_write_boundary \
+                    "$archive_root" "$groups_root" "$objects_root" \
+                    "$manifest_path" "$object_directory" "$object_stage" \
+                    "$old_destination_parent" "$old_destination"; then
+                  copy_status=1
+                  archive_destination_untrusted=1
+                fi
               fi
-            fi
-            if [[ "$copy_status" == "0" ]] &&
-               ! /bin/mv "$object_stage" "$object_directory"; then
-              copy_status=1
-              if [[ -n "$old_destination" && -d "$old_destination" &&
-                    ! -e "$object_directory" ]]; then
-                /bin/mv "$old_destination" "$object_directory" >/dev/null 2>&1 || true
+              if [[ "$copy_status" == "0" ]]; then
+                if ! validate_collision_archive_write_boundary \
+                    "$archive_root" "$groups_root" "$objects_root" \
+                    "$manifest_path" "$object_directory" "$object_stage" \
+                    "$old_destination"; then
+                  copy_status=1
+                  archive_destination_untrusted=1
+                elif ! /bin/mv "$object_directory" "$old_destination"; then
+                  copy_status=1
+                elif ! validate_collision_archive_write_boundary \
+                    "$archive_root" "$groups_root" "$objects_root" \
+                    "$manifest_path" "$object_directory" "$object_stage" \
+                    "$old_destination"; then
+                  copy_status=1
+                  archive_destination_untrusted=1
+                else
+                  old_destination_moved=1
+                fi
               fi
             fi
             if [[ "$copy_status" == "0" ]]; then
-              object_stage=""
+              if ! validate_collision_archive_write_boundary \
+                  "$archive_root" "$groups_root" "$objects_root" \
+                  "$manifest_path" "$object_directory" "$object_stage" \
+                  "$old_destination"; then
+                copy_status=1
+                archive_destination_untrusted=1
+              elif ! /bin/mv "$object_stage" "$object_directory"; then
+                copy_status=1
+              elif ! validate_collision_archive_write_boundary \
+                  "$archive_root" "$groups_root" "$objects_root" \
+                  "$manifest_path" "$object_directory" "$old_destination"; then
+                copy_status=1
+                archive_destination_untrusted=1
+              else
+                object_stage=""
+              fi
+            fi
+            if [[ "$copy_status" != "0" &&
+                  "$archive_destination_untrusted" == "0" &&
+                  "$old_destination_moved" == "1" &&
+                  -d "$old_destination" && ! -e "$object_directory" ]]; then
+              if validate_collision_archive_write_boundary \
+                  "$archive_root" "$groups_root" "$objects_root" \
+                  "$manifest_path" "$object_directory" "$object_stage" \
+                  "$old_destination"; then
+                if /bin/mv "$old_destination" "$object_directory"; then
+                  validate_collision_archive_write_boundary \
+                    "$archive_root" "$groups_root" "$objects_root" \
+                    "$manifest_path" "$object_directory" "$object_stage" \
+                    >/dev/null 2>&1 || archive_destination_untrusted=1
+                fi
+              fi
+            fi
+            if [[ "$copy_status" == "0" ]]; then
               archived_file="$object_directory/$archive_name"
             fi
           fi
@@ -2897,7 +3563,11 @@ archive_source_collisions() {
       LAST_RCLONE_COLLISION_REPORT=""
       cleanup_temp_file "$nested_report"
       if [[ "$copy_status" != "0" ]]; then
-        cleanup_temp_file "$object_stage"
+        if [[ -n "$object_stage" && "$archive_destination_untrusted" == "0" ]]; then
+          cleanup_collision_target_if_safe \
+            "$archive_root" "$groups_root" "$objects_root" "$object_stage" ||
+            archive_destination_untrusted=1
+        fi
         cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
         log "FEHLER: Eine gleichnamige Drive-ID konnte nicht separat gesichert werden."
         return 1
@@ -2914,12 +3584,28 @@ archive_source_collisions() {
           cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
           return 1
         }
+        if ! validate_collision_archive_write_boundary \
+            "$archive_root" "$groups_root" "$objects_root" \
+            "$manifest_path" "$object_directory" "$object_destination" \
+            "$folder_backup_dir"; then
+          cleanup_temp_file "$verification_report" "$validated_json" \
+            "$objects_tsv" "$manifest_objects"
+          return 1
+        fi
         verification_status=0
         run_rclone_with_progress "$label (ID-Pruefung)" "$phase" \
           rclone copy "$source" "$object_destination" \
           --drive-root-folder-id "$object_id" "${id_source_options[@]}" \
           "${RCLONE_OPTS[@]}" --dry-run --retries 1 \
           --combined "$verification_report" || verification_status=$?
+        if ! validate_collision_archive_write_boundary \
+            "$archive_root" "$groups_root" "$objects_root" \
+            "$manifest_path" "$object_directory" "$object_destination" \
+            "$folder_backup_dir"; then
+          cleanup_temp_file "$verification_report" "$validated_json" \
+            "$objects_tsv" "$manifest_objects"
+          return 1
+        fi
         nested_report="$LAST_RCLONE_COLLISION_REPORT"
         LAST_RCLONE_COLLISION_REPORT=""
         cleanup_temp_file "$nested_report"
@@ -2934,6 +3620,12 @@ archive_source_collisions() {
       fi
 
       local_sha256=""
+      if ! validate_collision_archive_write_boundary \
+          "$archive_root" "$groups_root" "$objects_root" \
+          "$manifest_path" "$object_directory"; then
+        cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+        return 1
+      fi
       if [[ "$DRY_RUN" == "0" && "$mime_type" != "application/vnd.google-apps.folder" ]]; then
         archived_file="$object_directory/$archive_name"
         local_sha256="$(/usr/bin/shasum -a 256 -- "$archived_file" 2>/dev/null)"
@@ -2965,6 +3657,12 @@ archive_source_collisions() {
         return 1
       fi
       copied_count=$((copied_count + 1))
+      if ! validate_collision_archive_write_boundary \
+          "$archive_root" "$groups_root" "$objects_root" \
+          "$manifest_path" "$object_directory"; then
+        cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+        return 1
+      fi
     done <"$objects_tsv"
 
     proof_count="$(/usr/bin/wc -l <"$manifest_objects" | /usr/bin/tr -d '[:space:]')"
@@ -2975,6 +3673,11 @@ archive_source_collisions() {
     fi
 
     if [[ "$DRY_RUN" == "0" ]]; then
+      if ! validate_collision_archive_write_boundary \
+          "$archive_root" "$groups_root" "$objects_root" "$manifest_path"; then
+        cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+        return 1
+      fi
       if [[ -L "$manifest_path" ||
             ( -e "$manifest_path" && ! -f "$manifest_path" ) ]]; then
         cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
@@ -2983,13 +3686,32 @@ archive_source_collisions() {
       fi
       manifest_umask="$(umask)"
       umask 077
+      manifest_temp=""
+      if ! validate_collision_archive_write_boundary \
+          "$archive_root" "$groups_root" "$objects_root" "$manifest_path"; then
+        umask "$manifest_umask"
+        cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+        return 1
+      fi
       manifest_temp="$(/usr/bin/mktemp "${manifest_path}.tmp.XXXXXX")" || {
         umask "$manifest_umask"
         cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
         return 1
       }
       umask "$manifest_umask"
+      if ! validate_collision_archive_write_boundary \
+          "$archive_root" "$groups_root" "$objects_root" \
+          "$manifest_path" "$manifest_temp"; then
+        cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+        return 1
+      fi
       generated_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+      if ! validate_collision_archive_write_boundary \
+          "$archive_root" "$groups_root" "$objects_root" \
+          "$manifest_path" "$manifest_temp"; then
+        cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+        return 1
+      fi
       if ! /usr/bin/jq -n \
           --arg area "$relative_destination" \
           --arg path "$logical_path" \
@@ -3008,17 +3730,54 @@ archive_source_collisions() {
               objects: $objects
             }
             | with_entries(select(.value != null and .value != ""))
-          ' >"$manifest_temp" ||
-         ! /bin/chmod 600 "$manifest_temp" ||
-         ! /bin/mv "$manifest_temp" "$manifest_path"; then
-        cleanup_temp_file "$manifest_temp" "$validated_json" "$objects_tsv" \
-          "$manifest_objects"
+          ' >"$manifest_temp"; then
+        cleanup_collision_target_if_safe \
+          "$archive_root" "$groups_root" "$objects_root" "$manifest_temp" || true
+        cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
         RUN_STATE_REASON="destination_permission_denied"
         log "FEHLER: Das Manifest des Drive-ID-Archivs konnte nicht atomar geschrieben werden."
         return 1
       fi
+      if ! validate_collision_archive_write_boundary \
+          "$archive_root" "$groups_root" "$objects_root" \
+          "$manifest_path" "$manifest_temp"; then
+        cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+        return 1
+      fi
+      if ! /bin/chmod 600 "$manifest_temp"; then
+        cleanup_collision_target_if_safe \
+          "$archive_root" "$groups_root" "$objects_root" "$manifest_temp" || true
+        cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+        RUN_STATE_REASON="destination_permission_denied"
+        log "FEHLER: Das Manifest des Drive-ID-Archivs konnte nicht atomar geschrieben werden."
+        return 1
+      fi
+      if ! validate_collision_archive_write_boundary \
+          "$archive_root" "$groups_root" "$objects_root" \
+          "$manifest_path" "$manifest_temp"; then
+        cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+        return 1
+      fi
+      if ! /bin/mv "$manifest_temp" "$manifest_path"; then
+        cleanup_collision_target_if_safe \
+          "$archive_root" "$groups_root" "$objects_root" "$manifest_temp" || true
+        cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+        RUN_STATE_REASON="destination_permission_denied"
+        log "FEHLER: Das Manifest des Drive-ID-Archivs konnte nicht atomar geschrieben werden."
+        return 1
+      fi
+      manifest_temp=""
+      if ! validate_collision_archive_write_boundary \
+          "$archive_root" "$groups_root" "$objects_root" "$manifest_path"; then
+        cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+        return 1
+      fi
     fi
     cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+    if ! validate_collision_archive_write_boundary \
+        "$archive_root" "$groups_root" "$objects_root" "$manifest_path"; then
+      return 1
+    fi
     log "Drive-ID-Archiv vollstaendig: $match_count getrennte Objekte fuer einen gleichnamigen Eintrag."
   done <"$collision_report"
 
@@ -3026,6 +3785,11 @@ archive_source_collisions() {
     log "FEHLER: Die rclone-Kollisionsmeldung enthielt keine sicher archivierbare Drive-ID."
     return 1
   }
+  if ! validate_collision_archive_write_boundary \
+      "$archive_root" "$groups_root" "$objects_root"; then
+    log "FEHLER: Das ID-Archiv konnte nach dem Schreiben nicht sicher bestaetigt werden."
+    return 1
+  fi
   return 0
 }
 
@@ -3037,6 +3801,7 @@ copy_one() {
   local phase=""
   local backup_dir=""
   local copy_status=0
+  local apfs_target_status=0
   local collision_report=""
 
   COPY_INDEX=$((COPY_INDEX + 1))
@@ -3048,7 +3813,13 @@ copy_one() {
     errors=$((errors + 1))
     return
   fi
-  if ! validate_configured_apfs_volume_identity; then
+  if [[ "$ENCRYPTION" == "rclone-crypt" ]]; then
+    validate_configured_apfs_target || apfs_target_status=$?
+  else
+    validate_configured_apfs_target_paths "$dest" ||
+      apfs_target_status=$?
+  fi
+  if [[ "$apfs_target_status" != "0" ]]; then
     log "FEHLER: APFS-Backup-Volume konnte vor '$label' nicht erneut bestaetigt werden."
     errors=$((errors + 1))
     return
@@ -3075,10 +3846,21 @@ copy_one() {
       errors=$((errors + 1))
       return
     }
+    if ! validate_configured_apfs_target_paths "$dest"; then
+      log "FEHLER: Angelegtes Kopierziel liegt nicht sicher auf dem APFS-Backup-Volume: $dest"
+      errors=$((errors + 1))
+      return
+    fi
   fi
 
   if [[ "$ENCRYPTION" != "rclone-crypt" ]] && ! validate_encrypted_destination_tree "$dest"; then
     log "FEHLER: Kopierziel enthaelt einen unsicheren Link oder Mount: $dest"
+    errors=$((errors + 1))
+    return
+  fi
+  if [[ "$ENCRYPTION" != "rclone-crypt" ]] &&
+     ! validate_configured_apfs_tree "$dest"; then
+    log "FEHLER: Kopierziel enthaelt einen unsicheren APFS-Pfad oder ein fremdes Dateisystem: $dest"
     errors=$((errors + 1))
     return
   fi
@@ -3091,6 +3873,25 @@ copy_one() {
     fi
     if [[ "$ENCRYPTION" != "rclone-crypt" ]] && ! path_is_on_encrypted_volume "$backup_dir"; then
       log "FEHLER: Versionsziel liegt nicht sicher auf dem verschluesselten Volume: $backup_dir"
+      errors=$((errors + 1))
+      return
+    fi
+    if [[ "$ENCRYPTION" != "rclone-crypt" ]] &&
+       ! validate_configured_apfs_tree "$backup_dir"; then
+      log "FEHLER: Aktuelles Versionsziel enthaelt einen unsicheren APFS-Pfad oder ein fremdes Dateisystem."
+      errors=$((errors + 1))
+      return
+    fi
+  fi
+  if [[ "$ENCRYPTION" != "rclone-crypt" ]]; then
+    if [[ -n "$backup_dir" ]]; then
+      if ! validate_configured_apfs_target_paths "$dest" "$backup_dir"; then
+        log "FEHLER: Kopier- oder Versionsziel verlaesst das konfigurierte APFS-Backup-Volume."
+        errors=$((errors + 1))
+        return
+      fi
+    elif ! validate_configured_apfs_target_paths "$dest"; then
+      log "FEHLER: Kopierziel verlaesst das konfigurierte APFS-Backup-Volume."
       errors=$((errors + 1))
       return
     fi
@@ -3127,8 +3928,25 @@ copy_one() {
   if ! validate_live_nas_destination; then
     copy_status=1
   fi
-  if ! validate_configured_apfs_volume_identity; then
+  if [[ "$ENCRYPTION" == "rclone-crypt" ]]; then
+    if ! validate_configured_apfs_target; then
+      copy_status=1
+    fi
+  elif [[ -n "$backup_dir" ]]; then
+    if ! validate_configured_apfs_target_paths "$dest" "$backup_dir"; then
+      copy_status=1
+    fi
+  elif ! validate_configured_apfs_target_paths "$dest"; then
     copy_status=1
+  fi
+  if [[ "$ENCRYPTION" != "rclone-crypt" ]]; then
+    if ! validate_configured_apfs_tree "$dest"; then
+      copy_status=1
+    fi
+    if [[ -n "$backup_dir" ]] &&
+       ! validate_configured_apfs_tree "$backup_dir"; then
+      copy_status=1
+    fi
   fi
 
   if [[ "$copy_status" == "0" ]]; then

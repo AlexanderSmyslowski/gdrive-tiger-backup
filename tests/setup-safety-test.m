@@ -52,6 +52,20 @@
 
 @end
 
+@interface SetupIdentityDelegate : AppDelegate
+@property(nonatomic) NSInteger volumeUUIDLookupCalls;
+@end
+
+@implementation SetupIdentityDelegate
+
+- (NSString *)volumeUUIDForPath:(NSString *)path {
+    (void)path;
+    self.volumeUUIDLookupCalls++;
+    return @"WRONG-VOLUME-UUID";
+}
+
+@end
+
 static int failures = 0;
 
 static void Assert(BOOL condition, NSString *name) {
@@ -84,6 +98,33 @@ static SetupSafetyDelegate *Delegate(NSDictionary *saved, NSDictionary *updates)
 
 int main(void) {
     @autoreleasepool {
+        SetupIdentityDelegate *legacyIdentityDelegate =
+            [[SetupIdentityDelegate alloc] init];
+        SEL loadIdentitySelector =
+            NSSelectorFromString(@"loadConfiguredAPFSIdentityFromConfig:");
+        BOOL exposesSafeIdentityLoader =
+            [legacyIdentityDelegate respondsToSelector:loadIdentitySelector];
+        if (exposesSafeIdentityLoader) {
+            typedef void (*LoadIdentityMethod)(
+                id, SEL, NSDictionary<NSString *, NSString *> *);
+            ((LoadIdentityMethod)[legacyIdentityDelegate
+                methodForSelector:loadIdentitySelector])(
+                    legacyIdentityDelegate,
+                    loadIdentitySelector,
+                    @{
+                        @"GDRIVE_BACKUP_VOLUME":
+                            @"/Volumes/GoogleDrive-Backup",
+                        @"GDRIVE_BACKUP_VOLUME_NAME":
+                            @"GoogleDrive-Backup"
+                    });
+        }
+        Assert(exposesSafeIdentityLoader &&
+               legacyIdentityDelegate.volumeUUIDLookupCalls == 0 &&
+               [legacyIdentityDelegate.configuredAPFSVolumePath
+                   isEqualToString:@"/Volumes/GoogleDrive-Backup"] &&
+               legacyIdentityDelegate.configuredAPFSVolumeUUID.length == 0,
+               @"legacy setup changes never bind whichever same-name volume currently owns the saved path");
+
         NSDictionary *saved = @{
             @"GDRIVE_BACKUP_TARGET": @"apfs",
             @"GDRIVE_BACKUP_SCHEDULE": @"manual",

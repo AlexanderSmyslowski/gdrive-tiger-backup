@@ -23,7 +23,7 @@ the backup does not preserve Google Drive's native document revision history.
 
 - A user LaunchAgent starts the lightweight menu bar controller at login.
 - Automatic schedule and mount-triggered runs can be paused from the menu bar without changing the saved schedule; manual backups remain available.
-- The controller observes macOS mount events and reacts only when the saved APFS volume UUID was newly mounted. A changed `/Volumes/… 2` suffix is resolved automatically; unrelated or merely same-name disks are ignored.
+- The controller observes macOS mount events. When an APFS volume UUID is saved, a changed `/Volumes/… 2` suffix is resolved automatically and unrelated or merely same-name disks are ignored. Older path-only profiles retain their exact-path behavior until they are explicitly migrated.
 - The overview shows the last verified run, configured schedule, exact local destination, and available destination capacity.
 - With notifications enabled, macOS reports a failed automatic run immediately and a daily 20:00 run that is still missing at 21:00. Alerts are deduplicated per profile and run; the menu bar warning remains until a newer successful backup.
 - Scheduled, mount-triggered, and menu-bar-only runs stay headless. Their live and final state remains available through the menu bar, with a macOS notification for automatic failures.
@@ -113,8 +113,20 @@ xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-2.3.2.pkg"
 Pick or create a writable backup volume, for example:
 
 ```bash
-BACKUP_VOLUME="/Volumes/GoogleDrive-Backup" ./install.sh
+BACKUP_VOLUME="/Volumes/GoogleDrive-Backup 2"
+BACKUP_VOLUME_UUID="$(
+  /usr/sbin/diskutil info -plist "$BACKUP_VOLUME" |
+    /usr/bin/plutil -extract VolumeUUID raw -o - -
+)"
+GDRIVE_BACKUP_VOLUME_UUID="$BACKUP_VOLUME_UUID" \
+  BACKUP_VOLUME="$BACKUP_VOLUME" \
+  ./install.sh
 ```
+
+Use the exact mounted path shown by Finder. The UUID is deliberately supplied
+by the installer caller and verified against that mount. An upgrade updates the
+legacy config and the active profile atomically per file; it never guesses an
+identity from a same-name volume.
 
 On first install, the installer asks which language the helper should use:
 
@@ -132,7 +144,7 @@ For unattended installs, set it explicitly:
 GDRIVE_BACKUP_LANG=en BACKUP_VOLUME="/Volumes/GoogleDrive-Backup" ./install.sh
 ```
 
-You can also install first and let the helper create a dedicated APFS volume the first time an external APFS disk is attached. The app will ask before it does anything. This is non-destructive: it uses `diskutil apfs addVolume` to add a sibling APFS volume in the same APFS container. It does not erase or repartition the disk.
+You can also install first and let the helper create a dedicated APFS volume the first time an external APFS disk is attached. The app will ask before it does anything. This is non-destructive: it uses `diskutil apfs addVolume` to add a sibling APFS volume in the same APFS container. It does not erase or repartition the disk. The helper compares the container's UUID set before and after creation, accepts exactly one new volume, resolves its actual mount point, and stops if the result is ambiguous.
 
 To install Homebrew dependencies as part of the installer:
 
@@ -217,7 +229,9 @@ GDRIVE_BACKUP_SCHEDULE=manual
 Supported values for `GDRIVE_BACKUP_LANG` are `de`, `en`, `fr`, `es`, `ja`, `yue`, and `ko`.
 Supported values for `GDRIVE_BACKUP_TARGET` are `apfs` and `nas`.
 Supported values for `GDRIVE_BACKUP_SCHEDULE` are `manual`, `login`, `hourly`, and `daily`.
-`GDRIVE_BACKUP_VOLUME_UUID` is the APFS volume UUID recorded by setup. When it is present, it is authoritative: the engine asks `diskutil` for the volume's current mount point and never falls back to a same-name path. Legacy profiles without the key retain exact-path behavior until setup saves the mounted external target.
+`GDRIVE_BACKUP_VOLUME_UUID` is the APFS volume UUID recorded for the external target. When it is present, it is authoritative: the engine asks `diskutil` for the volume's current mount point and never falls back to a same-name path. The UUID and device identity are revalidated after confirmation, before and after every copy, and before retention changes. Destination overrides, child trees, and version trees must stay on that volume and cannot cross `..`, symbolic links, or nested file systems.
+
+Legacy profiles without the key retain exact-path behavior. Merely opening setup or changing an unrelated setting never guesses an identity from whichever same-name volume currently occupies that path. A safely auto-created volume stores its UUID automatically; an existing target should be migrated only after its exact APFS volume UUID has been verified.
 Saved schedules run unattended after the script verifies the configured destination. `GDRIVE_BACKUP_CONFIRM=1` still protects mount-triggered runs with a prompt. Set it to `0` only if you also deliberately want those mount-triggered backups to start unattended whenever the configured volume is mounted.
 Set `GDRIVE_BACKUP_PAUSED=1` to silence schedule and mount-triggered runs without changing the saved schedule. The menu bar toggles this setting; **Backup now** always remains manual and available.
 Set `GDRIVE_BACKUP_NOTIFY_FAILURES=0` to disable macOS alerts for automatic failures and missed daily runs. The menu bar and overview continue to show backup status even when alerts are disabled or macOS notification permission is denied.

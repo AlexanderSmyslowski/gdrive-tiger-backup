@@ -4,6 +4,10 @@
 
 - Keep passive mount confirmations visible and clickable without activating the app or entering another application's fullscreen Space.
 - Bind external APFS targets to their stable volume UUID, resolve the current macOS mount path before every run, and reject same-name or swapped volumes before Drive access.
+- Refuse APFS path traversal, symbolic-link escapes, nested foreign file systems, post-confirmation swaps, and retention operations whose UUID or device identity changes.
+- Identify an automatically created APFS volume by the one new UUID in its container instead of assuming an unsuffixed `/Volumes` name, and atomically replace stale or empty saved identity fields.
+- Keep legacy path-only profiles unchanged until a volume is explicitly identified; opening or saving unrelated setup settings never binds whichever same-name volume currently owns that path.
+- Let source-based upgrades verify and atomically persist a caller-supplied APFS path, name, and UUID in both the legacy config and active profile instead of inferring identity from a volume name.
 - Open the visible overview when Finder reopens the already-running menu bar controller.
 - Let saved launchd schedules run unattended after the backup engine verifies the exact configured destination.
 - Link every required application source file from the source installer so local upgrades build successfully.
