@@ -177,7 +177,35 @@ SH
 
   cat >"$FAKE_BIN/mount" <<'SH'
 #!/bin/bash
+visible="${FAKE_NAS_MOUNT_VISIBLE:-1}"
+if [[ -n "${FAKE_NAS_MOUNT_VISIBLE_FILE:-}" &&
+      -e "$FAKE_NAS_MOUNT_VISIBLE_FILE" ]]; then
+  visible=1
+fi
+if [[ "$visible" != "1" ]]; then
+  exit 0
+fi
 printf '%s on %s (smbfs, nodev, nosuid)\n' '//backup.test/share' "${FAKE_NAS_MOUNT:?}"
+SH
+
+  cat >"$FAKE_BIN/osascript" <<'SH'
+#!/bin/bash
+if [[ "${FAKE_OSASCRIPT_REQUIRE_MOUNT_SCRIPT:-0}" == "1" ]]; then
+  script="$(/bin/cat)"
+  if [[ "$script" != *"mount volume (item 1 of argv)"* ]]; then
+    exit 91
+  fi
+fi
+if [[ "${FAKE_OSASCRIPT_SLEEP_SECONDS:-0}" != "0" ]]; then
+  /bin/sleep "$FAKE_OSASCRIPT_SLEEP_SECONDS"
+fi
+if [[ -n "${FAKE_OSASCRIPT_MOUNT_VISIBLE_FILE:-}" ]]; then
+  : >"$FAKE_OSASCRIPT_MOUNT_VISIBLE_FILE"
+fi
+if [[ "${FAKE_OSASCRIPT_MAKE_WRITABLE:-0}" == "1" ]]; then
+  chmod 700 "${FAKE_NAS_MOUNT:?}"
+fi
+exit "${FAKE_OSASCRIPT_STATUS:-0}"
 SH
 
   cat >"$FAKE_BIN/cmp" <<'SH'
@@ -219,7 +247,7 @@ exit 0
 SH
   done
   chmod +x "$FAKE_BIN/rclone" "$FAKE_BIN/jq" "$FAKE_BIN/open" "$FAKE_BIN/flock" \
-    "$FAKE_BIN/mount" "$FAKE_BIN/cmp" "$FAKE_BIN/trash" \
+    "$FAKE_BIN/mount" "$FAKE_BIN/osascript" "$FAKE_BIN/cmp" "$FAKE_BIN/trash" \
     "$FAKE_BIN/diskutil" "$FAKE_BIN/plutil"
 }
 
@@ -233,6 +261,7 @@ run_backup_with_mode() {
     GDRIVE_BACKUP_TARGET=nas \
     GDRIVE_BACKUP_NAS_MOUNT="$NAS_MOUNT" \
     GDRIVE_BACKUP_MOUNT_BIN="$FAKE_BIN/mount" \
+    GDRIVE_BACKUP_OSASCRIPT="${GDRIVE_BACKUP_OSASCRIPT:-$FAKE_BIN/osascript}" \
     GDRIVE_BACKUP_CMP_BIN="$FAKE_BIN/cmp" \
     GDRIVE_BACKUP_DEST_ROOT="$NAS_MOUNT/backup" \
     GDRIVE_BACKUP_CONFIRM="${GDRIVE_BACKUP_CONFIRM:-0}" \
@@ -277,6 +306,13 @@ run_backup_with_mode() {
     FAKE_CMP_CALLS_FILE="${FAKE_CMP_CALLS_FILE:-}" \
     FAKE_FLOCK_STATUS="${FAKE_FLOCK_STATUS:-0}" \
     FAKE_NAS_MOUNT="$NAS_MOUNT" \
+    FAKE_NAS_MOUNT_VISIBLE="${FAKE_NAS_MOUNT_VISIBLE:-1}" \
+    FAKE_NAS_MOUNT_VISIBLE_FILE="${FAKE_NAS_MOUNT_VISIBLE_FILE:-}" \
+    FAKE_OSASCRIPT_MOUNT_VISIBLE_FILE="${FAKE_OSASCRIPT_MOUNT_VISIBLE_FILE:-}" \
+    FAKE_OSASCRIPT_MAKE_WRITABLE="${FAKE_OSASCRIPT_MAKE_WRITABLE:-0}" \
+    FAKE_OSASCRIPT_REQUIRE_MOUNT_SCRIPT="${FAKE_OSASCRIPT_REQUIRE_MOUNT_SCRIPT:-0}" \
+    FAKE_OSASCRIPT_SLEEP_SECONDS="${FAKE_OSASCRIPT_SLEEP_SECONDS:-0}" \
+    FAKE_OSASCRIPT_STATUS="${FAKE_OSASCRIPT_STATUS:-0}" \
     FAKE_TEMP_TRASH_DIR="$TEMP_TRASH_DIR" \
     FAKE_OPEN_LOG="$OPEN_LOG" \
     FAKE_OPEN_STATUS="${FAKE_OPEN_STATUS:-0}" \
@@ -1437,6 +1473,166 @@ test_lost_nas_mount_is_classified_and_stops_followup_copies() {
   fi
 }
 
+test_nas_mount_waits_until_it_is_writable() {
+  local name="a newly visible NAS mount is allowed to finish becoming writable"
+  local status summary ready_pid
+  prepare_test_environment
+  chmod 500 "$NAS_MOUNT"
+
+  (
+    /bin/sleep 1
+    chmod 700 "$NAS_MOUNT"
+  ) &
+  ready_pid=$!
+  GDRIVE_BACKUP_NAS_READY_TIMEOUT_SECONDS=008 run_backup
+  status=$?
+  wait "$ready_pid"
+  summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" && "$summary" == *$'status=success\n'* ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status summary=${summary//$'\n'/,})"
+  fi
+}
+
+test_nas_auto_mount_transitions_to_a_writable_share() {
+  local name="automatic NAS mount waits for the new verified writable share"
+  local status summary visible_file
+  prepare_test_environment
+  visible_file="$TEST_HOME/nas-mounted"
+
+  FAKE_NAS_MOUNT_VISIBLE=0 \
+    FAKE_NAS_MOUNT_VISIBLE_FILE="$visible_file" \
+    FAKE_OSASCRIPT_MOUNT_VISIBLE_FILE="$visible_file" \
+    FAKE_OSASCRIPT_MAKE_WRITABLE=1 \
+    FAKE_OSASCRIPT_REQUIRE_MOUNT_SCRIPT=1 \
+    GDRIVE_BACKUP_NAS_URL="smb://backup.test/share" \
+    GDRIVE_BACKUP_NAS_READY_TIMEOUT_SECONDS=2 \
+    run_backup
+  status=$?
+  summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" && -e "$visible_file" &&
+        "$summary" == *$'status=success\n'* ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status summary=${summary//$'\n'/,})"
+  fi
+}
+
+test_nas_auto_mount_not_ready_is_retryable() {
+  local name="automatic NAS mount timeout publishes the retryable readiness reason"
+  local status summary visible_file
+  prepare_test_environment
+  visible_file="$TEST_HOME/nas-mounted"
+  chmod 500 "$NAS_MOUNT"
+
+  FAKE_NAS_MOUNT_VISIBLE=0 \
+    FAKE_NAS_MOUNT_VISIBLE_FILE="$visible_file" \
+    FAKE_OSASCRIPT_MOUNT_VISIBLE_FILE="$visible_file" \
+    GDRIVE_BACKUP_NAS_URL="smb://backup.test/share" \
+    GDRIVE_BACKUP_NAS_READY_TIMEOUT_SECONDS=1 \
+    run_backup
+  status=$?
+  chmod 700 "$NAS_MOUNT"
+  summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+
+  if [[ "$status" == "69" &&
+        "$summary" == *$'reason=nas_mount_not_ready\n'* ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status summary=${summary//$'\n'/,})"
+  fi
+}
+
+test_hung_nas_mount_command_is_bounded() {
+  local name="a hung NAS mount command becomes a terminal retryable failure"
+  local status summary started finished
+  prepare_test_environment
+  started="$(date +%s)"
+
+  FAKE_NAS_MOUNT_VISIBLE=0 \
+    FAKE_OSASCRIPT_SLEEP_SECONDS=4 \
+    GDRIVE_BACKUP_NAS_URL="smb://backup.test/share" \
+    GDRIVE_BACKUP_NAS_MOUNT_TIMEOUT_SECONDS=1 \
+    GDRIVE_BACKUP_NAS_READY_TIMEOUT_SECONDS=0 \
+    run_backup
+  status=$?
+  finished="$(date +%s)"
+  summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+
+  if [[ "$status" == "69" && $((finished - started)) -lt 3 &&
+        "$summary" == *$'status=failure\n'* &&
+        "$summary" == *$'reason=nas_mount_unavailable\n'* ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status elapsed=$((finished - started)) summary=${summary//$'\n'/,})"
+  fi
+}
+
+test_unavailable_nas_mount_has_retryable_reason() {
+  local name="an unavailable configured NAS mount publishes a retryable reason"
+  local status summary
+  prepare_test_environment
+
+  FAKE_NAS_MOUNT_VISIBLE=0 \
+    GDRIVE_BACKUP_NAS_READY_TIMEOUT_SECONDS=0 \
+    run_backup
+  status=$?
+  summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+
+  if [[ "$status" == "69" &&
+        "$summary" == *$'status=failure\n'* &&
+        "$summary" == *$'reason=nas_mount_unavailable\n'* ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status summary=${summary//$'\n'/,})"
+  fi
+}
+
+test_permanent_nas_permission_failure_is_not_retryable() {
+  local name="an already mounted permanent permission failure is classified separately"
+  local status summary
+  prepare_test_environment
+  chmod 500 "$NAS_MOUNT"
+
+  GDRIVE_BACKUP_NAS_READY_TIMEOUT_SECONDS=1 run_backup
+  status=$?
+  chmod 700 "$NAS_MOUNT"
+  summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+
+  if [[ "$status" == "69" &&
+        "$summary" == *$'status=failure\n'* &&
+        "$summary" == *$'reason=destination_permission_denied\n'* ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status summary=${summary//$'\n'/,})"
+  fi
+}
+
+test_retry_metadata_is_published() {
+  local name="an automatic retry remains identifiable in durable status"
+  local status summary
+  prepare_test_environment
+
+  run_backup \
+    "GDRIVE_BACKUP_TRIGGER=schedule-retry" \
+    "GDRIVE_BACKUP_RETRY_ORIGIN_STARTED_AT=1785261605" \
+    "GDRIVE_BACKUP_RETRY_ATTEMPT=1"
+  status=$?
+  summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" &&
+        "$summary" == *$'trigger=schedule-retry\n'* &&
+        "$summary" == *$'retry_origin_started_at=1785261605\n'* &&
+        "$summary" == *$'retry_attempt=1\n'* ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status summary=${summary//$'\n'/,})"
+  fi
+}
+
 test_confirmation_uses_injected_open_command() {
   local name="confirmation uses the testable open command"
   # This asserts literal shell source, so expansion would be a test bug.
@@ -1627,6 +1823,13 @@ test_shared_with_me_ids_drop_the_virtual_root_flag
 test_normal_notice_remains_successful
 test_destination_permission_error_has_priority_over_duplicate_notice
 test_lost_nas_mount_is_classified_and_stops_followup_copies
+test_nas_mount_waits_until_it_is_writable
+test_nas_auto_mount_transitions_to_a_writable_share
+test_nas_auto_mount_not_ready_is_retryable
+test_hung_nas_mount_command_is_bounded
+test_unavailable_nas_mount_has_retryable_reason
+test_permanent_nas_permission_failure_is_not_retryable
+test_retry_metadata_is_published
 test_confirmation_uses_injected_open_command
 test_declined_confirmation_is_skipped
 test_term_signal_publishes_cancellation

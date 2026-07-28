@@ -148,6 +148,8 @@ REMOTE="${REMOTE%:}"
 LOG="${GDRIVE_BACKUP_LOG:-$HOME/Library/Logs/gdrive-backup.log}"
 LOCK="${GDRIVE_BACKUP_LOCK:-$HOME/Library/Logs/gdrive-backup.lock}"
 MOUNT_SETTLE_SECONDS="${MOUNT_SETTLE_SECONDS:-5}"
+NAS_READY_TIMEOUT_SECONDS="${GDRIVE_BACKUP_NAS_READY_TIMEOUT_SECONDS:-60}"
+NAS_MOUNT_TIMEOUT_SECONDS="${GDRIVE_BACKUP_NAS_MOUNT_TIMEOUT_SECONDS:-90}"
 ANIMATION_APP="${GDRIVE_BACKUP_ANIMATION_APP:-/Applications/GDrive Backup Tiger.app}"
 if [[ ! -d "$ANIMATION_APP" && -d "$HOME/Applications/GDrive Backup Tiger.app" ]]; then
   ANIMATION_APP="$HOME/Applications/GDrive Backup Tiger.app"
@@ -160,6 +162,12 @@ RUN_STATE_OVERRIDE=""
 RUN_OUTCOME="failure"
 RUN_STATE_REASON=""
 RUN_STATE_SIGNAL=""
+RETRY_ORIGIN_STARTED_AT="${GDRIVE_BACKUP_RETRY_ORIGIN_STARTED_AT:-}"
+RETRY_ATTEMPT="${GDRIVE_BACKUP_RETRY_ATTEMPT:-}"
+if [[ "$BACKUP_TRIGGER" != "schedule-retry" ]]; then
+  RETRY_ORIGIN_STARTED_AT=""
+  RETRY_ATTEMPT=""
+fi
 if [[ -n "${GDRIVE_BACKUP_SUMMARY_STATE_FILE:-}" ]]; then
   SUMMARY_STATE_FILE="$GDRIVE_BACKUP_SUMMARY_STATE_FILE"
 elif [[ -n "$ACTIVE_PROFILE_ID" ]]; then
@@ -1769,6 +1777,9 @@ write_run_state() {
     printf 'pid=%s\n' "$$"
     [[ -n "$RUN_STATE_REASON" ]] && printf 'reason=%s\n' "$RUN_STATE_REASON"
     [[ -n "$RUN_STATE_SIGNAL" ]] && printf 'signal=%s\n' "$RUN_STATE_SIGNAL"
+    [[ -n "$RETRY_ORIGIN_STARTED_AT" ]] &&
+      printf 'retry_origin_started_at=%s\n' "$RETRY_ORIGIN_STARTED_AT"
+    [[ -n "$RETRY_ATTEMPT" ]] && printf 'retry_attempt=%s\n' "$RETRY_ATTEMPT"
     [[ -n "$exit_code" ]] && printf 'exit_code=%s\n' "$exit_code"
   } >"$tmp" && mv -f "$tmp" "$RUN_STATE_FILE"
 }
@@ -1812,6 +1823,9 @@ write_last_run_summary() {
     [[ -n "$RUN_STATE_REASON" ]] && printf 'reason=%s\n' "$(progress_escape "$RUN_STATE_REASON")"
     [[ -n "$RUN_STATE_SIGNAL" ]] && printf 'signal=%s\n' "$(progress_escape "$RUN_STATE_SIGNAL")"
     printf 'trigger=%s\n' "$(progress_escape "$BACKUP_TRIGGER")"
+    [[ -n "$RETRY_ORIGIN_STARTED_AT" ]] &&
+      printf 'retry_origin_started_at=%s\n' "$RETRY_ORIGIN_STARTED_AT"
+    [[ -n "$RETRY_ATTEMPT" ]] && printf 'retry_attempt=%s\n' "$RETRY_ATTEMPT"
     printf 'target=%s\n' "$(progress_escape "$BACKUP_TARGET")"
     printf 'destination=%s\n' "$(progress_escape "$DEST_ROOT")"
   } >"$tmp") && chmod 600 "$tmp" && mv -f "$tmp" "$SUMMARY_STATE_FILE"; then
@@ -2463,8 +2477,8 @@ mount_nas_url() {
   [[ -n "$NAS_URL" ]] || return 1
 
   log "NAS-Freigabe ist noch nicht gemountet; versuche zu mounten: $NAS_URL"
-  if command -v osascript >/dev/null 2>&1; then
-    /usr/bin/osascript - "$NAS_URL" <<'OSA'
+  if [[ -x "$OSASCRIPT_BIN" ]]; then
+    run_with_timeout "$NAS_MOUNT_TIMEOUT_SECONDS" "$OSASCRIPT_BIN" - "$NAS_URL" <<'OSA'
 on run argv
   mount volume (item 1 of argv)
 end run
@@ -2476,7 +2490,10 @@ OSA
 }
 
 ensure_nas_destination() {
+  local mount_requested=0 waited=0
+
   if [[ -z "$NAS_MOUNT" ]]; then
+    RUN_STATE_REASON="nas_configuration_invalid"
     if [[ -n "$NAS_URL" ]]; then
       log "NAS-URL ist konfiguriert, aber keine gemountete Freigabe wurde gefunden. Oeffne die NAS-URL im Finder oder waehle den Mountpunkt in der Setup-App."
     else
@@ -2487,27 +2504,44 @@ ensure_nas_destination() {
 
   if ! nas_mount_is_verified && [[ -n "$NAS_URL" ]]; then
     if [[ "$DRY_RUN" == "1" ]]; then
+      RUN_STATE_REASON="nas_mount_unavailable"
       log "DRY-RUN: NAS-Freigabe wuerde bei Bedarf gemountet: $NAS_URL"
       return 1
     else
+      mount_requested=1
       mount_nas_url || log "WARNUNG: NAS-Freigabe konnte nicht automatisch gemountet werden."
     fi
   fi
 
-  if [[ -n "$NAS_URL" ]]; then
-    local waited=0
-    while ! nas_mount_is_verified && [[ "$waited" -lt 30 ]]; do
+  if nas_mount_is_verified; then
+    while [[ "$DRY_RUN" == "0" && ! -w "$NAS_MOUNT" &&
+             "$waited" -lt "$NAS_READY_TIMEOUT_SECONDS" ]]; do
+      sleep 1
+      waited=$((waited + 1))
+    done
+  elif [[ "$mount_requested" == "1" ]]; then
+    while [[ "$waited" -lt "$NAS_READY_TIMEOUT_SECONDS" ]]; do
+      if nas_mount_is_verified &&
+          [[ "$DRY_RUN" == "1" || -w "$NAS_MOUNT" ]]; then
+        break
+      fi
       sleep 1
       waited=$((waited + 1))
     done
   fi
 
   if ! nas_mount_is_verified; then
+    RUN_STATE_REASON="nas_mount_unavailable"
     log "NAS-Ziel ist kein verifiziertes Netzwerklaufwerk: $NAS_MOUNT"
     return 1
   fi
 
   if [[ "$DRY_RUN" == "0" && ! -w "$NAS_MOUNT" ]]; then
+    if [[ "$mount_requested" == "1" ]]; then
+      RUN_STATE_REASON="nas_mount_not_ready"
+    else
+      RUN_STATE_REASON="destination_permission_denied"
+    fi
     log "FEHLER: NAS-Mount ist nicht beschreibbar: $NAS_MOUNT"
     return 1
   fi
@@ -2565,6 +2599,30 @@ trap on_exit EXIT
 trap 'cancel_run 129 HUP' HUP
 trap 'cancel_run 130 INT' INT
 trap 'cancel_run 143 TERM' TERM
+
+if [[ ! "$NAS_READY_TIMEOUT_SECONDS" =~ ^[0-9]{1,3}$ ]] ||
+   (( 10#$NAS_READY_TIMEOUT_SECONDS > 300 )); then
+  RUN_STATE_REASON="invalid_configuration"
+  log "FEHLER: GDRIVE_BACKUP_NAS_READY_TIMEOUT_SECONDS muss zwischen 0 und 300 liegen."
+  exit 64
+fi
+NAS_READY_TIMEOUT_SECONDS=$((10#$NAS_READY_TIMEOUT_SECONDS))
+if [[ ! "$NAS_MOUNT_TIMEOUT_SECONDS" =~ ^[0-9]{1,3}$ ]] ||
+   (( 10#$NAS_MOUNT_TIMEOUT_SECONDS < 1 ||
+      10#$NAS_MOUNT_TIMEOUT_SECONDS > 300 )); then
+  RUN_STATE_REASON="invalid_configuration"
+  log "FEHLER: GDRIVE_BACKUP_NAS_MOUNT_TIMEOUT_SECONDS muss zwischen 1 und 300 liegen."
+  exit 64
+fi
+NAS_MOUNT_TIMEOUT_SECONDS=$((10#$NAS_MOUNT_TIMEOUT_SECONDS))
+if [[ "$BACKUP_TRIGGER" == "schedule-retry" ]] &&
+   { [[ ! "$RETRY_ORIGIN_STARTED_AT" =~ ^[0-9]{1,12}$ ]] ||
+     [[ "$RETRY_ORIGIN_STARTED_AT" == "0" ]] ||
+     [[ "$RETRY_ATTEMPT" != "1" ]]; }; then
+  RUN_STATE_REASON="invalid_retry_metadata"
+  log "FEHLER: Der automatische Wiederholungsversuch ist nicht eindeutig gekennzeichnet."
+  exit 64
+fi
 
 case "$AUTOMATIC_BACKUPS_PAUSED" in
   0|1) ;;

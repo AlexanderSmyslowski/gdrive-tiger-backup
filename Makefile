@@ -101,6 +101,12 @@ test:
 			-o "$$NOTIFICATION_SUPPORT_TEST_BIN"; \
 		"$$NOTIFICATION_SUPPORT_TEST_BIN"; \
 		./scripts/trash-path.sh "$$NOTIFICATION_SUPPORT_TEST_BIN"
+	@set -e; AUTOMATIC_RETRY_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-automatic-retry-test.XXXXXX")"; \
+		clang $(OBJC_FLAGS) -framework Foundation -I macos/GDriveBackupTiger \
+			tests/automatic-retry-support-test.m macos/GDriveBackupTiger/NotificationSupport.m \
+			-o "$$AUTOMATIC_RETRY_TEST_BIN"; \
+		"$$AUTOMATIC_RETRY_TEST_BIN"; \
+		./scripts/trash-path.sh "$$AUTOMATIC_RETRY_TEST_BIN"
 	@set -e; NOTIFICATION_INTEGRATION_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-notification-integration-test.XXXXXX")"; \
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
 			tests/notification-integration-test.m macos/GDriveBackupTiger/ConfigSupport.m \

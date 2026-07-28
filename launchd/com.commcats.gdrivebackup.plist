@@ -15,6 +15,12 @@
   <key>RunAtLoad</key>
   <true/>
 
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
   <key>LimitLoadToSessionType</key>
   <string>Aqua</string>
 

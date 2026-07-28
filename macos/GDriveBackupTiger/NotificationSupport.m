@@ -21,6 +21,10 @@ static NSTimeInterval GDTTimestamp(NSString *value) {
     return (NSTimeInterval)timestamp;
 }
 
+static NSString *GDTSafeRetryProfileID(NSString *value) {
+    return GDTSafeNotificationProfileID(value);
+}
+
 static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
     NSDate *watchdog = [calendar dateBySettingHour:21 minute:0 second:0 ofDate:now options:0];
     if ([watchdog compare:now] == NSOrderedDescending) {
@@ -30,6 +34,31 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
 }
 
 @implementation GDTBackupNotificationPolicy
+
++ (NSArray<NSString *> *)failureNotificationIdentifiersForProfileID:(NSString *)profileID
+                                                candidateIdentifiers:
+                                                    (NSArray<NSString *> *)candidateIdentifiers {
+    NSString *safeProfileID = GDTSafeNotificationProfileID(profileID);
+    NSString *prefix = [NSString stringWithFormat:
+        @"com.commcats.gdrivebackup.%@.", safeProfileID];
+    NSMutableArray<NSString *> *accepted = [NSMutableArray array];
+    for (id candidate in candidateIdentifiers ?: @[]) {
+        if (![candidate isKindOfClass:NSString.class] ||
+            ![(NSString *)candidate hasPrefix:prefix]) {
+            continue;
+        }
+        NSString *suffix = [(NSString *)candidate substringFromIndex:prefix.length];
+        NSArray<NSString *> *parts = [suffix componentsSeparatedByString:@"."];
+        if (parts.count != 2 ||
+            ![@[@"failure", @"missed"] containsObject:parts[0]] ||
+            GDTTimestamp(parts[1]) <= 0 ||
+            [accepted containsObject:candidate]) {
+            continue;
+        }
+        [accepted addObject:candidate];
+    }
+    return accepted;
+}
 
 + (NSDictionary<NSString *, NSString *> * _Nullable)
     decisionForConfig:(NSDictionary<NSString *, NSString *> *)config
@@ -51,7 +80,9 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
         config[@"GDRIVE_BACKUP_NOTIFICATION_MONITOR_STARTED_AT"]);
     NSTimeInterval eventTimestamp = GDTTimestamp(summary[@"finished_at"]);
     if (eventTimestamp <= 0) eventTimestamp = GDTTimestamp(summary[@"started_at"]);
-    BOOL scheduledFailure = [summary[@"trigger"] isEqualToString:@"schedule"] &&
+    NSString *trigger = summary[@"trigger"] ?: @"";
+    BOOL retryFailure = [trigger isEqualToString:@"schedule-retry"];
+    BOOL scheduledFailure = [@[@"schedule", @"schedule-retry"] containsObject:trigger] &&
         ([@[@"failure", @"interrupted", @"cancelled"] containsObject:status]);
     BOOL eventIsFresh = eventTimestamp > 0 && eventTimestamp <= nowTimestamp + 1 &&
         nowTimestamp - eventTimestamp <= 24 * 60 * 60;
@@ -59,7 +90,12 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
     if (scheduledFailure && eventIsFresh && eventWasMonitored) {
         NSString *bodyKey = @"failedHint";
         NSString *reason = summary[@"reason"] ?: @"";
-        if ([reason isEqualToString:@"destination_permission_denied"]) {
+        if (retryFailure) {
+            bodyKey = @"backupNotificationRetryFailureBody";
+        } else if ([@[@"nas_mount_unavailable", @"nas_mount_not_ready"]
+                       containsObject:reason]) {
+            bodyKey = @"backupNotificationNASRetryBody";
+        } else if ([reason isEqualToString:@"destination_permission_denied"]) {
             bodyKey = @"failedPermissionHint";
         } else if ([reason isEqualToString:@"nas_connection_lost"]) {
             bodyKey = @"failedNASConnectionHint";
@@ -106,6 +142,61 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
         @"issueTimestamp": [NSString stringWithFormat:@"%.0f", dueTimestamp],
         @"titleKey": @"backupNotificationMissedTitle",
         @"bodyKey": @"backupNotificationMissedBody"
+    };
+}
+
+@end
+
+@implementation GDTAutomaticRetryPolicy
+
++ (NSDictionary<NSString *, NSString *> * _Nullable)
+    decisionForConfig:(NSDictionary<NSString *, NSString *> *)config
+               summary:(NSDictionary<NSString *, NSString *> *)summary
+                status:(NSString *)status
+                   now:(NSDate *)now {
+    NSString *schedule = [config[@"GDRIVE_BACKUP_SCHEDULE"] ?: @"manual" lowercaseString];
+    NSString *target = [config[@"GDRIVE_BACKUP_TARGET"] ?: @"" lowercaseString];
+    if (![@[@"login", @"hourly", @"daily"] containsObject:schedule] ||
+        ![target isEqualToString:@"nas"] ||
+        [config[@"GDRIVE_BACKUP_PAUSED"] isEqualToString:@"1"] ||
+        ![status isEqualToString:@"failure"] ||
+        ![summary[@"trigger"] isEqualToString:@"schedule"]) {
+        return nil;
+    }
+
+    // Exit 69 also covers permanent safety failures. Only mount-readiness
+    // outcomes are transient enough to repeat without user intervention.
+    NSString *reason = summary[@"reason"] ?: @"";
+    if (![@[@"nas_mount_unavailable", @"nas_mount_not_ready"] containsObject:reason]) {
+        return nil;
+    }
+
+    NSTimeInterval startedAt = GDTTimestamp(summary[@"started_at"]);
+    NSTimeInterval finishedAt = GDTTimestamp(summary[@"finished_at"]);
+    NSTimeInterval lastSuccessAt = GDTTimestamp(summary[@"last_success_at"]);
+    if (startedAt <= 0 || finishedAt < startedAt || lastSuccessAt >= startedAt) {
+        return nil;
+    }
+
+    static const NSTimeInterval retryDelay = 30 * 60;
+    // A sleeping Mac may miss the nominal delay by several hours. The durable
+    // run summary keeps one retry eligible until the next daily window, while
+    // a newer run or success still supersedes it immediately.
+    static const NSTimeInterval retryLifetime = 24 * 60 * 60;
+    NSTimeInterval nowTimestamp = now.timeIntervalSince1970;
+    if (nowTimestamp < finishedAt + retryDelay ||
+        nowTimestamp > finishedAt + retryLifetime) {
+        return nil;
+    }
+
+    NSString *profileID = GDTSafeRetryProfileID(config[@"GDRIVE_BACKUP_PROFILE_ID"]);
+    NSString *origin = [NSString stringWithFormat:@"%.0f", startedAt];
+    return @{
+        @"identifier": [NSString stringWithFormat:@"%@.automatic-retry.%@", profileID, origin],
+        @"profileID": profileID,
+        @"originStartedAt": origin,
+        @"attempt": @"1",
+        @"trigger": @"schedule-retry"
     };
 }
 

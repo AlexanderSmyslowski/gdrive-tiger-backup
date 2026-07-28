@@ -36,6 +36,18 @@ static NSDictionary<NSString *, NSString *> *Decision(
     return method(policyClass, selector, config, summary, status, now, calendar);
 }
 
+static NSArray<NSString *> *ProfileFailureIdentifiers(
+    Class policyClass,
+    NSString *profileID,
+    NSArray<NSString *> *candidates) {
+    SEL selector = NSSelectorFromString(
+        @"failureNotificationIdentifiersForProfileID:candidateIdentifiers:");
+    if (!policyClass || ![policyClass respondsToSelector:selector]) return nil;
+    typedef NSArray<NSString *> *(*FilterMethod)(id, SEL, NSString *, NSArray<NSString *> *);
+    FilterMethod method = (FilterMethod)[policyClass methodForSelector:selector];
+    return method(policyClass, selector, profileID, candidates);
+}
+
 int main(void) {
     @autoreleasepool {
         Class policyClass = NSClassFromString(@"GDTBackupNotificationPolicy");
@@ -72,6 +84,27 @@ int main(void) {
                [failure[@"identifier"] containsString:failedSummary[@"started_at"]] &&
                [failure[@"bodyKey"] isEqualToString:@"failedPermissionHint"],
                @"a fresh scheduled failure creates one stable, reason-specific alert");
+
+        NSMutableDictionary<NSString *, NSString *> *nasNotReady = [failedSummary mutableCopy];
+        nasNotReady[@"reason"] = @"nas_mount_not_ready";
+        NSDictionary<NSString *, NSString *> *retryPlanned = Decision(
+            policyClass, daily, nasNotReady, @"failure", Date(calendar, 21, 20, 26), calendar);
+        Assert([retryPlanned[@"kind"] isEqualToString:@"failure"] &&
+               [retryPlanned[@"bodyKey"] isEqualToString:@"backupNotificationNASRetryBody"],
+               @"a transient NAS readiness failure announces the later automatic retry");
+
+        NSMutableDictionary<NSString *, NSString *> *retryFailed = [nasNotReady mutableCopy];
+        retryFailed[@"trigger"] = @"schedule-retry";
+        retryFailed[@"started_at"] = [NSString stringWithFormat:@"%.0f",
+            Date(calendar, 21, 20, 56).timeIntervalSince1970];
+        retryFailed[@"finished_at"] = [NSString stringWithFormat:@"%.0f",
+            Date(calendar, 21, 21, 1).timeIntervalSince1970];
+        NSDictionary<NSString *, NSString *> *finalFailure = Decision(
+            policyClass, daily, retryFailed, @"failure", Date(calendar, 21, 21, 2), calendar);
+        Assert([finalFailure[@"kind"] isEqualToString:@"failure"] &&
+               [finalFailure[@"identifier"] containsString:retryFailed[@"started_at"]] &&
+               [finalFailure[@"bodyKey"] isEqualToString:@"backupNotificationRetryFailureBody"],
+               @"a failed automatic retry creates one distinct final failure alert");
 
         NSMutableDictionary<NSString *, NSString *> *cancelledSummary = [failedSummary mutableCopy];
         cancelledSummary[@"status"] = @"cancelled";
@@ -180,6 +213,20 @@ int main(void) {
         Assert(Decision(policyClass, manual, failedSummary, @"failure",
                         Date(calendar, 21, 21, 5), calendar) == nil,
                @"manual-only profiles do not produce automatic-backup alerts");
+
+        NSArray<NSString *> *profileFailures = ProfileFailureIdentifiers(
+            policyClass, @"office", @[
+                @"com.commcats.gdrivebackup.office.failure.100",
+                @"com.commcats.gdrivebackup.office.missed.200",
+                @"com.commcats.gdrivebackup.archive.failure.300",
+                @"com.commcats.gdrivebackup.office.failure.not-a-time",
+                @"foreign.office.failure.400"
+            ]);
+        Assert([profileFailures isEqualToArray:@[
+                   @"com.commcats.gdrivebackup.office.failure.100",
+                   @"com.commcats.gdrivebackup.office.missed.200"
+               ]],
+               @"notification cleanup accepts only exact safe failure IDs for one profile");
     }
 
     if (failures > 0) {

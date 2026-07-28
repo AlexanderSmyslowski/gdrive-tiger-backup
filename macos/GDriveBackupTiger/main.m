@@ -1488,6 +1488,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, strong) NSDate *lastMountTriggerDate;
 @property(nonatomic, copy) NSString *terminalFailureReason;
 @property(nonatomic, strong) NSMutableSet<NSString *> *pendingBackupNotificationIdentifiers;
+- (BOOL)launchAutomaticRetryDecision:(NSDictionary<NSString *, NSString *> *)decision;
 - (void)requestCancelBackup:(id)sender;
 - (BOOL)cancelRunningBackup;
 - (void)completeMountedNetworkVolumeDiscovery:
@@ -1637,14 +1638,21 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     }];
 }
 
-- (void)addBackupNotificationDecision:(NSDictionary<NSString *, NSString *> *)decision
-                              toCenter:(UNUserNotificationCenter *)center
-                            completion:(void (^)(BOOL delivered))completion {
+- (UNMutableNotificationContent *)backupNotificationContentForDecision:
+    (NSDictionary<NSString *, NSString *> *)decision {
     UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
     content.title = T(self.language ?: @"en", decision[@"titleKey"]);
     content.body = T(self.language ?: @"en", decision[@"bodyKey"]);
     content.sound = UNNotificationSound.defaultSound;
     content.categoryIdentifier = @"GDT_BACKUP_ALERT";
+    return content;
+}
+
+- (void)addBackupNotificationDecision:(NSDictionary<NSString *, NSString *> *)decision
+                              toCenter:(UNUserNotificationCenter *)center
+                            completion:(void (^)(BOOL delivered))completion {
+    UNMutableNotificationContent *content =
+        [self backupNotificationContentForDecision:decision];
     UNNotificationRequest *request = [UNNotificationRequest
         requestWithIdentifier:decision[@"identifier"] content:content trigger:nil];
     [center addNotificationRequest:request withCompletionHandler:^(NSError *error) {
@@ -1686,6 +1694,8 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     }
     NSString *key = [self backupNotificationDefaultsKeyForProfileID:profileID
                                                               suffix:@"lastDeliveredIdentifier"];
+    NSString *deliveredKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                       suffix:@"deliveredFailureIdentifiers"];
     NSUserDefaults *defaults = [self backupNotificationDefaultsStore];
     if ([[defaults stringForKey:key] isEqualToString:identifier]) return;
     if (!self.pendingBackupNotificationIdentifiers) {
@@ -1701,7 +1711,21 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
             if (!strongSelf) return;
             [strongSelf.pendingBackupNotificationIdentifiers removeObject:identifier];
             if (delivered) {
-                [[strongSelf backupNotificationDefaultsStore] setObject:identifier forKey:key];
+                NSUserDefaults *store = [strongSelf backupNotificationDefaultsStore];
+                [store setObject:identifier forKey:key];
+                NSMutableArray<NSString *> *identifiers =
+                    [[store stringArrayForKey:deliveredKey] mutableCopy] ?: [NSMutableArray array];
+                if (![identifiers containsObject:identifier]) {
+                    [identifiers addObject:identifier];
+                    [store setObject:identifiers forKey:deliveredKey];
+                }
+                NSTimeInterval issueTimestamp = [decision[@"issueTimestamp"] doubleValue];
+                NSString *issueKey = [strongSelf
+                    backupNotificationDefaultsKeyForProfileID:profileID
+                                                       suffix:@"latestDeliveredIssueAt"];
+                if (issueTimestamp > [store doubleForKey:issueKey]) {
+                    [store setDouble:issueTimestamp forKey:issueKey];
+                }
             }
         };
         if (NSThread.isMainThread) {
@@ -1710,6 +1734,113 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
             dispatch_async(dispatch_get_main_queue(), finish);
         }
     }];
+}
+
+- (void)removeBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers
+                                forProfileID:(NSString *)profileID {
+    UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
+    [center getDeliveredNotificationsWithCompletionHandler:
+        ^(NSArray<UNNotification *> *notifications) {
+        NSMutableArray<NSString *> *candidates =
+            [identifiers mutableCopy] ?: [NSMutableArray array];
+        for (UNNotification *notification in notifications) {
+            NSString *identifier = notification.request.identifier;
+            if (identifier.length) [candidates addObject:identifier];
+        }
+        NSArray<NSString *> *safeIdentifiers =
+            [GDTBackupNotificationPolicy
+                failureNotificationIdentifiersForProfileID:profileID
+                                      candidateIdentifiers:candidates];
+        if (!safeIdentifiers.count) return;
+        [center removeDeliveredNotificationsWithIdentifiers:safeIdentifiers];
+        [center removePendingNotificationRequestsWithIdentifiers:safeIdentifiers];
+    }];
+}
+
+- (void)clearBackupFailureNotificationsForConfig:
+    (NSDictionary<NSString *, NSString *> *)config
+    summary:(NSDictionary<NSString *, NSString *> *)summary
+    status:(NSString *)status {
+    NSString *trigger = summary[@"trigger"] ?: @"";
+    NSTimeInterval finishedAt = [summary[@"finished_at"] doubleValue];
+    if (![status isEqualToString:@"success"] ||
+        ![@[@"schedule", @"schedule-retry"] containsObject:trigger] ||
+        finishedAt <= 0) {
+        return;
+    }
+    NSString *profileID = config[@"GDRIVE_BACKUP_PROFILE_ID"] ?: @"legacy";
+    NSUserDefaults *defaults = [self backupNotificationDefaultsStore];
+    NSString *deliveredKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                       suffix:@"deliveredFailureIdentifiers"];
+    NSString *latestIssueKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                        suffix:@"latestDeliveredIssueAt"];
+    NSString *activeIssueKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                        suffix:@"activeIssueAt"];
+    NSTimeInterval latestIssueAt = MAX([defaults doubleForKey:latestIssueKey],
+                                       [defaults doubleForKey:activeIssueKey]);
+    if (latestIssueAt > 0 && finishedAt <= latestIssueAt) {
+        return;
+    }
+    NSMutableArray<NSString *> *identifiers =
+        [[defaults stringArrayForKey:deliveredKey] mutableCopy] ?: [NSMutableArray array];
+    NSString *lastKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                  suffix:@"lastDeliveredIdentifier"];
+    NSString *legacyIdentifier = [defaults stringForKey:lastKey];
+    if (legacyIdentifier.length && ![identifiers containsObject:legacyIdentifier]) {
+        [identifiers addObject:legacyIdentifier];
+    }
+    [self removeBackupNotificationIdentifiers:identifiers forProfileID:profileID];
+    [defaults removeObjectForKey:deliveredKey];
+    [defaults removeObjectForKey:lastKey];
+    [defaults removeObjectForKey:latestIssueKey];
+    [defaults removeObjectForKey:activeIssueKey];
+    [defaults removeObjectForKey:[self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                           suffix:@"activeIssueKind"]];
+}
+
+- (NSDictionary<NSString *, NSString *> *)currentAutomaticRetryDecision {
+    NSDictionary<NSString *, NSString *> *config = GDTReadConfigDictionary();
+    NSString *summaryPath = GDTBackupSummaryPathForConfig(config);
+    NSDictionary<NSString *, NSString *> *summary =
+        GDTReadBackupSummaryAtPath(summaryPath);
+    NSString *status = GDTBackupSummaryStatusForValues(summary);
+    return [GDTAutomaticRetryPolicy decisionForConfig:config
+                                               summary:summary
+                                                status:status
+                                                   now:[NSDate date]];
+}
+
+- (void)processAutomaticRetryDecision:(NSDictionary<NSString *, NSString *> *)decision {
+    NSString *identifier = decision[@"identifier"];
+    NSString *profileID = decision[@"profileID"];
+    if (!identifier.length || !profileID.length ||
+        !decision[@"originStartedAt"].length ||
+        ![decision[@"attempt"] isEqualToString:@"1"] ||
+        ![decision[@"trigger"] isEqualToString:@"schedule-retry"]) {
+        return;
+    }
+
+    NSDictionary<NSString *, NSString *> *currentDecision =
+        [self currentAutomaticRetryDecision];
+    if (![currentDecision[@"identifier"] isEqualToString:identifier] ||
+        ![currentDecision[@"profileID"] isEqualToString:profileID] ||
+        ![currentDecision[@"originStartedAt"] isEqualToString:decision[@"originStartedAt"]] ||
+        ![currentDecision[@"attempt"] isEqualToString:decision[@"attempt"]] ||
+        ![currentDecision[@"trigger"] isEqualToString:decision[@"trigger"]]) {
+        return;
+    }
+
+    NSString *key = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                              suffix:@"lastAutomaticRetryIdentifier"];
+    NSUserDefaults *defaults = [self backupNotificationDefaultsStore];
+    if ([[defaults stringForKey:key] isEqualToString:identifier]) {
+        return;
+    }
+    // Persist only after NSTask accepted the launch. A local launch failure is
+    // then eligible again on the next controller refresh.
+    if ([self launchAutomaticRetryDecision:decision]) {
+        [defaults setObject:identifier forKey:key];
+    }
 }
 
 - (NSString *)backupAlertStatusForConfig:(NSDictionary<NSString *, NSString *> *)config
@@ -1735,7 +1866,10 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
         return rawStatus;
     }
     NSTimeInterval finishedAt = [summary[@"finished_at"] doubleValue];
-    if ([rawStatus isEqualToString:@"success"] && finishedAt >= activeSince) {
+    BOOL automaticSuccess = [@[@"schedule", @"schedule-retry"]
+        containsObject:(summary[@"trigger"] ?: @"")];
+    if ([rawStatus isEqualToString:@"success"] && automaticSuccess &&
+        finishedAt >= activeSince) {
         [defaults removeObjectForKey:kindKey];
         [defaults removeObjectForKey:timeKey];
         return rawStatus;
@@ -2094,6 +2228,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         NSDictionary<NSString *, NSString *> *notificationDecision =
             [GDTBackupNotificationPolicy decisionForConfig:config summary:summary
                                                     status:status now:now calendar:calendar];
+        NSDictionary<NSString *, NSString *> *retryDecision =
+            [GDTAutomaticRetryPolicy decisionForConfig:config summary:summary
+                                                status:status now:now];
         dispatch_async(dispatch_get_main_queue(), ^{
             typeof(self) innerSelf = weakSelf;
             if (!innerSelf) {
@@ -2116,6 +2253,12 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             if (notificationDecision) {
                 [innerSelf processBackupNotificationDecision:notificationDecision];
             }
+            if (retryDecision) {
+                [innerSelf processAutomaticRetryDecision:retryDecision];
+            }
+            [innerSelf clearBackupFailureNotificationsForConfig:config
+                                                        summary:summary
+                                                         status:status];
             innerSelf.lastOverviewSnapshot = displaySnapshot;
             if ([innerSelf.window.contentView isKindOfClass:TigerOverviewView.class]) {
                 [innerSelf applyOverviewSnapshot:displaySnapshot
@@ -3980,6 +4123,18 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                          trigger:(NSString *)trigger
                        assumeYes:(BOOL)assumeYes
                       completion:(void (^)(NSInteger status))completion {
+    return [self launchBackupWithArgument:argument
+                                  trigger:trigger
+                                assumeYes:assumeYes
+                    additionalEnvironment:nil
+                               completion:completion];
+}
+
+- (BOOL)launchBackupWithArgument:(NSString *)argument
+                         trigger:(NSString *)trigger
+                       assumeYes:(BOOL)assumeYes
+           additionalEnvironment:(NSDictionary<NSString *, NSString *> *)additionalEnvironment
+                      completion:(void (^)(NSInteger status))completion {
     NSTask *task = [[NSTask alloc] init];
     task.launchPath = @"/bin/bash";
     task.arguments = @[@"/usr/local/bin/backup-google-drive.sh", argument];
@@ -3993,6 +4148,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     if (assumeYes) {
         environment[@"BACKUP_ASSUME_YES"] = @"1";
     }
+    [environment addEntriesFromDictionary:additionalEnvironment ?: @{}];
     task.environment = environment;
     if (completion) {
         task.terminationHandler = ^(NSTask *finishedTask) {
@@ -4009,6 +4165,26 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         self.statusField.stringValue = exception.reason ?: @"Launch failed.";
         return NO;
     }
+}
+
+- (BOOL)launchAutomaticRetryDecision:(NSDictionary<NSString *, NSString *> *)decision {
+    NSString *origin = decision[@"originStartedAt"];
+    NSString *attempt = decision[@"attempt"];
+    if (!origin.length || ![attempt isEqualToString:@"1"]) {
+        return NO;
+    }
+    __weak typeof(self) weakSelf = self;
+    return [self launchBackupWithArgument:@"--run"
+                                  trigger:@"schedule-retry"
+                                assumeYes:YES
+                    additionalEnvironment:@{
+                        @"GDRIVE_BACKUP_RETRY_ORIGIN_STARTED_AT": origin,
+                        @"GDRIVE_BACKUP_RETRY_ATTEMPT": attempt
+                    }
+                               completion:^(NSInteger status) {
+        (void)status;
+        [weakSelf refreshOverviewStatus:nil];
+    }];
 }
 
 - (NSData *)schedulePlistDataForMode:(NSString *)mode error:(NSError **)error {
@@ -4143,6 +4319,11 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             addObserver:self
                selector:@selector(refreshOverviewStatus:)
                    name:NSWorkspaceDidUnmountNotification
+                 object:nil];
+        [NSWorkspace.sharedWorkspace.notificationCenter
+            addObserver:self
+               selector:@selector(refreshOverviewStatus:)
+                   name:NSWorkspaceDidWakeNotification
                  object:nil];
         [NSApp setApplicationIconImage:CreateApplicationIcon()];
         [NSApp setActivationPolicy:self.menubarOnlyMode
@@ -4559,7 +4740,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSString *reason = values[@"reason"] ?: @"";
     NSSet<NSString *> *safeReasons = [NSSet setWithArray:@[
         @"destination_permission_denied",
-        @"nas_connection_lost"
+        @"nas_connection_lost",
+        @"nas_mount_unavailable",
+        @"nas_mount_not_ready"
     ]];
     return [safeReasons containsObject:reason] ? reason : @"";
 }
@@ -4570,6 +4753,10 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     }
     if ([reason isEqualToString:@"nas_connection_lost"]) {
         return T(self.language ?: @"en", @"failedNASConnectionHint");
+    }
+    if ([reason isEqualToString:@"nas_mount_unavailable"] ||
+        [reason isEqualToString:@"nas_mount_not_ready"]) {
+        return T(self.language ?: @"en", @"backupNotificationNASRetryBody");
     }
     return T(self.language ?: @"en", @"failedHint");
 }

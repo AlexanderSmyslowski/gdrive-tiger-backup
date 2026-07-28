@@ -22,15 +22,17 @@ if ! start_on_mount="$(/usr/bin/plutil -extract StartOnMount raw -o - "$AGENT" 2
   start_on_mount=""
 fi
 run_at_load="$(/usr/bin/plutil -extract RunAtLoad raw -o - "$AGENT" 2>/dev/null || true)"
+restart_after_crash="$(/usr/bin/plutil -extract KeepAlive.SuccessfulExit raw -o - "$AGENT" 2>/dev/null || true)"
 program="$(/usr/bin/plutil -extract ProgramArguments.0 raw -o - "$AGENT" 2>/dev/null || true)"
 mode="$(/usr/bin/plutil -extract ProgramArguments.1 raw -o - "$AGENT" 2>/dev/null || true)"
 
 if [[ -z "$start_on_mount" && "$run_at_load" == "true" &&
+      "$restart_after_crash" == "false" &&
       "$program" == "/Applications/GDrive Backup Tiger.app/Contents/MacOS/GDriveBackupTiger" &&
       "$mode" == "--menubar" ]]; then
-  pass 'login agent starts only the exact-volume-aware menu bar controller'
+  pass 'login agent starts the exact-volume-aware controller and restarts it after a crash'
 else
-  fail "login agent still uses a broad mount trigger (StartOnMount=$start_on_mount RunAtLoad=$run_at_load program=$program mode=$mode)"
+  fail "login agent lifecycle is unsafe (StartOnMount=$start_on_mount RunAtLoad=$run_at_load SuccessfulExit=$restart_after_crash program=$program mode=$mode)"
 fi
 
 if ! /usr/bin/grep -Fq 'GDRIVE_BACKUP_TRIGGER string mount' "$POSTINSTALL" &&

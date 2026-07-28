@@ -18,10 +18,19 @@ method_body() {
 backup_method="$(method_body '- (void)startBackupNow:')"
 dry_run_method="$(method_body '- (void)startDryRun:')"
 launch_method="$(/usr/bin/awk '
-  /^- \(BOOL\)launchBackupWithArgument:/ { occurrence++ }
-  occurrence == 4 { in_method = 1 }
-  in_method { print }
-  in_method && /^}$/ { exit }
+  /^- \(BOOL\)launchBackupWithArgument:/ {
+    in_method = 1
+    body = ""
+  }
+  in_method { body = body $0 ORS }
+  in_method && /^}$/ {
+    if (body ~ /NSTask \*task/) {
+      printf "%s", body
+      exit
+    }
+    in_method = 0
+    body = ""
+  }
 ' "$MAIN_SOURCE")"
 
 if [[ "$backup_method" == *'self.statusField.stringValue = T(self.language, @"statusBackupPreparing");'* &&

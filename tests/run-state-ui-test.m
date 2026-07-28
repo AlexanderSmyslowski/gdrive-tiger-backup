@@ -212,6 +212,26 @@ int main(void) {
                                    resultingItemURL:nil
                                               error:nil];
 
+        NSString *nasNotReadyPath = [NSTemporaryDirectory()
+            stringByAppendingPathComponent:[NSString stringWithFormat:@"gdrive-nas-not-ready-%@", NSUUID.UUID.UUIDString]];
+        [@"protocol=1\nstatus=failure\npid=123\nexit_code=69\nreason=nas_mount_not_ready\n"
+            writeToFile:nasNotReadyPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        AssertEqual(RunReason(delegate, nasNotReadyPath),
+                    @"nas_mount_not_ready",
+                    @"safe NAS readiness reason is exposed to the UI");
+        NSString *nasNotReadyDetail = nil;
+        if ([delegate respondsToSelector:detailSelector]) {
+            typedef NSString *(*DetailMethod)(id, SEL, NSString *);
+            DetailMethod detailMethod = (DetailMethod)[delegate methodForSelector:detailSelector];
+            nasNotReadyDetail = detailMethod(delegate, detailSelector, @"nas_mount_not_ready");
+        }
+        AssertEqual(nasNotReadyDetail,
+                    T(@"en", @"backupNotificationNASRetryBody"),
+                    @"transient NAS readiness failure explains the scheduled retry");
+        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:nasNotReadyPath]
+                                   resultingItemURL:nil
+                                              error:nil];
+
         for (NSString *exitCode in @[@"129", @"130", @"143"]) {
             NSString *cancelledPath = [NSTemporaryDirectory()
                 stringByAppendingPathComponent:[NSString stringWithFormat:@"gdrive-cancelled-%@", NSUUID.UUID.UUIDString]];

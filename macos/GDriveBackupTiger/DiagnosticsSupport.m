@@ -73,7 +73,7 @@ static NSDictionary<NSString *, id> *GDTHealthRow(NSDictionary<NSString *, id> *
     NSMutableDictionary<NSString *, id> *lastRun = [@{@"status": lastStatus} mutableCopy];
     if (validSummary) {
         NSString *trigger = GDTAllowedString(summary[@"trigger"],
-            [NSSet setWithArray:@[@"manual", @"schedule", @"mount"]]);
+            [NSSet setWithArray:@[@"manual", @"schedule", @"schedule-retry", @"mount"]]);
         if (![trigger isEqualToString:@"unknown"]) {
             lastRun[@"trigger"] = trigger;
         }
@@ -84,7 +84,12 @@ static NSDictionary<NSString *, id> *GDTHealthRow(NSDictionary<NSString *, id> *
             }
         }
         NSString *reason = GDTAllowedString(summary[@"reason"],
-            [NSSet setWithArray:@[@"destination_permission_denied", @"nas_connection_lost"]]);
+            [NSSet setWithArray:@[
+                @"destination_permission_denied",
+                @"nas_connection_lost",
+                @"nas_mount_unavailable",
+                @"nas_mount_not_ready"
+            ]]);
         if (![reason isEqualToString:@"unknown"]) {
             lastRun[@"reason"] = reason;
         }
@@ -214,9 +219,14 @@ static NSDictionary<NSString *, id> *GDTHealthRow(NSDictionary<NSString *, id> *
         @"finished_at": GDTValidatedPattern(lastRun[@"finished_at"], @"^[0-9]+$"),
         @"exit_code": GDTValidatedPattern(lastRun[@"exit_code"], @"^[0-9]+$"),
         @"trigger": GDTAllowedString(lastRun[@"trigger"],
-            [NSSet setWithArray:@[@"manual", @"schedule", @"mount"]]),
+            [NSSet setWithArray:@[@"manual", @"schedule", @"schedule-retry", @"mount"]]),
         @"reason": GDTAllowedString(lastRun[@"reason"],
-            [NSSet setWithArray:@[@"destination_permission_denied", @"nas_connection_lost"]])
+            [NSSet setWithArray:@[
+                @"destination_permission_denied",
+                @"nas_connection_lost",
+                @"nas_mount_unavailable",
+                @"nas_mount_not_ready"
+            ]])
     };
     for (NSString *key in @[@"started_at", @"finished_at", @"exit_code", @"trigger", @"reason"]) {
         NSString *value = safeLastValues[key];

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Wait for an automatically mounted NAS to become both verified and writable instead of failing in the short post-mount readiness interval.
+- Retry one transient scheduled NAS mount/readiness failure after 30 minutes, revalidate it immediately before launch, retain it across sleep for up to 24 hours, restart the controller after a crash, and issue a distinct alert if that retry also fails.
+- Keep delivered automatic-failure alerts associated with their profile and remove them only after manual dismissal by the user or a newer successful automatic backup; document macOS's required **Persistent** notification style.
+- Preserve the new retry trigger and safe NAS readiness reasons in the status UI and privacy-filtered diagnostics.
 - Reuse one in-process setup window from the persistent controller, present it before network discovery, and drain command output without deadlocking or spawning extra Dock instances.
 - Retry transient NAS codec-manifest read errors and report a persistently unreadable destination separately from a genuinely invalid manifest.
 - Keep passive mount confirmations visible and clickable without activating the app or entering another application's fullscreen Space.

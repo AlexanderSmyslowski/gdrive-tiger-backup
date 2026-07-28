@@ -261,6 +261,10 @@
     if ([lastRun[@"reason"] isEqualToString:@"nas_connection_lost"]) {
         lastDetail = [NSString stringWithFormat:@"%@ · %@", lastDetail,
             T(self.language ?: @"en", @"failedNASConnectionHint")];
+    } else if ([lastRun[@"reason"] isEqualToString:@"nas_mount_unavailable"] ||
+               [lastRun[@"reason"] isEqualToString:@"nas_mount_not_ready"]) {
+        lastDetail = [NSString stringWithFormat:@"%@ · %@", lastDetail,
+            T(self.language ?: @"en", @"backupNotificationNASRetryBody")];
     } else if ([lastRun[@"reason"] isEqualToString:@"destination_permission_denied"]) {
         lastDetail = [NSString stringWithFormat:@"%@ · %@", lastDetail,
             T(self.language ?: @"en", @"failedPermissionHint")];

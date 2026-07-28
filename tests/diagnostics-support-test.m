@@ -118,6 +118,19 @@ int main(void) {
                    [report containsString:@"last_run.reason=nas_connection_lost"],
                    @"support report is useful without paths, credentials, file names, or raw output");
 
+            NSDictionary *retrySnapshot = snapshotMethod(builderClass, snapshotSelector,
+                config,
+                @{@"protocol": @"1", @"status": @"failure", @"started_at": @"1783801491",
+                  @"finished_at": @"1783801718", @"exit_code": @"69",
+                  @"trigger": @"schedule-retry", @"reason": @"nas_mount_not_ready"},
+                setupHealth, appInfo, serviceState, scriptState);
+            NSString *retryReport = reportMethod(builderClass, reportSelector, retrySnapshot);
+            Assert([retrySnapshot[@"lastRun"][@"trigger"] isEqualToString:@"schedule-retry"] &&
+                   [retrySnapshot[@"lastRun"][@"reason"] isEqualToString:@"nas_mount_not_ready"] &&
+                   [retryReport containsString:@"last_run.trigger=schedule-retry"] &&
+                   [retryReport containsString:@"last_run.reason=nas_mount_not_ready"],
+                   @"diagnostics preserve the safe automatic retry and mount-readiness reason");
+
             NSDictionary *readySnapshot = snapshotMethod(builderClass, snapshotSelector,
                 @{@"GDRIVE_BACKUP_TARGET": @"apfs", @"GDRIVE_BACKUP_SCHEDULE": @"manual",
                   @"GDRIVE_BACKUP_ENCRYPTION": @"apfs"},

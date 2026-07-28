@@ -59,7 +59,8 @@ int main(void) {
                 @"diagnosticsMissingTools", @"diagnosticsRefresh", @"diagnosticsRefreshing",
                 @"diagnosticsCopy", @"diagnosticsSave", @"diagnosticsPrivacy",
                 @"diagnosticsCopied", @"diagnosticsSaved", @"diagnosticsManual",
-                @"diagnosticsLoaded", @"diagnosticsNotLoaded"
+                @"diagnosticsLoaded", @"diagnosticsNotLoaded",
+                @"backupNotificationNASRetryBody"
             ];
             BOOL localized = YES;
             for (NSString *language in SupportedLanguageCodes()) {
@@ -80,7 +81,7 @@ int main(void) {
                 @"schedule": @{@"mode": @"daily", @"loaded": @YES},
                 @"controller": @{@"loaded": @YES},
                 @"script": @{@"installed": @YES, @"executable": @YES},
-                @"lastRun": @{@"status": @"failure", @"reason": @"nas_connection_lost"}
+                @"lastRun": @{@"status": @"failure", @"reason": @"nas_mount_not_ready"}
             };
             [view setValue:@"de" forKey:@"language"];
             ApplySnapshot(view, snapshot);
@@ -93,8 +94,8 @@ int main(void) {
                                      @"flock, jq"];
             Assert([detailLabels[0].stringValue isEqualToString:missingText] &&
                    ![detailLabels[0].stringValue containsString:@"%@"] &&
-                   [detailLabels[4].stringValue containsString:T(@"de", @"failedNASConnectionHint")],
-                   @"diagnostics explain missing tools and the safe NAS failure reason");
+                   [detailLabels[4].stringValue containsString:T(@"de", @"backupNotificationNASRetryBody")],
+                   @"diagnostics explain missing tools and the safe retryable NAS reason");
             Assert([privacyLabel.stringValue isEqualToString:T(@"de", @"diagnosticsPrivacy")] &&
                    privacyLabel.accessibilityLabel.length > 0,
                    @"diagnostics disclose exactly what the safe report omits");
