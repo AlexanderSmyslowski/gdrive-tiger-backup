@@ -21,6 +21,19 @@
                                   summary:(NSDictionary<NSString *, NSString *> *)summary
                                 rawStatus:(NSString *)rawStatus
                                  decision:(NSDictionary<NSString *, NSString *> *)decision;
+- (NSSet<UNNotificationCategory *> *)appNotificationCategories;
+- (UNMutableNotificationContent *)unknownExternalVolumeNotificationContentForDescriptor:
+    (NSDictionary<NSString *, id> *)descriptor;
+- (UNNotificationPresentationOptions)presentationOptionsForNotificationCategoryIdentifier:
+    (NSString *)categoryIdentifier;
+- (void)handleUnknownExternalVolumeActionIdentifier:(NSString *)actionIdentifier
+                                           userInfo:(NSDictionary *)userInfo;
+- (void)finishUnknownExternalVolumeInspectionForDiskID:(NSString *)diskID;
+- (NSSet<NSString *> *)rememberedUnknownExternalVolumeUUIDsForDiskID:
+    (NSString *)diskID;
+- (void)rememberUnknownExternalAttachmentForDiskID:(NSString *)diskID
+                                        volumeUUIDs:(NSArray<NSString *> *)volumeUUIDs;
+- (void)forgetUnknownExternalAttachmentForDiskID:(NSString *)diskID;
 @end
 
 @interface NotificationTestDelegate : AppDelegate
@@ -29,6 +42,164 @@
 @property(nonatomic) BOOL deliverySucceeds;
 @property(nonatomic, copy) NSArray<NSString *> *removedNotificationIdentifiers;
 @property(nonatomic, copy) NSArray<NSString *> *extraDeliveredNotificationIdentifiers;
+@end
+
+@interface UnknownVolumeNotificationTestDelegate : NotificationTestDelegate
+@property(nonatomic, copy) NSDictionary<NSString *, id> *revalidatedDescriptor;
+@property(nonatomic) NSInteger revalidationCalls;
+@property(nonatomic) NSInteger setupPresentationCalls;
+@property(nonatomic) NSInteger overviewPresentationCalls;
+@property(nonatomic) NSInteger configSaveCalls;
+@property(nonatomic) NSInteger backupLaunchCalls;
+@property(nonatomic) BOOL revalidationRanOnMainThread;
+@property(nonatomic) BOOL setupPresentationRanOnMainThread;
+@property(nonatomic) NSInteger unavailablePresentationCalls;
+@end
+
+@interface AttachmentMarkerTestDelegate : NotificationTestDelegate
+@property(nonatomic, copy) NSString *testBootSessionID;
+@end
+
+@implementation AttachmentMarkerTestDelegate
+
+- (NSString *)unknownExternalVolumeBootSessionID {
+    return self.testBootSessionID ?: @"TEST-BOOT";
+}
+
+@end
+
+@implementation UnknownVolumeNotificationTestDelegate
+
+- (void)revalidateUnknownExternalVolumeUserInfo:(NSDictionary *)userInfo
+                                      completion:
+    (void (^)(NSDictionary<NSString *, id> *descriptor))completion {
+    (void)userInfo;
+    self.revalidationCalls++;
+    self.revalidationRanOnMainThread = NSThread.isMainThread;
+    completion(self.revalidatedDescriptor);
+}
+
+- (void)presentSetupForUnknownExternalVolumeDescriptor:
+    (NSDictionary<NSString *, id> *)descriptor {
+    (void)descriptor;
+    self.setupPresentationCalls++;
+    self.setupPresentationRanOnMainThread = NSThread.isMainThread;
+}
+
+- (void)presentUnknownExternalVolumeUnavailable {
+    self.unavailablePresentationCalls++;
+}
+
+- (void)showOverviewWindow {
+    self.overviewPresentationCalls++;
+}
+
+- (BOOL)saveSetupValues {
+    self.configSaveCalls++;
+    return YES;
+}
+
+- (BOOL)launchBackupWithArgument:(NSString *)argument
+                         trigger:(NSString *)trigger
+                       assumeYes:(BOOL)assumeYes {
+    (void)argument;
+    (void)trigger;
+    (void)assumeYes;
+    self.backupLaunchCalls++;
+    return YES;
+}
+
+@end
+
+@interface RestartUnknownVolumeNotificationTestDelegate : NotificationTestDelegate
+@property(nonatomic, copy) NSArray<NSString *> *candidateMountPaths;
+@property(nonatomic, copy) NSDictionary<NSString *, NSDictionary<NSString *, id> *> *descriptorsByPath;
+@property(nonatomic, strong) NSMutableArray<NSString *> *inspectedPaths;
+@property(nonatomic) NSInteger mountEnumerationCalls;
+@property(nonatomic) NSInteger setupPresentationCalls;
+@property(nonatomic, copy) NSDictionary<NSString *, id> *presentedDescriptor;
+@property(nonatomic, copy) NSDictionary<NSString *, NSSet<NSString *> *> *
+    rememberedAttachmentUUIDsByDiskID;
+@end
+
+@implementation RestartUnknownVolumeNotificationTestDelegate
+
+- (NSArray<NSString *> *)mountedVolumePathsForUnknownExternalVolumeRevalidation {
+    self.mountEnumerationCalls++;
+    return self.candidateMountPaths ?: @[];
+}
+
+- (void)inspectMountedVolumeAtPath:(NSString *)path
+                        completion:(void (^)(NSDictionary<NSString *, id> *descriptor))completion {
+    if (!self.inspectedPaths) {
+        self.inspectedPaths = [NSMutableArray array];
+    }
+    [self.inspectedPaths addObject:path];
+    completion(self.descriptorsByPath[path]);
+}
+
+- (void)presentSetupForUnknownExternalVolumeDescriptor:
+    (NSDictionary<NSString *, id> *)descriptor {
+    self.setupPresentationCalls++;
+    self.presentedDescriptor = descriptor;
+}
+
+- (NSSet<NSString *> *)rememberedUnknownExternalVolumeUUIDsForDiskID:
+    (NSString *)diskID {
+    return self.rememberedAttachmentUUIDsByDiskID[diskID] ?: [NSSet set];
+}
+
+@end
+
+@interface UnknownVolumeDeliveryTestDelegate : NotificationTestDelegate
+@property(nonatomic) BOOL unknownDeliverySucceeds;
+@property(nonatomic) NSInteger completionDeliveryCalls;
+@property(nonatomic) NSInteger legacyDeliveryCalls;
+@property(nonatomic) BOOL deferUnknownDelivery;
+@property(nonatomic, copy) void (^deferredUnknownDeliveryCompletion)(BOOL delivered);
+@property(nonatomic, copy) NSDictionary<NSString *, id> *lastUnknownDeliveryDescriptor;
+@end
+
+@implementation UnknownVolumeDeliveryTestDelegate
+
+- (NSSet<NSString *> *)configuredExternalVolumeUUIDs {
+    return [NSSet set];
+}
+
+- (void)deliverUnknownExternalVolumeNotificationForDescriptor:
+    (NSDictionary<NSString *, id> *)descriptor {
+    (void)descriptor;
+    self.legacyDeliveryCalls++;
+}
+
+- (void)deliverUnknownExternalVolumeNotificationForDescriptor:
+    (NSDictionary<NSString *, id> *)descriptor
+                                                   completion:
+    (void (^)(BOOL delivered))completion {
+    (void)descriptor;
+    self.completionDeliveryCalls++;
+    self.lastUnknownDeliveryDescriptor = descriptor;
+    if (self.deferUnknownDelivery) {
+        self.deferredUnknownDeliveryCompletion = completion;
+    } else {
+        completion(self.unknownDeliverySucceeds);
+    }
+}
+
+- (NSTimeInterval)unknownExternalVolumeNotificationRetryDelay {
+    return 0.01;
+}
+
+- (NSTimeInterval)unknownExternalVolumeNotificationDelay {
+    return 0.01;
+}
+
+- (void)removeUnknownExternalVolumeNotificationForDiskID:(NSString *)diskID
+                                               volumeUUID:(NSString *)volumeUUID {
+    (void)diskID;
+    (void)volumeUUID;
+}
+
 @end
 
 @implementation NotificationTestDelegate
@@ -122,6 +293,51 @@ static void ProcessRetry(RetryTestDelegate *delegate,
     typedef void (*ProcessMethod)(id, SEL, NSDictionary *);
     ProcessMethod method = (ProcessMethod)[delegate methodForSelector:selector];
     method(delegate, selector, decision);
+}
+
+static void ProcessUnknownVolumeAction(AppDelegate *delegate,
+                                       NSString *action,
+                                       NSDictionary *userInfo) {
+    SEL selector = NSSelectorFromString(
+        @"handleUnknownExternalVolumeActionIdentifier:userInfo:");
+    if (![delegate respondsToSelector:selector]) return;
+    typedef void (*ActionMethod)(id, SEL, NSString *, NSDictionary *);
+    ActionMethod method = (ActionMethod)[delegate methodForSelector:selector];
+    method(delegate, selector, action, userInfo);
+}
+
+static void ProcessUnknownVolumeUnmount(AppDelegate *delegate,
+                                        NSString *path) {
+    SEL selector = NSSelectorFromString(@"workspaceVolumeDidUnmount:");
+    if (![delegate respondsToSelector:selector]) return;
+    NSNotification *notification = [NSNotification
+        notificationWithName:NSWorkspaceDidUnmountNotification
+                      object:nil
+                    userInfo:@{
+        NSWorkspaceVolumeURLKey: [NSURL fileURLWithPath:path]
+    }];
+    typedef void (*UnmountMethod)(id, SEL, NSNotification *);
+    UnmountMethod method = (UnmountMethod)[delegate methodForSelector:selector];
+    method(delegate, selector, notification);
+}
+
+static BOOL WaitForCondition(BOOL (^condition)(void), NSTimeInterval timeout) {
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
+    while (!condition() && deadline.timeIntervalSinceNow > 0) {
+        [NSRunLoop.currentRunLoop
+            runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    }
+    return condition();
+}
+
+static void PrepareUnknownVolumeDeliveryState(
+    UnknownVolumeDeliveryTestDelegate *delegate,
+    NSDictionary<NSString *, id> *descriptor) {
+    delegate.mountedExternalVolumeDescriptorsByPath =
+        [@{descriptor[@"path"]: descriptor} mutableCopy];
+    delegate.unknownExternalVolumeTimersByDiskID = [NSMutableDictionary dictionary];
+    delegate.knownExternalDiskIDs = [NSMutableSet set];
+    delegate.notifiedUnknownExternalDiskIDs = [NSMutableSet set];
 }
 
 int main(void) {
@@ -220,6 +436,441 @@ int main(void) {
         Assert(content.sound != nil &&
                [content.categoryIdentifier isEqualToString:@"GDT_BACKUP_ALERT"],
                @"automatic backup alerts remain audible without opening a window");
+
+        NSSet<UNNotificationCategory *> *categories = nil;
+        SEL categoriesSelector = NSSelectorFromString(@"appNotificationCategories");
+        if ([delegate respondsToSelector:categoriesSelector]) {
+            typedef NSSet<UNNotificationCategory *> *(*CategoriesMethod)(id, SEL);
+            CategoriesMethod categoriesMethod =
+                (CategoriesMethod)[delegate methodForSelector:categoriesSelector];
+            categories = categoriesMethod(delegate, categoriesSelector);
+        }
+        NSMutableDictionary<NSString *, UNNotificationCategory *> *categoriesByID =
+            [NSMutableDictionary dictionary];
+        for (UNNotificationCategory *category in categories ?: [NSSet set]) {
+            categoriesByID[category.identifier] = category;
+        }
+        UNNotificationCategory *unknownCategory =
+            categoriesByID[@"GDT_UNKNOWN_EXTERNAL_VOLUME"];
+        NSDictionary<NSString *, UNNotificationAction *> *unknownActionsByID = @{};
+        if (unknownCategory) {
+            NSMutableDictionary *actions = [NSMutableDictionary dictionary];
+            for (UNNotificationAction *action in unknownCategory.actions) {
+                actions[action.identifier] = action;
+            }
+            unknownActionsByID = actions;
+        }
+        Assert(categoriesByID[@"GDT_BACKUP_ALERT"] != nil &&
+               unknownCategory != nil &&
+               unknownCategory.actions.count == 2 &&
+               (unknownActionsByID[@"GDT_UNKNOWN_EXTERNAL_VOLUME_SETUP"].options &
+                    UNNotificationActionOptionForeground) != 0 &&
+               unknownActionsByID[@"GDT_UNKNOWN_EXTERNAL_VOLUME_IGNORE"].options ==
+                    UNNotificationActionOptionNone,
+               @"backup alerts and passive unknown-disk actions are registered together");
+
+        NSDictionary<NSString *, id> *unknownDescriptor = @{
+            @"path": @"/Volumes/Private Customer Folder",
+            @"name": @"TOSHIBA_4TB",
+            @"volumeUUID": @"PRIVATE-UUID",
+            @"diskID": @"disk20",
+            @"isLocal": @YES,
+            @"isInternal": @NO,
+            @"isPhysical": @YES,
+            @"isSystemImage": @NO,
+            @"isWritable": @YES,
+            @"filesystem": @"apfs",
+            @"attachmentVolumeUUIDs": @[@"PRIVATE-UUID", @"SIBLING-UUID"]
+        };
+        UNMutableNotificationContent *unknownContent = nil;
+        SEL unknownContentSelector = NSSelectorFromString(
+            @"unknownExternalVolumeNotificationContentForDescriptor:");
+        if ([delegate respondsToSelector:unknownContentSelector]) {
+            typedef UNMutableNotificationContent *(*UnknownContentMethod)(
+                id, SEL, NSDictionary *);
+            UnknownContentMethod unknownContentMethod =
+                (UnknownContentMethod)[delegate methodForSelector:unknownContentSelector];
+            unknownContent = unknownContentMethod(
+                delegate, unknownContentSelector, unknownDescriptor);
+        }
+        BOOL passiveLevel = NO;
+        if (@available(macOS 12.0, *)) {
+            passiveLevel =
+                unknownContent.interruptionLevel == UNNotificationInterruptionLevelPassive;
+        }
+        Assert([unknownContent.categoryIdentifier
+                   isEqualToString:@"GDT_UNKNOWN_EXTERNAL_VOLUME"] &&
+               unknownContent.sound == nil &&
+               passiveLevel &&
+               [unknownContent.body containsString:@"TOSHIBA_4TB"] &&
+               ![unknownContent.body containsString:@"/Volumes/"] &&
+               ![unknownContent.body containsString:@"PRIVATE-UUID"] &&
+               [unknownContent.userInfo[@"diskID"] isEqualToString:@"disk20"] &&
+               [unknownContent.userInfo[@"volumeUUID"] isEqualToString:@"PRIVATE-UUID"] &&
+               [unknownContent.userInfo[@"attachmentVolumeUUIDs"]
+                   isEqualToArray:@[@"PRIVATE-UUID", @"SIBLING-UUID"]] &&
+               unknownContent.userInfo[@"path"] == nil,
+               @"unknown-disk notices are passive, silent, and expose no path or UUID in their text");
+
+        NSString *markerSuiteName =
+            [suiteName stringByAppendingString:@".attachment-marker"];
+        AttachmentMarkerTestDelegate *markerWriter =
+            [[AttachmentMarkerTestDelegate alloc] init];
+        markerWriter.testDefaults =
+            [[NSUserDefaults alloc] initWithSuiteName:markerSuiteName];
+        markerWriter.testBootSessionID = @"BOOT-A";
+        BOOL markerAPIAvailable = [markerWriter respondsToSelector:
+            NSSelectorFromString(
+                @"rememberUnknownExternalAttachmentForDiskID:volumeUUIDs:")];
+        if (markerAPIAvailable) {
+            [markerWriter rememberUnknownExternalAttachmentForDiskID:@"disk20"
+                volumeUUIDs:@[@"PRIVATE-UUID", @"SIBLING-UUID"]];
+        }
+        AttachmentMarkerTestDelegate *markerReader =
+            [[AttachmentMarkerTestDelegate alloc] init];
+        markerReader.testDefaults =
+            [[NSUserDefaults alloc] initWithSuiteName:markerSuiteName];
+        markerReader.testBootSessionID = @"BOOT-A";
+        NSSet<NSString *> *rememberedMarker = markerAPIAvailable
+            ? [markerReader rememberedUnknownExternalVolumeUUIDsForDiskID:
+                @"disk20"] : [NSSet set];
+        markerReader.testBootSessionID = @"BOOT-B";
+        NSSet<NSString *> *markerFromAnotherBoot = markerAPIAvailable
+            ? [markerReader rememberedUnknownExternalVolumeUUIDsForDiskID:
+                @"disk20"] : [NSSet set];
+        Assert(markerAPIAvailable &&
+               [rememberedMarker isEqualToSet:
+                    [NSSet setWithArray:@[@"PRIVATE-UUID", @"SIBLING-UUID"]]] &&
+               markerFromAnotherBoot.count == 0,
+               @"the attachment marker survives a controller restart but never crosses a system boot");
+        markerReader.testBootSessionID = @"BOOT-A";
+        if (markerAPIAvailable) {
+            [markerReader forgetUnknownExternalAttachmentForDiskID:@"disk20"];
+        }
+        Assert(!markerAPIAvailable ||
+               [markerReader rememberedUnknownExternalVolumeUUIDsForDiskID:
+                    @"disk20"].count == 0,
+               @"the attachment marker is removed after a full disconnect");
+
+        SEL presentationSelector = NSSelectorFromString(
+            @"presentationOptionsForNotificationCategoryIdentifier:");
+        UNNotificationPresentationOptions unknownPresentation = 0;
+        UNNotificationPresentationOptions failurePresentation = 0;
+        if ([delegate respondsToSelector:presentationSelector]) {
+            typedef UNNotificationPresentationOptions (*PresentationMethod)(
+                id, SEL, NSString *);
+            PresentationMethod presentationMethod =
+                (PresentationMethod)[delegate methodForSelector:presentationSelector];
+            unknownPresentation = presentationMethod(
+                delegate, presentationSelector, @"GDT_UNKNOWN_EXTERNAL_VOLUME");
+            failurePresentation = presentationMethod(
+                delegate, presentationSelector, @"GDT_BACKUP_ALERT");
+        }
+        Assert((unknownPresentation & UNNotificationPresentationOptionList) != 0 &&
+               (unknownPresentation & UNNotificationPresentationOptionSound) == 0 &&
+               (failurePresentation & UNNotificationPresentationOptionSound) != 0,
+               @"unknown-disk notices stay silent while backup failures remain audible");
+
+        BOOL unknownVolumeLocalized = YES;
+        for (NSString *code in SupportedLanguageCodes()) {
+            for (NSString *key in @[
+                @"unknownExternalVolumeTitle",
+                @"unknownExternalVolumeBody",
+                @"unknownExternalVolumeSetupAction",
+                @"unknownExternalVolumeIgnoreAction",
+                @"unknownExternalVolumeReviewSetup",
+                @"unknownExternalVolumeUnavailable"
+            ]) {
+                NSString *localized = T(code, key);
+                if (!localized.length || [localized isEqualToString:key]) {
+                    unknownVolumeLocalized = NO;
+                }
+            }
+        }
+        Assert(unknownVolumeLocalized,
+               @"unknown external-volume notification and setup text is localized in every language");
+
+        UnknownVolumeNotificationTestDelegate *unknownActionDelegate =
+            [[UnknownVolumeNotificationTestDelegate alloc] init];
+        NSDictionary *unknownUserInfo = @{
+            @"diskID": @"disk20",
+            @"volumeUUID": @"PRIVATE-UUID"
+        };
+        ProcessUnknownVolumeAction(
+            unknownActionDelegate, @"GDT_UNKNOWN_EXTERNAL_VOLUME_IGNORE", unknownUserInfo);
+        Assert(unknownActionDelegate.revalidationCalls == 0 &&
+               unknownActionDelegate.setupPresentationCalls == 0 &&
+               unknownActionDelegate.overviewPresentationCalls == 0 &&
+               unknownActionDelegate.configSaveCalls == 0 &&
+               unknownActionDelegate.backupLaunchCalls == 0,
+               @"Ignore dismisses the unknown disk without setup, writes, or a backup");
+
+        ProcessUnknownVolumeAction(
+            unknownActionDelegate, @"GDT_UNKNOWN_EXTERNAL_VOLUME_SETUP", unknownUserInfo);
+        Assert(unknownActionDelegate.revalidationCalls == 1 &&
+               unknownActionDelegate.setupPresentationCalls == 0 &&
+               unknownActionDelegate.unavailablePresentationCalls == 1 &&
+               unknownActionDelegate.configSaveCalls == 0 &&
+               unknownActionDelegate.backupLaunchCalls == 0,
+               @"a stale unknown-disk setup action fails closed with visible guidance and no configuration change");
+
+        unknownActionDelegate.revalidatedDescriptor = unknownDescriptor;
+        ProcessUnknownVolumeAction(
+            unknownActionDelegate, @"GDT_UNKNOWN_EXTERNAL_VOLUME_SETUP", unknownUserInfo);
+        ProcessUnknownVolumeAction(
+            unknownActionDelegate, UNNotificationDefaultActionIdentifier, unknownUserInfo);
+        ProcessUnknownVolumeAction(
+            unknownActionDelegate, @"UNEXPECTED_ACTION", unknownUserInfo);
+        Assert(unknownActionDelegate.revalidationCalls == 3 &&
+               unknownActionDelegate.setupPresentationCalls == 2 &&
+               unknownActionDelegate.overviewPresentationCalls == 0 &&
+               unknownActionDelegate.configSaveCalls == 0 &&
+               unknownActionDelegate.backupLaunchCalls == 0,
+               @"only an explicit setup click or notification-body click stages a revalidated disk without saving");
+
+        RestartUnknownVolumeNotificationTestDelegate *mismatchedRestartDelegate =
+            [[RestartUnknownVolumeNotificationTestDelegate alloc] init];
+        mismatchedRestartDelegate.candidateMountPaths = @[@"/Volumes/Lookalike"];
+        mismatchedRestartDelegate.descriptorsByPath = @{
+            @"/Volumes/Lookalike": @{
+                @"path": @"/Volumes/Lookalike",
+                @"name": @"Lookalike",
+                @"volumeUUID": @"PRIVATE-UUID",
+                @"diskID": @"disk99",
+                @"isLocal": @YES,
+                @"isInternal": @NO,
+                @"isPhysical": @YES,
+                @"isSystemImage": @NO,
+                @"isWritable": @YES,
+                @"filesystem": @"apfs"
+            }
+        };
+        ProcessUnknownVolumeAction(
+            mismatchedRestartDelegate,
+            @"GDT_UNKNOWN_EXTERNAL_VOLUME_SETUP",
+            unknownUserInfo);
+        Assert(mismatchedRestartDelegate.mountEnumerationCalls == 1 &&
+               [mismatchedRestartDelegate.inspectedPaths
+                   isEqualToArray:@[@"/Volumes/Lookalike"]] &&
+               mismatchedRestartDelegate.setupPresentationCalls == 0,
+               @"a notification action after restart enumerates mounts but rejects a reused disk ID");
+
+        RestartUnknownVolumeNotificationTestDelegate *matchingRestartDelegate =
+            [[RestartUnknownVolumeNotificationTestDelegate alloc] init];
+        NSDictionary<NSString *, id> *matchingRestartDescriptor = @{
+            @"path": @"/Volumes/TOSHIBA_4TB",
+            @"name": @"TOSHIBA_4TB",
+            @"volumeUUID": @"PRIVATE-UUID",
+            @"diskID": @"disk20",
+            @"isLocal": @YES,
+            @"isInternal": @NO,
+            @"isPhysical": @YES,
+            @"isSystemImage": @NO,
+            @"isWritable": @YES,
+            @"filesystem": @"apfs"
+        };
+        matchingRestartDelegate.candidateMountPaths = @[
+            @"/Volumes/Lookalike", @"/Volumes/TOSHIBA_4TB"
+        ];
+        matchingRestartDelegate.descriptorsByPath = @{
+            @"/Volumes/Lookalike":
+                mismatchedRestartDelegate.descriptorsByPath[@"/Volumes/Lookalike"],
+            @"/Volumes/TOSHIBA_4TB": matchingRestartDescriptor
+        };
+        ProcessUnknownVolumeAction(
+            matchingRestartDelegate,
+            @"GDT_UNKNOWN_EXTERNAL_VOLUME_SETUP",
+            unknownUserInfo);
+        Assert(matchingRestartDelegate.mountEnumerationCalls == 1 &&
+               matchingRestartDelegate.inspectedPaths.count == 2 &&
+               matchingRestartDelegate.setupPresentationCalls == 1 &&
+               matchingRestartDelegate.presentedDescriptor == matchingRestartDescriptor,
+               @"a notification action after restart stages only the mount whose disk ID and UUID still match");
+
+        RestartUnknownVolumeNotificationTestDelegate *remainingSiblingDelegate =
+            [[RestartUnknownVolumeNotificationTestDelegate alloc] init];
+        NSDictionary<NSString *, id> *remainingSiblingDescriptor = @{
+            @"path": @"/Volumes/TOSHIBA_DATA",
+            @"name": @"TOSHIBA_DATA",
+            @"volumeUUID": @"SIBLING-UUID",
+            @"diskID": @"disk20",
+            @"isLocal": @YES,
+            @"isInternal": @NO,
+            @"isPhysical": @YES,
+            @"isSystemImage": @NO,
+            @"isWritable": @YES,
+            @"filesystem": @"apfs"
+        };
+        remainingSiblingDelegate.candidateMountPaths =
+            @[@"/Volumes/TOSHIBA_DATA"];
+        remainingSiblingDelegate.descriptorsByPath = @{
+            @"/Volumes/TOSHIBA_DATA": remainingSiblingDescriptor
+        };
+        ProcessUnknownVolumeAction(
+            remainingSiblingDelegate,
+            @"GDT_UNKNOWN_EXTERNAL_VOLUME_SETUP",
+            @{
+                @"diskID": @"disk20",
+                @"volumeUUID": @"PRIVATE-UUID",
+                @"attachmentVolumeUUIDs": @[@"PRIVATE-UUID", @"SIBLING-UUID"]
+            });
+        Assert(remainingSiblingDelegate.setupPresentationCalls == 1 &&
+               remainingSiblingDelegate.presentedDescriptor ==
+                   remainingSiblingDescriptor,
+               @"one retained banner can safely stage a sibling volume after its originally selected volume leaves");
+
+        RestartUnknownVolumeNotificationTestDelegate *mixedSiblingDelegate =
+            [[RestartUnknownVolumeNotificationTestDelegate alloc] init];
+        NSDictionary<NSString *, id> *unsupportedSiblingDescriptor = @{
+            @"path": @"/Volumes/TOSHIBA_SHARE",
+            @"name": @"TOSHIBA_SHARE",
+            @"volumeUUID": @"SHARE-UUID",
+            @"diskID": @"disk20",
+            @"isLocal": @YES,
+            @"isInternal": @NO,
+            @"isPhysical": @YES,
+            @"isSystemImage": @NO,
+            @"isWritable": @YES,
+            @"filesystem": @"exfat"
+        };
+        mixedSiblingDelegate.candidateMountPaths = @[
+            @"/Volumes/TOSHIBA_SHARE", @"/Volumes/TOSHIBA_4TB"
+        ];
+        mixedSiblingDelegate.descriptorsByPath = @{
+            @"/Volumes/TOSHIBA_SHARE": unsupportedSiblingDescriptor,
+            @"/Volumes/TOSHIBA_4TB": matchingRestartDescriptor
+        };
+        ProcessUnknownVolumeAction(
+            mixedSiblingDelegate,
+            @"GDT_UNKNOWN_EXTERNAL_VOLUME_SETUP",
+            @{
+                @"diskID": @"disk20",
+                @"volumeUUID": @"PRIVATE-UUID",
+                @"attachmentVolumeUUIDs": @[@"PRIVATE-UUID", @"SHARE-UUID"]
+            });
+        Assert(mixedSiblingDelegate.presentedDescriptor ==
+                   matchingRestartDescriptor,
+               @"setup action deterministically prefers the originally offered writable APFS volume");
+
+        RestartUnknownVolumeNotificationTestDelegate *lateSiblingActionDelegate =
+            [[RestartUnknownVolumeNotificationTestDelegate alloc] init];
+        lateSiblingActionDelegate.candidateMountPaths =
+            @[@"/Volumes/TOSHIBA_DATA"];
+        lateSiblingActionDelegate.descriptorsByPath = @{
+            @"/Volumes/TOSHIBA_DATA": remainingSiblingDescriptor
+        };
+        lateSiblingActionDelegate.rememberedAttachmentUUIDsByDiskID = @{
+            @"disk20": [NSSet setWithArray:
+                @[@"PRIVATE-UUID", @"SIBLING-UUID"]]
+        };
+        ProcessUnknownVolumeAction(
+            lateSiblingActionDelegate,
+            @"GDT_UNKNOWN_EXTERNAL_VOLUME_SETUP",
+            unknownUserInfo);
+        Assert(lateSiblingActionDelegate.presentedDescriptor ==
+                   remainingSiblingDescriptor,
+               @"a sibling mounted after delivery remains eligible through the attachment marker");
+
+        UnknownVolumeNotificationTestDelegate *backgroundActionDelegate =
+            [[UnknownVolumeNotificationTestDelegate alloc] init];
+        backgroundActionDelegate.revalidatedDescriptor = unknownDescriptor;
+        __block BOOL backgroundActionReturned = NO;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            ProcessUnknownVolumeAction(
+                backgroundActionDelegate,
+                @"GDT_UNKNOWN_EXTERNAL_VOLUME_SETUP",
+                unknownUserInfo);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                backgroundActionReturned = YES;
+            });
+        });
+        BOOL backgroundActionCompleted = WaitForCondition(^BOOL{
+            return backgroundActionReturned &&
+                backgroundActionDelegate.setupPresentationCalls == 1;
+        }, 2.0);
+        Assert(backgroundActionCompleted &&
+               backgroundActionDelegate.revalidationCalls == 1 &&
+               backgroundActionDelegate.revalidationRanOnMainThread &&
+               backgroundActionDelegate.setupPresentationRanOnMainThread,
+               @"unknown-volume notification actions revalidate and present setup only on the main thread");
+
+        UnknownVolumeDeliveryTestDelegate *refusedUnknownDelivery =
+            [[UnknownVolumeDeliveryTestDelegate alloc] init];
+        PrepareUnknownVolumeDeliveryState(refusedUnknownDelivery, unknownDescriptor);
+        refusedUnknownDelivery.unknownDeliverySucceeds = NO;
+        [refusedUnknownDelivery
+            finishUnknownExternalVolumeInspectionForDiskID:@"disk20"];
+        BOOL unknownDeliveryRetried = WaitForCondition(^BOOL{
+            return refusedUnknownDelivery.completionDeliveryCalls == 2;
+        }, 1.0);
+        Assert(unknownDeliveryRetried &&
+               refusedUnknownDelivery.legacyDeliveryCalls == 0 &&
+               ![refusedUnknownDelivery.notifiedUnknownExternalDiskIDs
+                   containsObject:@"disk20"],
+               @"a failed unknown-disk notification delivery receives one bounded retry without being latched");
+        [refusedUnknownDelivery processMountedVolumeDescriptor:unknownDescriptor];
+        [NSRunLoop.currentRunLoop
+            runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.03]];
+        Assert(refusedUnknownDelivery.completionDeliveryCalls == 2,
+               @"duplicate mount events cannot bypass the two-attempt delivery cap");
+        ProcessUnknownVolumeUnmount(
+            refusedUnknownDelivery, @"/Volumes/Private Customer Folder");
+        [refusedUnknownDelivery processMountedVolumeDescriptor:unknownDescriptor];
+        BOOL reconnectedDeliveryRetried = WaitForCondition(^BOOL{
+            return refusedUnknownDelivery.completionDeliveryCalls == 4;
+        }, 1.0);
+        Assert(reconnectedDeliveryRetried,
+               @"a full disconnect resets the delivery cap for the next attachment");
+
+        UnknownVolumeDeliveryTestDelegate *acceptedUnknownDelivery =
+            [[UnknownVolumeDeliveryTestDelegate alloc] init];
+        PrepareUnknownVolumeDeliveryState(acceptedUnknownDelivery, unknownDescriptor);
+        acceptedUnknownDelivery.unknownDeliverySucceeds = YES;
+        [acceptedUnknownDelivery
+            finishUnknownExternalVolumeInspectionForDiskID:@"disk20"];
+        [acceptedUnknownDelivery
+            finishUnknownExternalVolumeInspectionForDiskID:@"disk20"];
+        Assert(acceptedUnknownDelivery.completionDeliveryCalls == 1 &&
+               acceptedUnknownDelivery.legacyDeliveryCalls == 0 &&
+               [acceptedUnknownDelivery.notifiedUnknownExternalDiskIDs
+                   containsObject:@"disk20"],
+               @"an unknown disk is marked notified only after macOS accepts the notice");
+
+        UnknownVolumeDeliveryTestDelegate *reusedDiskIDDelivery =
+            [[UnknownVolumeDeliveryTestDelegate alloc] init];
+        PrepareUnknownVolumeDeliveryState(reusedDiskIDDelivery, unknownDescriptor);
+        reusedDiskIDDelivery.unknownDeliverySucceeds = YES;
+        reusedDiskIDDelivery.deferUnknownDelivery = YES;
+        [reusedDiskIDDelivery
+            finishUnknownExternalVolumeInspectionForDiskID:@"disk20"];
+        NSDictionary<NSString *, id> *replacementDescriptor = @{
+            @"path": @"/Volumes/Replacement",
+            @"name": @"Replacement",
+            @"volumeUUID": @"REPLACEMENT-UUID",
+            @"diskID": @"disk20",
+            @"isLocal": @YES,
+            @"isInternal": @NO,
+            @"isPhysical": @YES,
+            @"isSystemImage": @NO,
+            @"isWritable": @YES,
+            @"filesystem": @"apfs"
+        };
+        reusedDiskIDDelivery.mountedExternalVolumeDescriptorsByPath =
+            [@{replacementDescriptor[@"path"]: replacementDescriptor} mutableCopy];
+        void (^staleCompletion)(BOOL) =
+            reusedDiskIDDelivery.deferredUnknownDeliveryCompletion;
+        reusedDiskIDDelivery.deferredUnknownDeliveryCompletion = nil;
+        reusedDiskIDDelivery.deferUnknownDelivery = NO;
+        staleCompletion(YES);
+        BOOL replacementWasRetried = WaitForCondition(^BOOL{
+            return reusedDiskIDDelivery.completionDeliveryCalls == 2;
+        }, 1.0);
+        Assert(replacementWasRetried &&
+               [reusedDiskIDDelivery.lastUnknownDeliveryDescriptor[@"volumeUUID"]
+                   isEqualToString:@"REPLACEMENT-UUID"] &&
+               [reusedDiskIDDelivery.notifiedUnknownExternalDiskIDs
+                   containsObject:@"disk20"],
+               @"a delayed delivery cannot latch a different disk that reused the same disk identifier");
 
         delegate.extraDeliveredNotificationIdentifiers = @[
             @"com.commcats.gdrivebackup.office.missed.50"
@@ -390,6 +1041,8 @@ int main(void) {
                                     resultingItemURL:nil error:nil];
 
         [delegate.testDefaults removePersistentDomainForName:suiteName];
+        [markerWriter.testDefaults
+            removePersistentDomainForName:markerSuiteName];
     }
 
     if (failures > 0) {

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Offer a previously unknown directly attached physical disk once per attachment through a passive macOS notification, without opening a window, taking focus, writing, formatting, changing settings, or starting a backup; setup begins only after an explicit, revalidated action and preserves the active NAS target and schedule until Save.
+- Group multi-volume media by physical disk, suppress the unknown-media notice when any named profile already retains one of its volume UUIDs, rebuild attachment state after a controller restart, keep one banner usable when a sibling volume leaves, remember a human dismissal across controller restarts in the same boot session, and clear that state after the disk fully disconnects.
+- Request notification permission only after an explicit setup save, retry one transient unknown-media delivery failure, and bind asynchronous delivery state to both disk and volume identity so reused macOS disk numbers cannot suppress another attachment.
 - Wait for an automatically mounted NAS to become both verified and writable instead of failing in the short post-mount readiness interval.
 - Retry one transient scheduled NAS mount/readiness failure after 30 minutes, revalidate it immediately before launch, retain it across sleep for up to 24 hours, restart the controller after a crash, and issue a distinct alert if that retry also fails.
 - Keep delivered automatic-failure alerts associated with their profile and remove them only after manual dismissal by the user or a newer successful automatic backup; document macOS's required **Persistent** notification style.
@@ -12,7 +15,7 @@
 - Bind external APFS targets to their stable volume UUID, resolve the current macOS mount path before every run, and reject same-name or swapped volumes before Drive access.
 - Refuse APFS path traversal, symbolic-link escapes, nested foreign file systems, post-confirmation swaps, and retention operations whose UUID or device identity changes.
 - Identify an automatically created APFS volume by the one new UUID in its container instead of assuming an unsuffixed `/Volumes` name, and atomically replace stale or empty saved identity fields.
-- Keep legacy path-only profiles unchanged until a volume is explicitly identified; opening or saving unrelated setup settings never binds whichever same-name volume currently owns that path.
+- Keep legacy path-only profiles available for manual and scheduled runs but prevent them from starting a mount backup until a human explicitly identifies the volume; opening or saving unrelated setup settings never binds whichever same-name volume currently owns that path.
 - Let source-based upgrades verify and atomically persist a caller-supplied APFS path, name, and UUID in both the legacy config and active profile instead of inferring identity from a volume name.
 - Open the visible overview when Finder reopens the already-running menu bar controller.
 - Let saved launchd schedules run unattended after the backup engine verifies the exact configured destination.

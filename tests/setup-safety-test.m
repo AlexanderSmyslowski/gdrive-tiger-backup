@@ -78,6 +78,35 @@
 
 @end
 
+@interface UnknownVolumeSetupDelegate : AppDelegate
+@property(nonatomic) NSInteger showSetupCalls;
+@property(nonatomic) NSInteger saveCalls;
+@property(nonatomic) NSInteger launchCalls;
+@end
+
+@implementation UnknownVolumeSetupDelegate
+
+- (void)showSetupWindow {
+    self.showSetupCalls++;
+}
+
+- (BOOL)saveSetupValues {
+    self.saveCalls++;
+    return YES;
+}
+
+- (BOOL)launchBackupWithArgument:(NSString *)argument
+                         trigger:(NSString *)trigger
+                       assumeYes:(BOOL)assumeYes {
+    (void)argument;
+    (void)trigger;
+    (void)assumeYes;
+    self.launchCalls++;
+    return YES;
+}
+
+@end
+
 static int failures = 0;
 
 static void Assert(BOOL condition, NSString *name) {
@@ -318,6 +347,173 @@ int main(void) {
         Assert([[previewDelegate currentSetupUpdates][@"GDRIVE_BACKUP_NOTIFY_FAILURES"]
                    isEqualToString:@"0"],
                @"setup persists an explicit notification opt-out");
+
+        UnknownVolumeSetupDelegate *unknownSetup =
+            [[UnknownVolumeSetupDelegate alloc] init];
+        unknownSetup.language = @"en";
+        unknownSetup.targetPopup = [[NSPopUpButton alloc] init];
+        [unknownSetup.targetPopup addItemWithTitle:@"External disk"];
+        unknownSetup.targetPopup.lastItem.representedObject = @"apfs";
+        [unknownSetup.targetPopup addItemWithTitle:@"NAS"];
+        unknownSetup.targetPopup.lastItem.representedObject = @"nas";
+        [unknownSetup.targetPopup selectItemAtIndex:1];
+        unknownSetup.schedulePopup = [[NSPopUpButton alloc] init];
+        [unknownSetup.schedulePopup addItemWithTitle:@"Manual"];
+        unknownSetup.schedulePopup.lastItem.representedObject = @"manual";
+        [unknownSetup.schedulePopup addItemWithTitle:@"Daily"];
+        unknownSetup.schedulePopup.lastItem.representedObject = @"daily";
+        [unknownSetup.schedulePopup selectItemAtIndex:1];
+        unknownSetup.encryptionPopup = [[NSPopUpButton alloc] init];
+        [unknownSetup.encryptionPopup addItemWithTitle:@"None"];
+        unknownSetup.encryptionPopup.lastItem.representedObject = @"none";
+        unknownSetup.cryptRemoteField = [[NSTextField alloc] init];
+        unknownSetup.nasMountField = [[NSTextField alloc] init];
+        unknownSetup.nasMountField.stringValue = @"/Volumes/alexander";
+        unknownSetup.nasURLField = [[NSTextField alloc] init];
+        unknownSetup.nasSubdirField = [[NSTextField alloc] init];
+        unknownSetup.nasSubdirField.stringValue = @"GoogleDrive-Backup";
+        unknownSetup.notificationCheckbox = [[NSButton alloc] init];
+        unknownSetup.notificationCheckbox.buttonType = NSButtonTypeSwitch;
+        unknownSetup.notificationCheckbox.state = NSControlStateValueOn;
+        unknownSetup.destinationPreviewField = [[NSTextField alloc] init];
+        unknownSetup.statusField = [[NSTextField alloc] init];
+
+        if ([unknownSetup respondsToSelector:loadIdentitySelector]) {
+            typedef void (*LoadIdentityMethod)(
+                id, SEL, NSDictionary<NSString *, NSString *> *);
+            ((LoadIdentityMethod)[unknownSetup methodForSelector:loadIdentitySelector])(
+                unknownSetup,
+                loadIdentitySelector,
+                @{
+                    @"GDRIVE_BACKUP_TARGET": @"nas",
+                    @"GDRIVE_BACKUP_SCHEDULE": @"daily",
+                    @"GDRIVE_BACKUP_NAS_MOUNT": @"/Volumes/alexander"
+                });
+        }
+        NSDictionary<NSString *, NSString *> *nasOnlyUpdates =
+            [unknownSetup currentSetupUpdates];
+        Assert(nasOnlyUpdates[@"GDRIVE_BACKUP_VOLUME"] == nil &&
+               nasOnlyUpdates[@"GDRIVE_BACKUP_VOLUME_NAME"] == nil &&
+               nasOnlyUpdates[@"GDRIVE_BACKUP_VOLUME_UUID"] == nil &&
+               [nasOnlyUpdates[@"GDRIVE_BACKUP_TARGET"] isEqualToString:@"nas"] &&
+               [nasOnlyUpdates[@"GDRIVE_BACKUP_SCHEDULE"] isEqualToString:@"daily"],
+               @"a NAS-only profile does not synthesize or persist a hidden external target");
+
+        unknownSetup.configuredAPFSVolumePath = @"/Volumes/Old Backup";
+        unknownSetup.configuredAPFSVolumeUUID = @"OLD-UUID";
+
+        SEL presentUnknownSelector = NSSelectorFromString(
+            @"presentSetupForUnknownExternalVolumeDescriptor:");
+        if ([unknownSetup respondsToSelector:presentUnknownSelector]) {
+            typedef void (*PresentUnknownMethod)(id, SEL, NSDictionary *);
+            PresentUnknownMethod presentUnknown =
+                (PresentUnknownMethod)[unknownSetup methodForSelector:presentUnknownSelector];
+            presentUnknown(unknownSetup, presentUnknownSelector, @{
+                @"path": @"/Volumes/TOSHIBA_4TB",
+                @"name": @"TOSHIBA_4TB",
+                @"volumeUUID": @"TOSHIBA-UUID",
+                @"diskID": @"disk20",
+                @"isLocal": @YES,
+                @"isInternal": @NO,
+                @"isPhysical": @YES,
+                @"isSystemImage": @NO,
+                @"isWritable": @YES,
+                @"filesystem": @"apfs"
+            });
+        }
+        NSDictionary<NSString *, NSString *> *stagedNASUpdates =
+            [unknownSetup currentSetupUpdates];
+        Assert(unknownSetup.showSetupCalls == 1 &&
+               unknownSetup.saveCalls == 0 &&
+               unknownSetup.launchCalls == 0 &&
+               [stagedNASUpdates[@"GDRIVE_BACKUP_TARGET"] isEqualToString:@"nas"] &&
+               [stagedNASUpdates[@"GDRIVE_BACKUP_SCHEDULE"] isEqualToString:@"daily"] &&
+               [stagedNASUpdates[@"GDRIVE_BACKUP_NAS_MOUNT"]
+                   isEqualToString:@"/Volumes/alexander"] &&
+               [stagedNASUpdates[@"GDRIVE_BACKUP_VOLUME"]
+                   isEqualToString:@"/Volumes/TOSHIBA_4TB"] &&
+               [stagedNASUpdates[@"GDRIVE_BACKUP_VOLUME_NAME"]
+                   isEqualToString:@"TOSHIBA_4TB"] &&
+               [stagedNASUpdates[@"GDRIVE_BACKUP_VOLUME_UUID"]
+                   isEqualToString:@"TOSHIBA-UUID"] &&
+               [unknownSetup.statusField.stringValue containsString:@"TOSHIBA_4TB"],
+               @"explicit setup stages the external APFS identity without changing the NAS target, schedule, or disk");
+
+        [unknownSetup invalidateSetupHealth:nil];
+        BOOL stagedIdentityVisibleAfterHealthInvalidation =
+            [unknownSetup.statusField.stringValue containsString:@"TOSHIBA_4TB"];
+        [unknownSetup applyMountedNetworkVolumes:@[]
+                    allowingTargetAutoSelection:NO];
+        BOOL stagedIdentityVisibleAfterNASRefresh =
+            [unknownSetup.statusField.stringValue containsString:@"TOSHIBA_4TB"];
+        Assert(stagedIdentityVisibleAfterHealthInvalidation &&
+               stagedIdentityVisibleAfterNASRefresh,
+               @"the explicitly staged external identity stays visible through health invalidation and NAS refresh");
+
+        unknownSetup.configuredAPFSVolumePath = @"/Volumes/TOSHIBA_4TB";
+        unknownSetup.configuredAPFSVolumeUUID = @"TOSHIBA-UUID";
+        if ([unknownSetup respondsToSelector:presentUnknownSelector]) {
+            typedef void (*PresentUnknownMethod)(id, SEL, NSDictionary *);
+            PresentUnknownMethod presentUnknown =
+                (PresentUnknownMethod)[unknownSetup methodForSelector:presentUnknownSelector];
+            presentUnknown(unknownSetup, presentUnknownSelector, @{
+                @"path": @"/Volumes/Unsupported",
+                @"name": @"Unsupported",
+                @"volumeUUID": @"UNSUPPORTED-UUID",
+                @"diskID": @"disk22",
+                @"isLocal": @YES,
+                @"isInternal": @NO,
+                @"isPhysical": @YES,
+                @"isSystemImage": @NO,
+                @"isWritable": @YES,
+                @"filesystem": @"exfat"
+            });
+        }
+        Assert([unknownSetup.configuredAPFSVolumePath
+                   isEqualToString:@"/Volumes/TOSHIBA_4TB"] &&
+               [unknownSetup.configuredAPFSVolumeUUID isEqualToString:@"TOSHIBA-UUID"] &&
+               [unknownSetup.statusField.stringValue
+                   isEqualToString:T(@"en", @"unknownExternalVolumeUnsupported")] &&
+               ![unknownSetup.statusField.stringValue
+                   isEqualToString:T(@"en", @"unknownExternalVolumeUnavailable")] &&
+               unknownSetup.saveCalls == 0 && unknownSetup.launchCalls == 0,
+               @"unsupported external media explains the writable APFS requirement without replacing the staged identity");
+
+        if ([unknownSetup respondsToSelector:presentUnknownSelector]) {
+            typedef void (*PresentUnknownMethod)(id, SEL, NSDictionary *);
+            PresentUnknownMethod presentUnknown =
+                (PresentUnknownMethod)[unknownSetup methodForSelector:presentUnknownSelector];
+            presentUnknown(unknownSetup, presentUnknownSelector, @{
+                @"path": @"/Volumes/Read Only",
+                @"name": @"Read Only",
+                @"volumeUUID": @"READ-ONLY-UUID",
+                @"diskID": @"disk23",
+                @"isLocal": @YES,
+                @"isInternal": @NO,
+                @"isPhysical": @YES,
+                @"isSystemImage": @NO,
+                @"isWritable": @NO,
+                @"filesystem": @"apfs"
+            });
+        }
+        Assert([unknownSetup.configuredAPFSVolumePath
+                   isEqualToString:@"/Volumes/TOSHIBA_4TB"] &&
+               [unknownSetup.configuredAPFSVolumeUUID isEqualToString:@"TOSHIBA-UUID"] &&
+               [unknownSetup.statusField.stringValue
+                   isEqualToString:T(@"en", @"unknownExternalVolumeUnsupported")] &&
+               unknownSetup.saveCalls == 0 && unknownSetup.launchCalls == 0,
+               @"read-only APFS media gets accurate guidance and cannot replace the staged identity");
+
+        BOOL unsupportedMessageLocalized = YES;
+        for (NSString *code in SupportedLanguageCodes()) {
+            NSString *message = T(code, @"unknownExternalVolumeUnsupported");
+            if (!message.length ||
+                [message isEqualToString:@"unknownExternalVolumeUnsupported"]) {
+                unsupportedMessageLocalized = NO;
+            }
+        }
+        Assert(unsupportedMessageLocalized,
+               @"unsupported external-volume guidance is localized in every language");
 
         NSDictionary<NSString *, NSString *> *defaultsWithNotifications = @{
             @"GDRIVE_BACKUP_TARGET": @"apfs",

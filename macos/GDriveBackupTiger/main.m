@@ -1464,6 +1464,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic) BOOL dryRunPending;
 @property(nonatomic, copy) NSString *configuredAPFSVolumePath;
 @property(nonatomic, copy) NSString *configuredAPFSVolumeUUID;
+@property(nonatomic, copy) NSString *setupContextStatusText;
 @property(nonatomic, strong) NSStatusItem *statusItem;
 @property(nonatomic, strong) NSWindow *setupWindow;
 @property(nonatomic) BOOL mountedNASRefreshInFlight;
@@ -1486,6 +1487,17 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic) BOOL overviewLaunchPending;
 @property(nonatomic, copy) NSString *lastMountTriggerPath;
 @property(nonatomic, strong) NSDate *lastMountTriggerDate;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary<NSString *, id> *> *mountedExternalVolumeDescriptorsByPath;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *mountedExternalVolumeInspectionTokensByPath;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSTimer *> *unknownExternalVolumeTimersByDiskID;
+@property(nonatomic, strong) NSMutableSet<NSString *> *knownExternalDiskIDs;
+@property(nonatomic, strong) NSMutableSet<NSString *> *notifiedUnknownExternalDiskIDs;
+@property(nonatomic, strong) NSMutableSet<NSString *> *pendingUnknownExternalDiskIDs;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *pendingUnknownExternalVolumeUUIDsByDiskID;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *notifiedUnknownExternalVolumeUUIDsByDiskID;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *unknownExternalVolumeDeliveryAttemptsByDiskID;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSTimer *> *unknownExternalVolumeRetryTimersByDiskID;
+@property(nonatomic, copy) NSString *unknownExternalVolumeBootSessionIDCache;
 @property(nonatomic, copy) NSString *terminalFailureReason;
 @property(nonatomic, strong) NSMutableSet<NSString *> *pendingBackupNotificationIdentifiers;
 - (BOOL)launchAutomaticRetryDecision:(NSDictionary<NSString *, NSString *> *)decision;
@@ -1607,26 +1619,47 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     return monitoredConfig;
 }
 
+- (NSSet<UNNotificationCategory *> *)appNotificationCategories {
+    UNNotificationAction *openAction = [UNNotificationAction
+        actionWithIdentifier:@"GDT_OPEN_BACKUP_OVERVIEW"
+                       title:T(self.language ?: @"en", @"overviewOpen")
+                     options:UNNotificationActionOptionForeground];
+    UNNotificationCategory *backupCategory = [UNNotificationCategory
+        categoryWithIdentifier:@"GDT_BACKUP_ALERT"
+                       actions:@[openAction]
+             intentIdentifiers:@[]
+                       options:UNNotificationCategoryOptionNone];
+
+    UNNotificationAction *setupExternalVolume = [UNNotificationAction
+        actionWithIdentifier:@"GDT_UNKNOWN_EXTERNAL_VOLUME_SETUP"
+                       title:T(self.language ?: @"en",
+                               @"unknownExternalVolumeSetupAction")
+                     options:UNNotificationActionOptionForeground];
+    UNNotificationAction *ignoreExternalVolume = [UNNotificationAction
+        actionWithIdentifier:@"GDT_UNKNOWN_EXTERNAL_VOLUME_IGNORE"
+                       title:T(self.language ?: @"en",
+                               @"unknownExternalVolumeIgnoreAction")
+                     options:UNNotificationActionOptionNone];
+    UNNotificationCategory *unknownExternalVolumeCategory =
+        [UNNotificationCategory
+            categoryWithIdentifier:@"GDT_UNKNOWN_EXTERNAL_VOLUME"
+                            actions:@[setupExternalVolume, ignoreExternalVolume]
+                  intentIdentifiers:@[]
+                            options:UNNotificationCategoryOptionNone];
+    return [NSSet setWithObjects:backupCategory, unknownExternalVolumeCategory, nil];
+}
+
 - (void)configureBackupNotificationsForConfig:(NSDictionary<NSString *, NSString *> *)config {
     NSString *schedule = [config[@"GDRIVE_BACKUP_SCHEDULE"] ?: @"manual" lowercaseString];
     BOOL automaticSchedule = [@[@"login", @"hourly", @"daily"] containsObject:schedule];
+    UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
+    center.delegate = self;
+    [center setNotificationCategories:[self appNotificationCategories]];
     if (!automaticSchedule || [config[@"GDRIVE_BACKUP_NOTIFY_FAILURES"] isEqualToString:@"0"]) {
         return;
     }
 
     (void)[self notificationMonitoringConfigForConfig:config now:[NSDate date]];
-    UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
-    center.delegate = self;
-    UNNotificationAction *openAction = [UNNotificationAction
-        actionWithIdentifier:@"GDT_OPEN_BACKUP_OVERVIEW"
-                       title:T(self.language ?: @"en", @"overviewOpen")
-                     options:UNNotificationActionOptionForeground];
-    UNNotificationCategory *category = [UNNotificationCategory
-        categoryWithIdentifier:@"GDT_BACKUP_ALERT"
-                       actions:@[openAction]
-             intentIdentifiers:@[]
-                       options:UNNotificationCategoryOptionNone];
-    [center setNotificationCategories:[NSSet setWithObject:category]];
     [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
         if (settings.authorizationStatus != UNAuthorizationStatusNotDetermined) return;
         [center requestAuthorizationWithOptions:
@@ -1638,6 +1671,127 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     }];
 }
 
+- (void)requestUnknownExternalVolumeNotificationAuthorizationIfNeeded {
+    UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
+    [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
+        if (settings.authorizationStatus != UNAuthorizationStatusNotDetermined) {
+            return;
+        }
+        [center requestAuthorizationWithOptions:
+            UNAuthorizationOptionAlert | UNAuthorizationOptionSound
+                              completionHandler:^(BOOL granted, NSError *error) {
+            (void)granted;
+            (void)error;
+        }];
+    }];
+}
+
+- (NSString *)unknownExternalVolumeBootSessionID {
+    if (self.unknownExternalVolumeBootSessionIDCache.length) {
+        return self.unknownExternalVolumeBootSessionIDCache;
+    }
+    int status = 0;
+    NSString *bootSessionID = [RunCommand(
+        @"/usr/sbin/sysctl", @[@"-n", @"kern.bootsessionuuid"], nil, &status)
+        stringByTrimmingCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (status == 0 && bootSessionID.length) {
+        self.unknownExternalVolumeBootSessionIDCache =
+            bootSessionID.uppercaseString;
+    }
+    return self.unknownExternalVolumeBootSessionIDCache ?: @"";
+}
+
+- (NSString *)unknownExternalVolumeAttachmentDefaultsKey {
+    return @"GDTUnknownExternalVolume.AttachmentMarkers";
+}
+
+- (NSSet<NSString *> *)rememberedUnknownExternalVolumeUUIDsForDiskID:
+    (NSString *)diskID {
+    if (!diskID.length) return [NSSet set];
+    NSDictionary *markers = [[self backupNotificationDefaultsStore]
+        dictionaryForKey:[self unknownExternalVolumeAttachmentDefaultsKey]];
+    NSDictionary *marker = [markers[diskID] isKindOfClass:NSDictionary.class]
+        ? markers[diskID] : nil;
+    NSString *savedBootSessionID =
+        [marker[@"bootSessionID"] isKindOfClass:NSString.class]
+            ? marker[@"bootSessionID"] : @"";
+    NSString *currentBootSessionID =
+        [self unknownExternalVolumeBootSessionID];
+    if (!currentBootSessionID.length ||
+        ![savedBootSessionID isEqualToString:currentBootSessionID]) {
+        return [NSSet set];
+    }
+
+    NSMutableSet<NSString *> *volumeUUIDs = [NSMutableSet set];
+    NSArray *savedVolumeUUIDs =
+        [marker[@"volumeUUIDs"] isKindOfClass:NSArray.class]
+            ? marker[@"volumeUUIDs"] : @[];
+    for (id value in savedVolumeUUIDs) {
+        if ([value isKindOfClass:NSString.class] && [value length]) {
+            [volumeUUIDs addObject:[value uppercaseString]];
+        }
+    }
+    return volumeUUIDs;
+}
+
+- (void)rememberUnknownExternalAttachmentForDiskID:(NSString *)diskID
+                                        volumeUUIDs:
+    (NSArray<NSString *> *)volumeUUIDs {
+    NSString *bootSessionID = [self unknownExternalVolumeBootSessionID];
+    if (!diskID.length || !bootSessionID.length) return;
+    NSMutableSet<NSString *> *normalized = [NSMutableSet set];
+    for (id value in volumeUUIDs ?: @[]) {
+        if ([value isKindOfClass:NSString.class] && [value length]) {
+            [normalized addObject:[value uppercaseString]];
+        }
+    }
+    if (!normalized.count) return;
+
+    NSUserDefaults *defaults = [self backupNotificationDefaultsStore];
+    NSMutableDictionary *markers =
+        [[defaults dictionaryForKey:
+            [self unknownExternalVolumeAttachmentDefaultsKey]] mutableCopy] ?:
+            [NSMutableDictionary dictionary];
+    markers[diskID] = @{
+        @"bootSessionID": bootSessionID,
+        @"volumeUUIDs": [normalized.allObjects
+            sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)]
+    };
+    [defaults setObject:markers
+                 forKey:[self unknownExternalVolumeAttachmentDefaultsKey]];
+}
+
+- (void)forgetUnknownExternalAttachmentForDiskID:(NSString *)diskID {
+    if (!diskID.length) return;
+    NSUserDefaults *defaults = [self backupNotificationDefaultsStore];
+    NSMutableDictionary *markers =
+        [[defaults dictionaryForKey:
+            [self unknownExternalVolumeAttachmentDefaultsKey]] mutableCopy];
+    if (!markers[diskID]) return;
+    [markers removeObjectForKey:diskID];
+    if (markers.count) {
+        [defaults setObject:markers
+                     forKey:[self unknownExternalVolumeAttachmentDefaultsKey]];
+    } else {
+        [defaults removeObjectForKey:
+            [self unknownExternalVolumeAttachmentDefaultsKey]];
+    }
+}
+
+- (void)forgetUnknownExternalAttachmentsExceptDiskIDs:
+    (NSSet<NSString *> *)mountedDiskIDs {
+    NSUserDefaults *defaults = [self backupNotificationDefaultsStore];
+    NSDictionary *savedMarkers =
+        [defaults dictionaryForKey:
+            [self unknownExternalVolumeAttachmentDefaultsKey]];
+    for (NSString *diskID in savedMarkers.allKeys ?: @[]) {
+        if (![mountedDiskIDs containsObject:diskID]) {
+            [self forgetUnknownExternalAttachmentForDiskID:diskID];
+        }
+    }
+}
+
 - (UNMutableNotificationContent *)backupNotificationContentForDecision:
     (NSDictionary<NSString *, NSString *> *)decision {
     UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
@@ -1646,6 +1800,128 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     content.sound = UNNotificationSound.defaultSound;
     content.categoryIdentifier = @"GDT_BACKUP_ALERT";
     return content;
+}
+
+- (UNMutableNotificationContent *)unknownExternalVolumeNotificationContentForDescriptor:
+    (NSDictionary<NSString *, id> *)descriptor {
+    NSString *name = GDTSafeDestinationLabelComponent(descriptor[@"name"]);
+    if (!name.length) {
+        name = T(self.language ?: @"en", @"externalVolume");
+    }
+    UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
+    content.title = T(self.language ?: @"en", @"unknownExternalVolumeTitle");
+    content.body = [NSString stringWithFormat:
+        T(self.language ?: @"en", @"unknownExternalVolumeBody"), name];
+    content.categoryIdentifier = @"GDT_UNKNOWN_EXTERNAL_VOLUME";
+    content.sound = nil;
+    if (@available(macOS 12.0, *)) {
+        content.interruptionLevel = UNNotificationInterruptionLevelPassive;
+    }
+    NSString *diskID = [descriptor[@"diskID"] isKindOfClass:NSString.class]
+        ? descriptor[@"diskID"] : @"";
+    NSString *volumeUUID = [descriptor[@"volumeUUID"] isKindOfClass:NSString.class]
+        ? descriptor[@"volumeUUID"] : @"";
+    NSMutableOrderedSet<NSString *> *attachmentVolumeUUIDs =
+        [NSMutableOrderedSet orderedSet];
+    NSArray *savedAttachmentVolumeUUIDs =
+        [descriptor[@"attachmentVolumeUUIDs"] isKindOfClass:NSArray.class]
+            ? descriptor[@"attachmentVolumeUUIDs"] : @[];
+    for (id value in savedAttachmentVolumeUUIDs) {
+        if ([value isKindOfClass:NSString.class] && [value length]) {
+            [attachmentVolumeUUIDs addObject:[value uppercaseString]];
+        }
+    }
+    [attachmentVolumeUUIDs unionSet:
+        [self rememberedUnknownExternalVolumeUUIDsForDiskID:diskID]];
+    if (volumeUUID.length) {
+        [attachmentVolumeUUIDs removeObject:volumeUUID.uppercaseString];
+        [attachmentVolumeUUIDs insertObject:volumeUUID.uppercaseString
+                                    atIndex:0];
+    }
+    content.userInfo = @{
+        @"diskID": diskID,
+        @"volumeUUID": volumeUUID,
+        @"attachmentVolumeUUIDs": attachmentVolumeUUIDs.array
+    };
+    return content;
+}
+
+- (void)deliverUnknownExternalVolumeNotificationForDescriptor:
+    (NSDictionary<NSString *, id> *)descriptor {
+    [self deliverUnknownExternalVolumeNotificationForDescriptor:descriptor
+                                                     completion:^(BOOL delivered) {
+        (void)delivered;
+    }];
+}
+
+- (void)deliverUnknownExternalVolumeNotificationForDescriptor:
+    (NSDictionary<NSString *, id> *)descriptor
+                                                   completion:
+    (void (^)(BOOL delivered))completion {
+    NSString *diskID = [descriptor[@"diskID"] isKindOfClass:NSString.class]
+        ? descriptor[@"diskID"] : @"";
+    NSString *volumeUUID = [descriptor[@"volumeUUID"] isKindOfClass:NSString.class]
+        ? descriptor[@"volumeUUID"] : @"";
+    if (!diskID.length || !volumeUUID.length) {
+        completion(NO);
+        return;
+    }
+
+    UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
+    [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
+        if (settings.authorizationStatus != UNAuthorizationStatusAuthorized &&
+            settings.authorizationStatus != UNAuthorizationStatusProvisional) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(NO);
+            });
+            return;
+        }
+        UNMutableNotificationContent *content =
+            [self unknownExternalVolumeNotificationContentForDescriptor:descriptor];
+        NSString *identifier =
+            [self unknownExternalVolumeNotificationIdentifierForDiskID:diskID
+                                                             volumeUUID:volumeUUID];
+        UNNotificationRequest *request = [UNNotificationRequest
+            requestWithIdentifier:identifier content:content trigger:nil];
+        [center addNotificationRequest:request withCompletionHandler:^(NSError *error) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(error == nil);
+            });
+        }];
+    }];
+}
+
+- (NSString *)unknownExternalVolumeNotificationIdentifierForDiskID:
+    (NSString *)diskID volumeUUID:(NSString *)volumeUUID {
+    return [NSString stringWithFormat:
+        @"com.commcats.gdrivebackup.unknown-external.%@.%@",
+        diskID, volumeUUID.uppercaseString];
+}
+
+- (void)removeUnknownExternalVolumeNotificationForDiskID:(NSString *)diskID
+                                               volumeUUID:(NSString *)volumeUUID {
+    if (!diskID.length || !volumeUUID.length) return;
+    NSString *identifier =
+        [self unknownExternalVolumeNotificationIdentifierForDiskID:diskID
+                                                         volumeUUID:volumeUUID];
+    UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
+    [center removeDeliveredNotificationsWithIdentifiers:@[identifier]];
+    [center removePendingNotificationRequestsWithIdentifiers:@[identifier]];
+}
+
+- (void)removeUnknownExternalVolumeNotificationForDiskID:(NSString *)diskID {
+    if (!diskID.length) return;
+    NSMutableSet<NSString *> *volumeUUIDs = [NSMutableSet set];
+    NSString *notifiedUUID =
+        self.notifiedUnknownExternalVolumeUUIDsByDiskID[diskID];
+    NSString *pendingUUID =
+        self.pendingUnknownExternalVolumeUUIDsByDiskID[diskID];
+    if (notifiedUUID.length) [volumeUUIDs addObject:notifiedUUID];
+    if (pendingUUID.length) [volumeUUIDs addObject:pendingUUID];
+    for (NSString *volumeUUID in volumeUUIDs) {
+        [self removeUnknownExternalVolumeNotificationForDiskID:diskID
+                                                     volumeUUID:volumeUUID];
+    }
 }
 
 - (void)addBackupNotificationDecision:(NSDictionary<NSString *, NSString *> *)decision
@@ -1881,17 +2157,459 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
        willPresentNotification:(UNNotification *)notification
          withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler {
     (void)center;
-    (void)notification;
-    completionHandler(UNNotificationPresentationOptionBanner |
-                      UNNotificationPresentationOptionList |
-                      UNNotificationPresentationOptionSound);
+    completionHandler([self presentationOptionsForNotificationCategoryIdentifier:
+        notification.request.content.categoryIdentifier]);
+}
+
+- (UNNotificationPresentationOptions)presentationOptionsForNotificationCategoryIdentifier:
+    (NSString *)categoryIdentifier {
+    if ([categoryIdentifier isEqualToString:@"GDT_UNKNOWN_EXTERNAL_VOLUME"]) {
+        return UNNotificationPresentationOptionBanner |
+            UNNotificationPresentationOptionList;
+    }
+    return UNNotificationPresentationOptionBanner |
+        UNNotificationPresentationOptionList |
+        UNNotificationPresentationOptionSound;
+}
+
+- (void)revalidateUnknownExternalVolumeUserInfo:(NSDictionary *)userInfo
+                                      completion:
+    (void (^)(NSDictionary<NSString *, id> *descriptor))completion {
+    NSString *diskID = [userInfo[@"diskID"] isKindOfClass:NSString.class]
+        ? userInfo[@"diskID"] : @"";
+    NSString *volumeUUID = [userInfo[@"volumeUUID"] isKindOfClass:NSString.class]
+        ? [userInfo[@"volumeUUID"] uppercaseString] : @"";
+    if (!diskID.length || !volumeUUID.length) {
+        completion(nil);
+        return;
+    }
+    NSMutableSet<NSString *> *attachmentVolumeUUIDs =
+        [NSMutableSet setWithObject:volumeUUID];
+    NSArray *savedAttachmentVolumeUUIDs =
+        [userInfo[@"attachmentVolumeUUIDs"] isKindOfClass:NSArray.class]
+            ? userInfo[@"attachmentVolumeUUIDs"] : @[];
+    for (id value in savedAttachmentVolumeUUIDs) {
+        if ([value isKindOfClass:NSString.class] && [value length]) {
+            [attachmentVolumeUUIDs addObject:[value uppercaseString]];
+        }
+    }
+    [attachmentVolumeUUIDs unionSet:
+        [self rememberedUnknownExternalVolumeUUIDsForDiskID:diskID]];
+
+    NSMutableArray<NSString *> *candidatePaths = [NSMutableArray array];
+    for (NSDictionary<NSString *, id> *descriptor in
+         self.mountedExternalVolumeDescriptorsByPath.allValues ?: @[]) {
+        if ([descriptor[@"diskID"] isEqualToString:diskID] &&
+            [attachmentVolumeUUIDs containsObject:
+                [descriptor[@"volumeUUID"] uppercaseString]]) {
+            NSString *path = descriptor[@"path"];
+            if (path.length) {
+                [candidatePaths addObject:path];
+            }
+        }
+    }
+    for (NSString *path in
+         [self mountedVolumePathsForUnknownExternalVolumeRevalidation]) {
+        if (path.length && ![candidatePaths containsObject:path]) {
+            [candidatePaths addObject:path];
+        }
+    }
+    [self revalidateUnknownExternalVolumePaths:candidatePaths
+                                       atIndex:0
+                                matchingDiskID:diskID
+                                   volumeUUIDs:attachmentVolumeUUIDs
+                          preferredVolumeUUID:volumeUUID
+                              validDescriptors:[NSMutableArray array]
+                                    completion:completion];
+}
+
+- (NSArray<NSString *> *)mountedVolumePathsForUnknownExternalVolumeRevalidation {
+    NSArray<NSURL *> *mountedURLs = [NSFileManager.defaultManager
+        mountedVolumeURLsIncludingResourceValuesForKeys:nil options:0] ?: @[];
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    for (NSURL *url in mountedURLs) {
+        if (!url.isFileURL) continue;
+        NSString *path = url.path.stringByStandardizingPath;
+        if ([path hasPrefix:@"/Volumes/"] && path.pathComponents.count == 3) {
+            [paths addObject:path];
+        }
+    }
+    return paths;
+}
+
+- (void)deliveredUnknownExternalVolumeUUIDsByDiskIDWithCompletion:
+    (void (^)(NSDictionary<NSString *, NSString *> *volumeUUIDsByDiskID))completion {
+    [UNUserNotificationCenter.currentNotificationCenter
+        getDeliveredNotificationsWithCompletionHandler:
+            ^(NSArray<UNNotification *> *notifications) {
+        NSMutableDictionary<NSString *, NSString *> *delivered =
+            [NSMutableDictionary dictionary];
+        for (UNNotification *notification in notifications) {
+            UNNotificationContent *content = notification.request.content;
+            if (![content.categoryIdentifier
+                    isEqualToString:@"GDT_UNKNOWN_EXTERNAL_VOLUME"]) {
+                continue;
+            }
+            NSString *diskID =
+                [content.userInfo[@"diskID"] isKindOfClass:NSString.class]
+                    ? content.userInfo[@"diskID"] : @"";
+            NSString *volumeUUID =
+                [content.userInfo[@"volumeUUID"] isKindOfClass:NSString.class]
+                    ? [content.userInfo[@"volumeUUID"] uppercaseString] : @"";
+            if (diskID.length && volumeUUID.length && !delivered[diskID]) {
+                delivered[diskID] = volumeUUID;
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            completion(delivered);
+        });
+    }];
+}
+
+- (void)reconcilePrimedExternalVolumeDescriptors:
+    (NSArray<NSDictionary<NSString *, id> *> *)descriptors
+    deliveredVolumeUUIDsByDiskID:
+    (NSDictionary<NSString *, NSString *> *)deliveredVolumeUUIDsByDiskID {
+    NSSet<NSString *> *knownUUIDs = [self configuredExternalVolumeUUIDs];
+    NSMutableDictionary<NSString *,
+        NSMutableArray<NSDictionary<NSString *, id> *> *> *groups =
+        [NSMutableDictionary dictionary];
+    for (NSDictionary<NSString *, id> *descriptor in descriptors) {
+        NSString *path = descriptor[@"path"];
+        if (!path.length) continue;
+        self.mountedExternalVolumeDescriptorsByPath[path] = descriptor;
+    }
+    // Mount notifications continue while the startup snapshot is being
+    // inspected. Grouping the complete live cache preserves any second disk
+    // that arrived during that window and prevents its attachment marker from
+    // being mistaken for stale startup state.
+    for (NSDictionary<NSString *, id> *descriptor in
+         self.mountedExternalVolumeDescriptorsByPath.allValues ?: @[]) {
+        NSString *diskID = descriptor[@"diskID"];
+        if (!diskID.length) continue;
+        if (!groups[diskID]) groups[diskID] = [NSMutableArray array];
+        [groups[diskID] addObject:descriptor];
+    }
+
+    for (NSString *diskID in groups) {
+        NSArray<NSDictionary<NSString *, id> *> *diskDescriptors =
+            [self mountedExternalDescriptorsForDiskID:diskID];
+        NSMutableArray<NSString *> *attachmentVolumeUUIDs =
+            [NSMutableArray array];
+        BOOL knownDisk = NO;
+        for (NSDictionary<NSString *, id> *descriptor in diskDescriptors) {
+            NSString *volumeUUID = [descriptor[@"volumeUUID"] uppercaseString];
+            if (volumeUUID.length) {
+                [attachmentVolumeUUIDs addObject:volumeUUID];
+            }
+            if ([knownUUIDs containsObject:volumeUUID]) {
+                knownDisk = YES;
+            }
+        }
+        NSString *deliveredUUID =
+            [deliveredVolumeUUIDsByDiskID[diskID] uppercaseString];
+        if (knownDisk) {
+            [self.knownExternalDiskIDs addObject:diskID];
+            [self forgetUnknownExternalAttachmentForDiskID:diskID];
+            [self.unknownExternalVolumeTimersByDiskID[diskID] invalidate];
+            [self.unknownExternalVolumeTimersByDiskID removeObjectForKey:diskID];
+            [self.unknownExternalVolumeRetryTimersByDiskID[diskID] invalidate];
+            [self.unknownExternalVolumeRetryTimersByDiskID
+                removeObjectForKey:diskID];
+            NSMutableSet<NSString *> *noticeUUIDs = [NSMutableSet set];
+            NSString *notifiedUUID =
+                self.notifiedUnknownExternalVolumeUUIDsByDiskID[diskID];
+            NSString *pendingUUID =
+                self.pendingUnknownExternalVolumeUUIDsByDiskID[diskID];
+            if (deliveredUUID.length) [noticeUUIDs addObject:deliveredUUID];
+            if (notifiedUUID.length) [noticeUUIDs addObject:notifiedUUID];
+            if (pendingUUID.length) [noticeUUIDs addObject:pendingUUID];
+            for (NSString *noticeUUID in noticeUUIDs) {
+                [self removeUnknownExternalVolumeNotificationForDiskID:diskID
+                                                             volumeUUID:noticeUUID];
+            }
+            [self.pendingUnknownExternalDiskIDs removeObject:diskID];
+            [self.pendingUnknownExternalVolumeUUIDsByDiskID
+                removeObjectForKey:diskID];
+            [self.notifiedUnknownExternalDiskIDs removeObject:diskID];
+            [self.notifiedUnknownExternalVolumeUUIDsByDiskID
+                removeObjectForKey:diskID];
+            [self.unknownExternalVolumeDeliveryAttemptsByDiskID
+                removeObjectForKey:diskID];
+            continue;
+        }
+        NSDictionary *deliveredDescriptor = deliveredUUID.length
+            ? [self mountedExternalDescriptorForDiskID:diskID
+                                            volumeUUID:deliveredUUID]
+            : nil;
+        NSSet<NSString *> *rememberedVolumeUUIDs =
+            [self rememberedUnknownExternalVolumeUUIDsForDiskID:diskID];
+        NSString *rememberedMountedUUID = @"";
+        for (NSString *volumeUUID in attachmentVolumeUUIDs) {
+            if ([rememberedVolumeUUIDs containsObject:volumeUUID]) {
+                rememberedMountedUUID = volumeUUID;
+                break;
+            }
+        }
+        if (deliveredDescriptor) {
+            [self.notifiedUnknownExternalDiskIDs addObject:diskID];
+            self.notifiedUnknownExternalVolumeUUIDsByDiskID[diskID] =
+                deliveredUUID;
+            [self rememberUnknownExternalAttachmentForDiskID:diskID
+                                                 volumeUUIDs:
+                attachmentVolumeUUIDs];
+        } else if (rememberedMountedUUID.length) {
+            // A person may already have dismissed or ignored the banner. The
+            // marker prevents a controller restart from presenting it again
+            // while the same physical attachment remains connected.
+            [self.notifiedUnknownExternalDiskIDs addObject:diskID];
+            self.notifiedUnknownExternalVolumeUUIDsByDiskID[diskID] =
+                deliveredUUID.length ? deliveredUUID : rememberedMountedUUID;
+        } else {
+            if (deliveredUUID.length) {
+                [self removeUnknownExternalVolumeNotificationForDiskID:diskID
+                                                             volumeUUID:deliveredUUID];
+            }
+            [self processMountedVolumeDescriptor:diskDescriptors.firstObject];
+        }
+    }
+
+    for (NSString *diskID in deliveredVolumeUUIDsByDiskID) {
+        if (!groups[diskID]) {
+            [self removeUnknownExternalVolumeNotificationForDiskID:diskID
+                volumeUUID:deliveredVolumeUUIDsByDiskID[diskID]];
+            [self forgetUnknownExternalAttachmentForDiskID:diskID];
+        }
+    }
+    [self forgetUnknownExternalAttachmentsExceptDiskIDs:
+        [NSSet setWithArray:groups.allKeys]];
+}
+
+- (void)primeMountedExternalVolumeCache {
+    if (!self.mountedExternalVolumeDescriptorsByPath) {
+        self.mountedExternalVolumeDescriptorsByPath =
+            [NSMutableDictionary dictionary];
+    }
+    if (!self.mountedExternalVolumeInspectionTokensByPath) {
+        self.mountedExternalVolumeInspectionTokensByPath =
+            [NSMutableDictionary dictionary];
+    }
+    if (!self.knownExternalDiskIDs) {
+        self.knownExternalDiskIDs = [NSMutableSet set];
+    }
+    if (!self.notifiedUnknownExternalDiskIDs) {
+        self.notifiedUnknownExternalDiskIDs = [NSMutableSet set];
+    }
+    if (!self.notifiedUnknownExternalVolumeUUIDsByDiskID) {
+        self.notifiedUnknownExternalVolumeUUIDsByDiskID =
+            [NSMutableDictionary dictionary];
+    }
+    __weak typeof(self) weakSelf = self;
+    [self deliveredUnknownExternalVolumeUUIDsByDiskIDWithCompletion:
+        ^(NSDictionary<NSString *, NSString *> *delivered) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSArray<NSString *> *paths =
+            [strongSelf mountedVolumePathsForUnknownExternalVolumeRevalidation];
+        if (!paths.count) {
+            [strongSelf reconcilePrimedExternalVolumeDescriptors:@[]
+                                   deliveredVolumeUUIDsByDiskID:delivered];
+            return;
+        }
+        __block NSUInteger remaining = paths.count;
+        NSMutableArray<NSDictionary<NSString *, id> *> *descriptors =
+            [NSMutableArray array];
+        for (NSString *path in paths) {
+            NSString *inspectionToken = NSUUID.UUID.UUIDString;
+            strongSelf.mountedExternalVolumeInspectionTokensByPath[path] =
+                inspectionToken;
+            [strongSelf inspectMountedVolumeAtPath:path
+                                       completion:
+                ^(NSDictionary<NSString *, id> *descriptor) {
+                typeof(self) innerSelf = weakSelf;
+                if (innerSelf &&
+                    [innerSelf.mountedExternalVolumeInspectionTokensByPath[path]
+                        isEqualToString:inspectionToken]) {
+                    [innerSelf.mountedExternalVolumeInspectionTokensByPath
+                        removeObjectForKey:path];
+                    if ([innerSelf
+                            isUnknownExternalVolumeDescriptorEligible:descriptor]) {
+                        innerSelf.mountedExternalVolumeDescriptorsByPath[path] =
+                            descriptor;
+                        [descriptors addObject:descriptor];
+                    }
+                }
+                remaining--;
+                if (innerSelf && remaining == 0) {
+                    NSMutableArray<NSDictionary<NSString *, id> *> *
+                        liveDescriptors = [NSMutableArray array];
+                    for (NSDictionary<NSString *, id> *candidate in descriptors) {
+                        NSDictionary<NSString *, id> *current =
+                            innerSelf.mountedExternalVolumeDescriptorsByPath[
+                                candidate[@"path"]];
+                        BOOL sameVolume =
+                            [current[@"diskID"] isEqualToString:
+                                candidate[@"diskID"]] &&
+                            [[current[@"volumeUUID"] uppercaseString]
+                                isEqualToString:
+                                    [candidate[@"volumeUUID"] uppercaseString]];
+                        if (sameVolume) {
+                            [liveDescriptors addObject:current];
+                        }
+                    }
+                    [innerSelf reconcilePrimedExternalVolumeDescriptors:liveDescriptors
+                                           deliveredVolumeUUIDsByDiskID:delivered];
+                }
+            }];
+        }
+    }];
+}
+
+- (void)revalidateUnknownExternalVolumePaths:(NSArray<NSString *> *)paths
+                                     atIndex:(NSUInteger)index
+                              matchingDiskID:(NSString *)diskID
+                                 volumeUUIDs:(NSSet<NSString *> *)volumeUUIDs
+                       preferredVolumeUUID:(NSString *)preferredVolumeUUID
+                           validDescriptors:
+    (NSMutableArray<NSDictionary<NSString *, id> *> *)validDescriptors
+                                  completion:
+    (void (^)(NSDictionary<NSString *, id> *descriptor))completion {
+    if (index >= paths.count) {
+        [validDescriptors sortUsingComparator:
+            ^NSComparisonResult(NSDictionary<NSString *, id> *left,
+                                NSDictionary<NSString *, id> *right) {
+            BOOL leftPrimary = [[left[@"volumeUUID"] uppercaseString]
+                isEqualToString:preferredVolumeUUID];
+            BOOL rightPrimary = [[right[@"volumeUUID"] uppercaseString]
+                isEqualToString:preferredVolumeUUID];
+            BOOL leftWritableAPFS = [left[@"isWritable"] boolValue] &&
+                [left[@"filesystem"] isEqualToString:@"apfs"];
+            BOOL rightWritableAPFS = [right[@"isWritable"] boolValue] &&
+                [right[@"filesystem"] isEqualToString:@"apfs"];
+            NSInteger leftRank = leftWritableAPFS ? (leftPrimary ? 0 : 1)
+                                                   : (leftPrimary ? 2 : 3);
+            NSInteger rightRank = rightWritableAPFS ? (rightPrimary ? 0 : 1)
+                                                     : (rightPrimary ? 2 : 3);
+            if (leftRank < rightRank) return NSOrderedAscending;
+            if (leftRank > rightRank) return NSOrderedDescending;
+            return [left[@"path"] compare:right[@"path"]
+                                   options:NSCaseInsensitiveSearch];
+        }];
+        completion(validDescriptors.firstObject);
+        return;
+    }
+    NSString *path = paths[index];
+    __weak typeof(self) weakSelf = self;
+    [self inspectMountedVolumeAtPath:path
+                         completion:^(NSDictionary<NSString *, id> *current) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) {
+            completion(nil);
+            return;
+        }
+        BOOL matches =
+            [strongSelf isUnknownExternalVolumeDescriptorEligible:current] &&
+            [current[@"diskID"] isEqualToString:diskID] &&
+            [volumeUUIDs containsObject:
+                [current[@"volumeUUID"] uppercaseString]];
+        if (matches) {
+            [validDescriptors addObject:current];
+        }
+        [strongSelf revalidateUnknownExternalVolumePaths:paths
+                                                 atIndex:index + 1
+                                          matchingDiskID:diskID
+                                             volumeUUIDs:volumeUUIDs
+                                    preferredVolumeUUID:preferredVolumeUUID
+                                        validDescriptors:validDescriptors
+                                              completion:completion];
+    }];
+}
+
+- (void)presentSetupForUnknownExternalVolumeDescriptor:
+    (NSDictionary<NSString *, id> *)descriptor {
+    [self showSetupWindow];
+    NSString *path = [descriptor[@"path"] isKindOfClass:NSString.class]
+        ? [descriptor[@"path"] stringByStandardizingPath] : @"";
+    NSString *volumeUUID = [descriptor[@"volumeUUID"] isKindOfClass:NSString.class]
+        ? [descriptor[@"volumeUUID"] uppercaseString] : @"";
+    NSString *name = GDTSafeDestinationLabelComponent(descriptor[@"name"]);
+    BOOL safeMountRoot = [path hasPrefix:@"/Volumes/"] &&
+        [path.pathComponents count] == 3;
+    BOOL supported = [self isUnknownExternalVolumeDescriptorEligible:descriptor] &&
+        safeMountRoot &&
+        [descriptor[@"isWritable"] boolValue] &&
+        [descriptor[@"filesystem"] isEqualToString:@"apfs"] &&
+        volumeUUID.length;
+    if (!supported) {
+        self.setupContextStatusText =
+            T(self.language ?: @"en", @"unknownExternalVolumeUnsupported");
+        self.statusField.stringValue = self.setupContextStatusText;
+        return;
+    }
+
+    self.configuredAPFSVolumePath = path;
+    self.configuredAPFSVolumeUUID = volumeUUID;
+    [self updateDestinationPreview];
+    [self invalidateSetupHealth:nil];
+    self.setupContextStatusText = [NSString stringWithFormat:
+        T(self.language ?: @"en", @"unknownExternalVolumeReviewSetup"),
+        name.length ? name : path.lastPathComponent];
+    self.statusField.stringValue = self.setupContextStatusText;
+}
+
+- (void)presentUnknownExternalVolumeUnavailable {
+    [self showSetupWindow];
+    self.setupContextStatusText =
+        T(self.language ?: @"en", @"unknownExternalVolumeUnavailable");
+    self.statusField.stringValue = self.setupContextStatusText;
+}
+
+- (void)handleUnknownExternalVolumeActionIdentifier:(NSString *)actionIdentifier
+                                           userInfo:(NSDictionary *)userInfo {
+    if ([actionIdentifier isEqualToString:@"GDT_UNKNOWN_EXTERNAL_VOLUME_IGNORE"]) {
+        return;
+    }
+    if (![actionIdentifier isEqualToString:@"GDT_UNKNOWN_EXTERNAL_VOLUME_SETUP"] &&
+        ![actionIdentifier isEqualToString:UNNotificationDefaultActionIdentifier]) {
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    void (^processAction)(void) = ^{
+        typeof(self) strongSelf = weakSelf;
+        [strongSelf revalidateUnknownExternalVolumeUserInfo:userInfo
+                                                completion:
+            ^(NSDictionary<NSString *, id> *descriptor) {
+            if (!descriptor) {
+                [strongSelf presentUnknownExternalVolumeUnavailable];
+                return;
+            }
+            [strongSelf presentSetupForUnknownExternalVolumeDescriptor:descriptor];
+        }];
+    };
+    if (NSThread.isMainThread) {
+        processAction();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), processAction);
+    }
 }
 
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center
 didReceiveNotificationResponse:(UNNotificationResponse *)response
          withCompletionHandler:(void (^)(void))completionHandler {
-    (void)center;
     NSString *action = response.actionIdentifier;
+    NSString *category = response.notification.request.content.categoryIdentifier;
+    if ([category isEqualToString:@"GDT_UNKNOWN_EXTERNAL_VOLUME"]) {
+        NSString *identifier = response.notification.request.identifier;
+        if (identifier.length) {
+            [center removeDeliveredNotificationsWithIdentifiers:@[identifier]];
+            [center removePendingNotificationRequestsWithIdentifiers:@[identifier]];
+        }
+        [self handleUnknownExternalVolumeActionIdentifier:action
+                                                 userInfo:
+            response.notification.request.content.userInfo ?: @{}];
+        completionHandler();
+        return;
+    }
     if ([action isEqualToString:UNNotificationDefaultActionIdentifier] ||
         [action isEqualToString:@"GDT_OPEN_BACKUP_OVERVIEW"]) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -2292,13 +3010,430 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     return volumeUUID.uppercaseString;
 }
 
+- (NSSet<NSString *> *)configuredExternalVolumeUUIDs {
+    NSMutableSet<NSString *> *volumeUUIDs = [NSMutableSet set];
+    NSString *activeUUID = [[self savedSetupConfig][@"GDRIVE_BACKUP_VOLUME_UUID"]
+        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (activeUUID.length) {
+        [volumeUUIDs addObject:activeUUID.uppercaseString];
+    }
+    for (NSDictionary<NSString *, NSString *> *profile in self.profileStore.profiles ?: @[]) {
+        NSString *path = profile[@"configPath"];
+        NSString *volumeUUID = [GDTReadConfigDictionaryAtPath(path)[@"GDRIVE_BACKUP_VOLUME_UUID"]
+            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (volumeUUID.length) {
+            [volumeUUIDs addObject:volumeUUID.uppercaseString];
+        }
+    }
+    return volumeUUIDs;
+}
+
+- (NSDictionary<NSString *, id> *)externalVolumeDescriptorFromDiskutilInfo:
+    (NSDictionary *)plist requestedPath:(NSString *)requestedPath {
+    if (![plist isKindOfClass:NSDictionary.class]) return nil;
+    NSString *normalizedRequest = requestedPath.stringByStandardizingPath;
+    NSString *mountPoint = [plist[@"MountPoint"] isKindOfClass:NSString.class]
+        ? [plist[@"MountPoint"] stringByStandardizingPath] : @"";
+    if (!mountPoint.length || ![mountPoint isEqualToString:normalizedRequest]) {
+        return nil;
+    }
+
+    NSString *filesystem = [plist[@"FilesystemType"] isKindOfClass:NSString.class]
+        ? [plist[@"FilesystemType"] lowercaseString] : @"";
+    BOOL networkFilesystem = [@[@"smbfs", @"afpfs", @"nfs", @"webdav", @"cifs"]
+        containsObject:filesystem];
+    NSString *volumeUUID = [plist[@"VolumeUUID"] isKindOfClass:NSString.class]
+        ? [plist[@"VolumeUUID"] uppercaseString] : @"";
+    NSString *diskID = @"";
+    NSArray *physicalStores = [plist[@"APFSPhysicalStores"] isKindOfClass:NSArray.class]
+        ? plist[@"APFSPhysicalStores"] : @[];
+    NSDictionary *firstPhysicalStore =
+        [physicalStores.firstObject isKindOfClass:NSDictionary.class]
+            ? physicalStores.firstObject : nil;
+    NSString *physicalStoreID =
+        [firstPhysicalStore[@"APFSPhysicalStore"] isKindOfClass:NSString.class]
+            ? firstPhysicalStore[@"APFSPhysicalStore"] : @"";
+    if (physicalStoreID.length) {
+        diskID = physicalStoreID;
+    } else if ([plist[@"ParentWholeDisk"] isKindOfClass:NSString.class]) {
+        diskID = plist[@"ParentWholeDisk"];
+    }
+    if (!diskID.length && [plist[@"DeviceIdentifier"] isKindOfClass:NSString.class]) {
+        diskID = plist[@"DeviceIdentifier"];
+    }
+    if (diskID.length) {
+        NSRegularExpression *expression = [NSRegularExpression
+            regularExpressionWithPattern:@"^disk[0-9]+" options:0 error:nil];
+        NSTextCheckingResult *match = [expression firstMatchInString:diskID
+            options:0 range:NSMakeRange(0, diskID.length)];
+        if (match) {
+            diskID = [diskID substringWithRange:match.range];
+        }
+    }
+    if (!diskID.length || !volumeUUID.length) return nil;
+
+    NSString *name = [plist[@"VolumeName"] isKindOfClass:NSString.class]
+        ? plist[@"VolumeName"] : normalizedRequest.lastPathComponent;
+    BOOL isPhysical = ![plist[@"Internal"] boolValue] &&
+        [plist[@"RemovableMediaOrExternalDevice"] boolValue] &&
+        ![plist[@"SystemImage"] boolValue];
+    NSNumber *writableVolume =
+        [plist[@"WritableVolume"] isKindOfClass:NSNumber.class]
+            ? plist[@"WritableVolume"] : nil;
+    NSNumber *writable =
+        [plist[@"Writable"] isKindOfClass:NSNumber.class]
+            ? plist[@"Writable"] : nil;
+    return @{
+        @"path": mountPoint,
+        @"name": name ?: @"",
+        @"volumeUUID": volumeUUID,
+        @"diskID": diskID,
+        @"isLocal": @(!networkFilesystem),
+        @"isInternal": @([plist[@"Internal"] boolValue]),
+        @"isPhysical": @(isPhysical),
+        @"isSystemImage": @([plist[@"SystemImage"] boolValue]),
+        @"isWritable": @(writableVolume ? writableVolume.boolValue
+                                        : writable.boolValue),
+        @"filesystem": filesystem
+    };
+}
+
+- (void)inspectMountedVolumeAtPath:(NSString *)path
+                        completion:(void (^)(NSDictionary<NSString *, id> *descriptor))completion {
+    NSString *requestedPath = path.stringByStandardizingPath;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        int status = 0;
+        NSString *output = RunCommand(@"/usr/sbin/diskutil",
+                                      @[@"info", @"-plist", requestedPath], nil, &status);
+        NSDictionary *plist = nil;
+        if (status == 0 && output.length) {
+            NSData *data = [output dataUsingEncoding:NSUTF8StringEncoding];
+            id value = data ? [NSPropertyListSerialization
+                propertyListWithData:data options:NSPropertyListImmutable
+                              format:nil error:nil] : nil;
+            if ([value isKindOfClass:NSDictionary.class]) {
+                plist = value;
+            }
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            completion([self externalVolumeDescriptorFromDiskutilInfo:plist
+                                                        requestedPath:requestedPath]);
+        });
+    });
+}
+
+- (NSTimeInterval)unknownExternalVolumeNotificationDelay {
+    // APFS containers commonly mount several sibling volumes in one burst.
+    // Waiting briefly lets the configured backup UUID suppress notices for the
+    // whole already-known physical disk.
+    return 2.0;
+}
+
+- (BOOL)isUnknownExternalVolumeDescriptorEligible:
+    (NSDictionary<NSString *, id> *)descriptor {
+    return [descriptor[@"isLocal"] boolValue] &&
+        ![descriptor[@"isInternal"] boolValue] &&
+        [descriptor[@"isPhysical"] boolValue] &&
+        ![descriptor[@"isSystemImage"] boolValue] &&
+        [descriptor[@"diskID"] isKindOfClass:NSString.class] &&
+        [descriptor[@"diskID"] length] &&
+        [descriptor[@"volumeUUID"] isKindOfClass:NSString.class] &&
+        [descriptor[@"volumeUUID"] length] &&
+        [descriptor[@"path"] isKindOfClass:NSString.class] &&
+        [descriptor[@"path"] length];
+}
+
+- (NSArray<NSDictionary<NSString *, id> *> *)mountedExternalDescriptorsForDiskID:
+    (NSString *)diskID {
+    NSMutableArray<NSDictionary<NSString *, id> *> *descriptors = [NSMutableArray array];
+    for (NSDictionary<NSString *, id> *descriptor in
+         self.mountedExternalVolumeDescriptorsByPath.allValues ?: @[]) {
+        if ([descriptor[@"diskID"] isEqualToString:diskID]) {
+            [descriptors addObject:descriptor];
+        }
+    }
+    [descriptors sortUsingComparator:
+        ^NSComparisonResult(NSDictionary<NSString *, id> *left,
+                            NSDictionary<NSString *, id> *right) {
+        return [left[@"path"] compare:right[@"path"]
+                              options:NSCaseInsensitiveSearch];
+    }];
+    return descriptors;
+}
+
+- (NSDictionary<NSString *, id> *)mountedExternalDescriptorForDiskID:
+    (NSString *)diskID volumeUUID:(NSString *)volumeUUID {
+    for (NSDictionary<NSString *, id> *descriptor in
+         [self mountedExternalDescriptorsForDiskID:diskID]) {
+        if ([[descriptor[@"volumeUUID"] uppercaseString]
+                isEqualToString:volumeUUID.uppercaseString]) {
+            return descriptor;
+        }
+    }
+    return nil;
+}
+
+- (NSTimeInterval)unknownExternalVolumeNotificationRetryDelay {
+    return 60.0;
+}
+
+- (void)scheduleUnknownExternalVolumeNotificationRetryForDiskID:
+    (NSString *)diskID {
+    if (!diskID.length || self.unknownExternalVolumeRetryTimersByDiskID[diskID]) {
+        return;
+    }
+    if (!self.unknownExternalVolumeRetryTimersByDiskID) {
+        self.unknownExternalVolumeRetryTimersByDiskID =
+            [NSMutableDictionary dictionary];
+    }
+    __weak typeof(self) weakSelf = self;
+    NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:
+        [self unknownExternalVolumeNotificationRetryDelay] repeats:NO
+                                                   block:^(NSTimer *unused) {
+        (void)unused;
+        typeof(self) strongSelf = weakSelf;
+        [strongSelf.unknownExternalVolumeRetryTimersByDiskID
+            removeObjectForKey:diskID];
+        [strongSelf finishUnknownExternalVolumeInspectionForDiskID:diskID];
+    }];
+    self.unknownExternalVolumeRetryTimersByDiskID[diskID] = timer;
+}
+
+- (void)finishUnknownExternalVolumeInspectionForDiskID:(NSString *)diskID {
+    [self.unknownExternalVolumeTimersByDiskID removeObjectForKey:diskID];
+    if ([self.knownExternalDiskIDs containsObject:diskID] ||
+        [self.notifiedUnknownExternalDiskIDs containsObject:diskID] ||
+        [self.pendingUnknownExternalDiskIDs containsObject:diskID]) {
+        return;
+    }
+    NSArray<NSDictionary<NSString *, id> *> *descriptors =
+        [self mountedExternalDescriptorsForDiskID:diskID];
+    if (!descriptors.count) return;
+
+    NSSet<NSString *> *knownUUIDs = [self configuredExternalVolumeUUIDs];
+    for (NSDictionary<NSString *, id> *descriptor in descriptors) {
+        if ([knownUUIDs containsObject:
+                [descriptor[@"volumeUUID"] uppercaseString]]) {
+            [self.knownExternalDiskIDs addObject:diskID];
+            return;
+        }
+    }
+
+    NSDictionary<NSString *, id> *preferred = nil;
+    NSMutableArray<NSString *> *attachmentVolumeUUIDs =
+        [NSMutableArray array];
+    for (NSDictionary<NSString *, id> *descriptor in descriptors) {
+        NSString *volumeUUID = [descriptor[@"volumeUUID"] uppercaseString];
+        if (volumeUUID.length) {
+            [attachmentVolumeUUIDs addObject:volumeUUID];
+        }
+    }
+    for (NSDictionary<NSString *, id> *descriptor in descriptors) {
+        BOOL isWritableAPFS = [descriptor[@"isWritable"] boolValue] &&
+            [descriptor[@"filesystem"] isEqualToString:@"apfs"];
+        if (!preferred || isWritableAPFS) {
+            preferred = descriptor;
+        }
+        if (isWritableAPFS) break;
+    }
+    if (!preferred) return;
+    if (!self.pendingUnknownExternalDiskIDs) {
+        self.pendingUnknownExternalDiskIDs = [NSMutableSet set];
+    }
+    if (!self.pendingUnknownExternalVolumeUUIDsByDiskID) {
+        self.pendingUnknownExternalVolumeUUIDsByDiskID =
+            [NSMutableDictionary dictionary];
+    }
+    if (!self.notifiedUnknownExternalVolumeUUIDsByDiskID) {
+        self.notifiedUnknownExternalVolumeUUIDsByDiskID =
+            [NSMutableDictionary dictionary];
+    }
+    if (!self.unknownExternalVolumeDeliveryAttemptsByDiskID) {
+        self.unknownExternalVolumeDeliveryAttemptsByDiskID =
+            [NSMutableDictionary dictionary];
+    }
+    NSString *preferredUUID = [preferred[@"volumeUUID"] uppercaseString];
+    NSMutableDictionary<NSString *, id> *notificationDescriptor =
+        [preferred mutableCopy];
+    notificationDescriptor[@"attachmentVolumeUUIDs"] =
+        attachmentVolumeUUIDs;
+    NSUInteger attempt =
+        [self.unknownExternalVolumeDeliveryAttemptsByDiskID[diskID]
+            unsignedIntegerValue] + 1;
+    self.unknownExternalVolumeDeliveryAttemptsByDiskID[diskID] = @(attempt);
+    [self.pendingUnknownExternalDiskIDs addObject:diskID];
+    self.pendingUnknownExternalVolumeUUIDsByDiskID[diskID] = preferredUUID;
+    __weak typeof(self) weakSelf = self;
+    [self deliverUnknownExternalVolumeNotificationForDescriptor:
+        notificationDescriptor
+                                                     completion:^(BOOL delivered) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSString *pendingUUID =
+            strongSelf.pendingUnknownExternalVolumeUUIDsByDiskID[diskID];
+        if (![pendingUUID isEqualToString:preferredUUID]) {
+            if (delivered) {
+                [strongSelf removeUnknownExternalVolumeNotificationForDiskID:diskID
+                                                                   volumeUUID:preferredUUID];
+            }
+            return;
+        }
+        [strongSelf.pendingUnknownExternalDiskIDs removeObject:diskID];
+        [strongSelf.pendingUnknownExternalVolumeUUIDsByDiskID
+            removeObjectForKey:diskID];
+        BOOL sameAttachment = NO;
+        for (NSDictionary<NSString *, id> *current in
+             [strongSelf mountedExternalDescriptorsForDiskID:diskID]) {
+            if ([attachmentVolumeUUIDs containsObject:
+                    [current[@"volumeUUID"] uppercaseString]]) {
+                sameAttachment = YES;
+                break;
+            }
+        }
+        if (delivered && sameAttachment &&
+            ![strongSelf.knownExternalDiskIDs containsObject:diskID]) {
+            [strongSelf.notifiedUnknownExternalDiskIDs addObject:diskID];
+            strongSelf.notifiedUnknownExternalVolumeUUIDsByDiskID[diskID] =
+                preferredUUID;
+            NSMutableSet<NSString *> *currentAttachmentVolumeUUIDs =
+                [NSMutableSet setWithArray:attachmentVolumeUUIDs];
+            for (NSDictionary<NSString *, id> *current in
+                 [strongSelf mountedExternalDescriptorsForDiskID:diskID]) {
+                NSString *currentUUID =
+                    [current[@"volumeUUID"] uppercaseString];
+                if (currentUUID.length) {
+                    [currentAttachmentVolumeUUIDs addObject:currentUUID];
+                }
+            }
+            [strongSelf rememberUnknownExternalAttachmentForDiskID:diskID
+                                                        volumeUUIDs:
+                currentAttachmentVolumeUUIDs.allObjects];
+            [strongSelf.unknownExternalVolumeDeliveryAttemptsByDiskID
+                removeObjectForKey:diskID];
+        } else if (delivered) {
+            [strongSelf removeUnknownExternalVolumeNotificationForDiskID:diskID
+                                                               volumeUUID:preferredUUID];
+        }
+        if (!delivered && sameAttachment &&
+            ![strongSelf.knownExternalDiskIDs containsObject:diskID] &&
+            attempt < 2) {
+            [strongSelf scheduleUnknownExternalVolumeNotificationRetryForDiskID:
+                diskID];
+        } else if (!sameAttachment) {
+            [strongSelf.unknownExternalVolumeDeliveryAttemptsByDiskID
+                removeObjectForKey:diskID];
+            if ([strongSelf mountedExternalDescriptorsForDiskID:diskID].count &&
+                ![strongSelf.knownExternalDiskIDs containsObject:diskID]) {
+                [strongSelf finishUnknownExternalVolumeInspectionForDiskID:diskID];
+            }
+        }
+    }];
+}
+
+- (void)processMountedVolumeDescriptor:(NSDictionary<NSString *, id> *)descriptor {
+    if (![self isUnknownExternalVolumeDescriptorEligible:descriptor]) return;
+    if (!self.mountedExternalVolumeDescriptorsByPath) {
+        self.mountedExternalVolumeDescriptorsByPath = [NSMutableDictionary dictionary];
+    }
+    if (!self.unknownExternalVolumeTimersByDiskID) {
+        self.unknownExternalVolumeTimersByDiskID = [NSMutableDictionary dictionary];
+    }
+    if (!self.knownExternalDiskIDs) {
+        self.knownExternalDiskIDs = [NSMutableSet set];
+    }
+    if (!self.notifiedUnknownExternalDiskIDs) {
+        self.notifiedUnknownExternalDiskIDs = [NSMutableSet set];
+    }
+
+    NSString *path = descriptor[@"path"];
+    NSString *diskID = descriptor[@"diskID"];
+    self.mountedExternalVolumeDescriptorsByPath[path] = descriptor;
+    if ([[self configuredExternalVolumeUUIDs] containsObject:
+            [descriptor[@"volumeUUID"] uppercaseString]]) {
+        [self.knownExternalDiskIDs addObject:diskID];
+        [self forgetUnknownExternalAttachmentForDiskID:diskID];
+        [self.unknownExternalVolumeTimersByDiskID[diskID] invalidate];
+        [self.unknownExternalVolumeTimersByDiskID removeObjectForKey:diskID];
+        [self.unknownExternalVolumeRetryTimersByDiskID[diskID] invalidate];
+        [self.unknownExternalVolumeRetryTimersByDiskID removeObjectForKey:diskID];
+        [self.unknownExternalVolumeDeliveryAttemptsByDiskID removeObjectForKey:diskID];
+        if ([self.notifiedUnknownExternalDiskIDs containsObject:diskID]) {
+            [self removeUnknownExternalVolumeNotificationForDiskID:diskID];
+            [self.notifiedUnknownExternalDiskIDs removeObject:diskID];
+            [self.notifiedUnknownExternalVolumeUUIDsByDiskID removeObjectForKey:diskID];
+        }
+        return;
+    }
+    if ([self.notifiedUnknownExternalDiskIDs containsObject:diskID]) {
+        NSSet<NSString *> *rememberedVolumeUUIDs =
+            [self rememberedUnknownExternalVolumeUUIDsForDiskID:diskID];
+        NSString *notifiedUUID =
+            [self.notifiedUnknownExternalVolumeUUIDsByDiskID[diskID]
+                uppercaseString];
+        BOOL sameAttachment = NO;
+        NSMutableSet<NSString *> *attachmentVolumeUUIDs =
+            [rememberedVolumeUUIDs mutableCopy] ?: [NSMutableSet set];
+        if (notifiedUUID.length) {
+            [attachmentVolumeUUIDs addObject:notifiedUUID];
+        }
+        NSArray<NSDictionary<NSString *, id> *> *currentDescriptors =
+            [self mountedExternalDescriptorsForDiskID:diskID];
+        for (NSDictionary<NSString *, id> *current in currentDescriptors) {
+            NSString *currentUUID = [current[@"volumeUUID"] uppercaseString];
+            if ([attachmentVolumeUUIDs containsObject:currentUUID]) {
+                sameAttachment = YES;
+                break;
+            }
+        }
+        if (sameAttachment) {
+            for (NSDictionary<NSString *, id> *current in currentDescriptors) {
+                NSString *currentUUID = [current[@"volumeUUID"] uppercaseString];
+                if (currentUUID.length) {
+                    [attachmentVolumeUUIDs addObject:currentUUID];
+                }
+            }
+            [self rememberUnknownExternalAttachmentForDiskID:diskID
+                                                 volumeUUIDs:
+                attachmentVolumeUUIDs.allObjects];
+        }
+        return;
+    }
+    if ([self.knownExternalDiskIDs containsObject:diskID] ||
+        [self.pendingUnknownExternalDiskIDs containsObject:diskID] ||
+        [self.unknownExternalVolumeDeliveryAttemptsByDiskID[diskID]
+            unsignedIntegerValue] >= 2 ||
+        self.unknownExternalVolumeRetryTimersByDiskID[diskID] ||
+        self.unknownExternalVolumeTimersByDiskID[diskID]) {
+        return;
+    }
+
+    __weak typeof(self) weakSelf = self;
+    NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:
+        [self unknownExternalVolumeNotificationDelay] repeats:NO
+                                                   block:^(NSTimer *unused) {
+        (void)unused;
+        [weakSelf finishUnknownExternalVolumeInspectionForDiskID:diskID];
+    }];
+    self.unknownExternalVolumeTimersByDiskID[diskID] = timer;
+}
+
 - (void)loadConfiguredAPFSIdentityFromConfig:
     (NSDictionary<NSString *, NSString *> *)config {
-    NSString *volumeName =
-        config[@"GDRIVE_BACKUP_VOLUME_NAME"] ?: @"GoogleDrive-Backup";
-    self.configuredAPFSVolumePath =
-        config[@"GDRIVE_BACKUP_VOLUME"] ?:
-        [@"/Volumes" stringByAppendingPathComponent:volumeName];
+    NSString *target = [config[@"GDRIVE_BACKUP_TARGET"] ?: @"apfs" lowercaseString];
+    NSString *configuredPath = config[@"GDRIVE_BACKUP_VOLUME"];
+    NSString *volumeName = config[@"GDRIVE_BACKUP_VOLUME_NAME"];
+    if (configuredPath.length) {
+        self.configuredAPFSVolumePath = configuredPath;
+    } else if ([target isEqualToString:@"apfs"]) {
+        self.configuredAPFSVolumePath = [@"/Volumes"
+            stringByAppendingPathComponent:
+                (volumeName.length ? volumeName : @"GoogleDrive-Backup")];
+    } else {
+        // Opening and saving a NAS-only profile must not silently create a
+        // same-name local mount trigger.
+        self.configuredAPFSVolumePath = @"";
+    }
     self.configuredAPFSVolumeUUID =
         [[config[@"GDRIVE_BACKUP_VOLUME_UUID"] ?: @""
             stringByTrimmingCharactersInSet:
@@ -2346,19 +3481,76 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     }
     NSDictionary<NSString *, NSString *> *config = [self savedSetupConfig];
     NSString *mountedPath = volumeURL.path.stringByStandardizingPath;
-    if (![self mountedVolumePath:mountedPath matchesConfig:config]) {
-        return;
+    NSString *configuredUUID =
+        [config[@"GDRIVE_BACKUP_VOLUME_UUID"] stringByTrimmingCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (configuredUUID.length &&
+        [self mountedVolumePath:mountedPath matchesConfig:config]) {
+        NSDate *now = [NSDate date];
+        if (![self.lastMountTriggerPath isEqualToString:mountedPath] ||
+            !self.lastMountTriggerDate ||
+            [now timeIntervalSinceDate:self.lastMountTriggerDate] >= 15.0) {
+            self.lastMountTriggerPath = mountedPath;
+            self.lastMountTriggerDate = now;
+            [self launchBackupWithArgument:@"--run" trigger:@"mount" assumeYes:NO];
+        }
     }
 
-    NSDate *now = [NSDate date];
-    if ([self.lastMountTriggerPath isEqualToString:mountedPath] &&
-        self.lastMountTriggerDate &&
-        [now timeIntervalSinceDate:self.lastMountTriggerDate] < 15.0) {
-        return;
+    __weak typeof(self) weakSelf = self;
+    if (!self.mountedExternalVolumeInspectionTokensByPath) {
+        self.mountedExternalVolumeInspectionTokensByPath =
+            [NSMutableDictionary dictionary];
     }
-    self.lastMountTriggerPath = mountedPath;
-    self.lastMountTriggerDate = now;
-    [self launchBackupWithArgument:@"--run" trigger:@"mount" assumeYes:NO];
+    NSString *inspectionToken = NSUUID.UUID.UUIDString;
+    self.mountedExternalVolumeInspectionTokensByPath[mountedPath] =
+        inspectionToken;
+    [self inspectMountedVolumeAtPath:mountedPath
+                         completion:^(NSDictionary<NSString *, id> *descriptor) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf ||
+            ![strongSelf.mountedExternalVolumeInspectionTokensByPath[mountedPath]
+                isEqualToString:inspectionToken]) {
+            return;
+        }
+        [strongSelf.mountedExternalVolumeInspectionTokensByPath
+            removeObjectForKey:mountedPath];
+        [strongSelf processMountedVolumeDescriptor:descriptor];
+    }];
+}
+
+- (void)workspaceVolumeDidUnmount:(NSNotification *)notification {
+    [self refreshOverviewStatus:notification];
+    NSURL *volumeURL = notification.userInfo[NSWorkspaceVolumeURLKey];
+    if (![volumeURL isKindOfClass:NSURL.class] || !volumeURL.isFileURL) return;
+    NSString *path = volumeURL.path.stringByStandardizingPath;
+    [self.mountedExternalVolumeInspectionTokensByPath removeObjectForKey:path];
+    NSDictionary<NSString *, id> *descriptor =
+        self.mountedExternalVolumeDescriptorsByPath[path];
+    NSString *diskID = descriptor[@"diskID"];
+    if (!diskID.length) return;
+    [self.mountedExternalVolumeDescriptorsByPath removeObjectForKey:path];
+    NSArray<NSDictionary<NSString *, id> *> *remainingDescriptors =
+        [self mountedExternalDescriptorsForDiskID:diskID];
+    // The banner represents the physical attachment, not one APFS sibling.
+    // Keeping it avoids a second presentation when only the selected volume
+    // leaves; its UUID set lets an explicit action revalidate a remaining sibling.
+    if (remainingDescriptors.count) return;
+
+    [self.unknownExternalVolumeTimersByDiskID[diskID] invalidate];
+    [self.unknownExternalVolumeTimersByDiskID removeObjectForKey:diskID];
+    [self.unknownExternalVolumeRetryTimersByDiskID[diskID] invalidate];
+    [self.unknownExternalVolumeRetryTimersByDiskID removeObjectForKey:diskID];
+    if ([self.notifiedUnknownExternalDiskIDs containsObject:diskID] ||
+        [self.pendingUnknownExternalDiskIDs containsObject:diskID]) {
+        [self removeUnknownExternalVolumeNotificationForDiskID:diskID];
+    }
+    [self.pendingUnknownExternalDiskIDs removeObject:diskID];
+    [self.pendingUnknownExternalVolumeUUIDsByDiskID removeObjectForKey:diskID];
+    [self.unknownExternalVolumeDeliveryAttemptsByDiskID removeObjectForKey:diskID];
+    [self.knownExternalDiskIDs removeObject:diskID];
+    [self.notifiedUnknownExternalDiskIDs removeObject:diskID];
+    [self.notifiedUnknownExternalVolumeUUIDsByDiskID removeObjectForKey:diskID];
+    [self forgetUnknownExternalAttachmentForDiskID:diskID];
 }
 
 - (void)showOverviewWindow {
@@ -3270,6 +4462,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 
 - (void)reloadSetupForActiveProfile {
     if (!self.setupWindow) return;
+    self.setupContextStatusText = nil;
     [self rebuildSetupWindowPreservingVisibility];
 }
 
@@ -3854,14 +5047,19 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         updates[@"GDRIVE_BACKUP_NAS_URL"] = self.nasURLField.stringValue ?: @"";
         updates[@"GDRIVE_BACKUP_NAS_SUBDIR"] = self.nasSubdirField.stringValue.length ? self.nasSubdirField.stringValue : @"GoogleDrive-Backup";
         updates[@"GDRIVE_BACKUP_NAS_START_ON_MOUNT"] = @"0";
-    } else {
-        updates[@"GDRIVE_BACKUP_VOLUME"] = self.configuredAPFSVolumePath.length
-            ? self.configuredAPFSVolumePath
-            : @"/Volumes/GoogleDrive-Backup";
-        if (self.configuredAPFSVolumeUUID.length) {
-            updates[@"GDRIVE_BACKUP_VOLUME_UUID"] =
-                self.configuredAPFSVolumeUUID;
-        }
+    }
+
+    NSString *externalVolumePath = self.configuredAPFSVolumePath.length
+        ? self.configuredAPFSVolumePath
+        : ([target isEqualToString:@"apfs"] ? @"/Volumes/GoogleDrive-Backup" : @"");
+    if (externalVolumePath.length) {
+        updates[@"GDRIVE_BACKUP_VOLUME"] = externalVolumePath;
+        updates[@"GDRIVE_BACKUP_VOLUME_NAME"] =
+            externalVolumePath.lastPathComponent ?: @"GoogleDrive-Backup";
+    }
+    if (self.configuredAPFSVolumeUUID.length) {
+        updates[@"GDRIVE_BACKUP_VOLUME_UUID"] =
+            self.configuredAPFSVolumeUUID;
     }
     return updates;
 }
@@ -3882,6 +5080,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         @"GDRIVE_BACKUP_NAS_SUBDIR": @"GoogleDrive-Backup",
         @"GDRIVE_BACKUP_NAS_START_ON_MOUNT": @"0",
         @"GDRIVE_BACKUP_VOLUME": @"/Volumes/GoogleDrive-Backup",
+        @"GDRIVE_BACKUP_VOLUME_NAME": @"GoogleDrive-Backup",
         @"GDRIVE_BACKUP_NOTIFY_FAILURES": @"1"
     };
     NSSet<NSString *> *caseInsensitiveKeys = [NSSet setWithArray:@[
@@ -3951,7 +5150,19 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         self.statusField.stringValue = error.localizedDescription ?: @"Schedule update failed.";
         return NO;
     }
-    [self configureBackupNotificationsForConfig:GDTReadConfigDictionary()];
+    NSDictionary<NSString *, NSString *> *savedConfig = GDTReadConfigDictionary();
+    [self configureBackupNotificationsForConfig:savedConfig];
+    NSString *savedSchedule =
+        [savedConfig[@"GDRIVE_BACKUP_SCHEDULE"] ?: @"manual" lowercaseString];
+    BOOL automaticSchedule =
+        [@[@"login", @"hourly", @"daily"] containsObject:savedSchedule];
+    if (!automaticSchedule ||
+        [savedConfig[@"GDRIVE_BACKUP_NOTIFY_FAILURES"] isEqualToString:@"0"]) {
+        // This prompt follows an explicit Save in setup; a disk mount itself
+        // never opens a permission sheet or steals focus.
+        [self requestUnknownExternalVolumeNotificationAuthorizationIfNeeded];
+    }
+    self.setupContextStatusText = nil;
     self.statusField.stringValue = T(self.language, @"statusSaved");
     return YES;
 }
@@ -3975,7 +5186,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         return;
     }
     [self.setupHealthView applySnapshot:[self unknownSetupHealthSnapshot]];
-    self.statusField.stringValue = T(self.language ?: @"en", @"setupCheckNotRun");
+    self.statusField.stringValue = self.setupContextStatusText ?:
+        T(self.language ?: @"en", @"setupCheckNotRun");
 }
 
 - (void)completeSetupHealthCheck:(NSDictionary<NSString *, id> *)snapshot
@@ -3985,11 +5197,13 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     if (generation == self.setupHealthGeneration) {
         [self.setupHealthView applySnapshot:snapshot ?: @{}];
         BOOL ready = [snapshot[@"overall"] isEqualToString:@"ready"];
-        self.statusField.stringValue = T(self.language ?: @"en",
-            ready ? @"setupCheckReady" : @"setupCheckNeedsAttention");
+        self.statusField.stringValue = self.setupContextStatusText ?:
+            T(self.language ?: @"en",
+              ready ? @"setupCheckReady" : @"setupCheckNeedsAttention");
     } else {
         [self.setupHealthView applySnapshot:[self unknownSetupHealthSnapshot]];
-        self.statusField.stringValue = T(self.language ?: @"en", @"setupCheckNotRun");
+        self.statusField.stringValue = self.setupContextStatusText ?:
+            T(self.language ?: @"en", @"setupCheckNotRun");
     }
     [self updateSetupActionAvailability];
 }
@@ -4317,7 +5531,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                  object:nil];
         [NSWorkspace.sharedWorkspace.notificationCenter
             addObserver:self
-               selector:@selector(refreshOverviewStatus:)
+               selector:@selector(workspaceVolumeDidUnmount:)
                    name:NSWorkspaceDidUnmountNotification
                  object:nil];
         [NSWorkspace.sharedWorkspace.notificationCenter
@@ -4331,6 +5545,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             : NSApplicationActivationPolicyRegular];
         [self buildMainMenu];
         [self configureBackupNotificationsForConfig:GDTReadConfigDictionary()];
+        [self primeMountedExternalVolumeCache];
         [self installStatusItemIfNeeded];
         if ([mode isEqualToString:@"overview"]) {
             [self showOverviewWindow];

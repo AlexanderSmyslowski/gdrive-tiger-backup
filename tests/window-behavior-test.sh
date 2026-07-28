@@ -60,6 +60,11 @@ restore_method="$(/usr/bin/awk '
   in_method { print }
   in_method && /^}$/ { exit }
 ' "$MAIN_SOURCE")"
+save_setup_method="$(/usr/bin/awk '
+  /^- \(BOOL\)saveSetupValues/ { in_method = 1 }
+  in_method { print }
+  in_method && /^}$/ { exit }
+' "$MAIN_SOURCE")"
 
 check_contains() {
   local expected="$1"
@@ -200,6 +205,22 @@ if [[ "$startup_method" == *'[self applicationModeForArguments:arguments]'* &&
   printf '%s\n' 'ok - normal launch opens the overview and installs its menu bar controller'
 else
   printf '%s\n' 'not ok - normal launch still bypasses the overview or menu bar controller'
+  failures=$((failures + 1))
+fi
+
+if [[ "$startup_method" == *'selector:@selector(workspaceVolumeDidMount:)'* &&
+      "$startup_method" == *'selector:@selector(workspaceVolumeDidUnmount:)'* &&
+      "$startup_method" == *'[self primeMountedExternalVolumeCache];'* ]]; then
+  printf '%s\n' 'ok - controller tracks mount and unmount lifecycle for one notice per attachment'
+else
+  printf '%s\n' 'not ok - unknown external disks cannot reset their one-notice lifecycle after disconnect'
+  failures=$((failures + 1))
+fi
+
+if [[ "$save_setup_method" == *'requestUnknownExternalVolumeNotificationAuthorizationIfNeeded'* ]]; then
+  printf '%s\n' 'ok - explicit setup enables the passive unknown-disk notification path'
+else
+  printf '%s\n' 'not ok - manual profiles can never authorize passive unknown-disk notices'
   failures=$((failures + 1))
 fi
 
