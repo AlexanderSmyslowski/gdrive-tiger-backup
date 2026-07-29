@@ -365,6 +365,7 @@ fi
 install -m 644 "$ROOT/macos/GDriveBackupTiger/Info.plist" "$APP_CONTENTS/Info.plist"
 clang -fobjc-arc -Wall -Wextra -mmacosx-version-min=13.0 \
   -arch arm64 -arch x86_64 -framework Cocoa -framework UserNotifications \
+  -framework Security \
   "$ROOT/macos/GDriveBackupTiger/main.m" \
   "$ROOT/macos/GDriveBackupTiger/ConfigSupport.m" \
   "$ROOT/macos/GDriveBackupTiger/ProfileSupport.m" \
@@ -396,9 +397,9 @@ test -s "$APP_CONTENTS/Resources/Assets.car"
 "$ROOT/scripts/trash-path.sh" "$ICON_WORK"
 
 /usr/bin/xattr -cr "$APP_DIR"
-codesign --force --deep \
-  --entitlements "$ROOT/macos/GDriveBackupTiger/GDriveBackupTiger.entitlements" \
-  --sign - "$APP_DIR" >/dev/null
+# The source installer uses an ad-hoc signature, which cannot carry protected
+# Apple notification entitlements without being rejected at exec time.
+codesign --force --deep --sign - "$APP_DIR" >/dev/null
 
 sudo install -m 755 "$ROOT/bin/backup-google-drive.sh" /usr/local/bin/backup-google-drive.sh
 install -m 644 "$AGENT_SRC" "$AGENT_DST"

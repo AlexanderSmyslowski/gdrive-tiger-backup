@@ -28,16 +28,16 @@ cleanup() {
 trap cleanup EXIT
 
 archive_listing="$(/usr/bin/xar -tf "$PKG_PATH")"
-has_signature=0
+pkg_has_signature=0
 if /usr/bin/grep -qx 'Signature' <<<"$archive_listing"; then
-  has_signature=1
+  pkg_has_signature=1
 fi
 
-if [[ "$SIGNATURE_EXPECTATION" == "unsigned" && $has_signature -ne 0 ]]; then
+if [[ "$SIGNATURE_EXPECTATION" == "unsigned" && $pkg_has_signature -ne 0 ]]; then
   printf 'Expected an unsigned package, but a signature is present: %s\n' "$PKG_PATH" >&2
   exit 1
 fi
-if [[ "$SIGNATURE_EXPECTATION" == "signed" && $has_signature -eq 0 ]]; then
+if [[ "$SIGNATURE_EXPECTATION" == "signed" && $pkg_has_signature -eq 0 ]]; then
   printf 'Expected a signed package, but no signature is present: %s\n' "$PKG_PATH" >&2
   exit 1
 fi
@@ -129,17 +129,24 @@ if ! /usr/bin/grep -Fq "/bin/chmod 600 \"\$config_file\"" "$POSTINSTALL"; then
 fi
 /usr/bin/codesign --verify --deep --strict "$APP_PATH"
 APP_ENTITLEMENTS="$VERIFY_ROOT/app-entitlements.plist"
-if ! /usr/bin/codesign --display --entitlements :- "$APP_PATH" \
-        >"$APP_ENTITLEMENTS" 2>/dev/null ||
+has_time_sensitive_entitlement=0
+if /usr/bin/codesign --display --entitlements :- "$APP_PATH" \
+     >"$APP_ENTITLEMENTS" 2>/dev/null &&
    [[ "$(/usr/libexec/PlistBuddy \
         -c 'Print :com.apple.developer.usernotifications.time-sensitive' \
-        "$APP_ENTITLEMENTS" 2>/dev/null || true)" != "true" ]]; then
+        "$APP_ENTITLEMENTS" 2>/dev/null || true)" == "true" ]]; then
+  has_time_sensitive_entitlement=1
+fi
+
+if [[ $has_time_sensitive_entitlement -ne 0 ]]; then
   printf '%s\n' \
-    'Packaged app is missing the time-sensitive notification entitlement.' >&2
+    'Packaged app must not carry the restricted time-sensitive notification entitlement.' >&2
   exit 1
 fi
 
 if [[ "$SIGNATURE_EXPECTATION" == "signed" ]]; then
+  # The installer and embedded app have independent signatures. Validate the
+  # app authority directly instead of inferring it from the outer package.
   app_signature="$(/usr/bin/codesign --display --verbose=4 "$APP_PATH" 2>&1)"
   if ! /usr/bin/grep -Fq 'Authority=Developer ID Application:' <<<"$app_signature"; then
     printf '%s\n' 'Signed package does not contain a Developer ID Application-signed app.' >&2

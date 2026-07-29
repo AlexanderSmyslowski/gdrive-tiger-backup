@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v2.4.2 - 2026-07-29
+
+- Remove the protected time-sensitive notification entitlement from ad-hoc, unsigned-package, and Developer ID build paths until a provisioning profile can authorize it; this fixes the macOS `OS_REASON_EXEC` launch rejection introduced in v2.4.1.
+- Keep automatic-backup failures audible and compatible with macOS's persistent alert style, and elevate them to time-sensitive only when the running app can prove that its signature actually carries the authorized entitlement.
+- Add a real isolated menu-bar launch smoke test and a mutated-package regression test, so both macOS execution and release verification reject the exact launch-blocking v2.4.1 failure shape.
+
 ## v2.4.1 - 2026-07-29
 
 - Mark automatic-backup failure alerts as time-sensitive and preserve the required signing entitlement across source installs, local builds, and release packages, so Focus may present the warning without the app taking focus or opening a window.

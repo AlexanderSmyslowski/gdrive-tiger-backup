@@ -16,8 +16,7 @@ OBJC_FLAGS := -fobjc-arc -Wall -Wextra -Werror
 MACOS_DEPLOYMENT_TARGET ?= 13.0
 APP_ARCH_FLAGS ?= -arch arm64 -arch x86_64
 APP_OBJC_FLAGS := $(OBJC_FLAGS) -mmacosx-version-min=$(MACOS_DEPLOYMENT_TARGET) $(APP_ARCH_FLAGS)
-USER_NOTIFICATIONS_FRAMEWORK := -framework UserNotifications
-APP_ENTITLEMENTS := macos/GDriveBackupTiger/GDriveBackupTiger.entitlements
+USER_NOTIFICATIONS_FRAMEWORK := -framework UserNotifications -framework Security
 
 .PHONY: build install dry-run pkg test clean
 
@@ -40,7 +39,10 @@ build:
 		test -s "$(APP_DIR)/Contents/Resources/Assets.car"; \
 		./scripts/trash-path.sh "$$ICON_WORK"
 	xattr -cr "$(APP_DIR)"
-	codesign --force --deep --entitlements "$(APP_ENTITLEMENTS)" --sign - "$(APP_DIR)"
+	# Restricted notification entitlements require an Apple-issued signing
+	# identity. Embedding one in an ad-hoc signature passes codesign verification
+	# but macOS rejects the app at exec time.
+	codesign --force --deep --sign - "$(APP_DIR)"
 
 install:
 	./install.sh
@@ -65,6 +67,7 @@ test:
 	bash tests/launch-agent-safety-test.sh
 	bash tests/release-metadata-test.sh
 	bash tests/release-workflow-test.sh
+	bash tests/package-entitlement-safety-test.sh
 	bash tests/app-build-artifacts-test.sh
 	bash tests/update-flow-safety-test.sh
 	@set -e; RUN_STATE_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-run-state-test.XXXXXX")"; \
