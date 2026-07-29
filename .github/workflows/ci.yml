@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-build-package:
+    name: Test, build, and package
+    runs-on: macos-15
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install test and static-analysis tools
+        run: brew install shellcheck rclone flock jq
+
+      - name: Run tests and static checks
+        run: |
+          make test
+          bash -n packaging/verify-pkg.sh
+          shellcheck -x packaging/verify-pkg.sh
+
+      - name: Build app
+        run: |
+          make build APP_DIR="$RUNNER_TEMP/GDrive Backup Tiger.app"
+          codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/GDrive Backup Tiger.app"
+
+      - name: Build and verify unsigned installer
+        run: |
+          pkg_path="$(./packaging/build-pkg.sh)"
+          ./packaging/verify-pkg.sh --expect-unsigned "$pkg_path"
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-installer
+          path: dist/*.pkg
+          if-no-files-found: error

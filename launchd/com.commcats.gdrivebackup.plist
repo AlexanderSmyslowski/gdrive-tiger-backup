@@ -8,23 +8,23 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/bash</string>
-    <string>/usr/local/bin/backup-google-drive.sh</string>
-    <string>--run</string>
+    <string>/Applications/GDrive Backup Tiger.app/Contents/MacOS/GDriveBackupTiger</string>
+    <string>--menubar</string>
   </array>
 
-  <key>StartOnMount</key>
+  <key>RunAtLoad</key>
   <true/>
 
-  <key>EnvironmentVariables</key>
+  <key>KeepAlive</key>
   <dict>
-    <key>GDRIVE_BACKUP_TRIGGER</key>
-    <string>mount</string>
-    <key>PATH</key>
-    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>SuccessfulExit</key>
+    <false/>
   </dict>
 
-  <key>RunAtLoad</key>
-  <false/>
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+
+  <key>ProcessType</key>
+  <string>Interactive</string>
 </dict>
 </plist>

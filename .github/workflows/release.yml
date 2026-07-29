@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-build-release:
+    name: Validate, build, and publish
+    runs-on: macos-15
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require a tagged commit from main
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          release_commit="$(git rev-list -n 1 "$GITHUB_REF_NAME")"
+          git merge-base --is-ancestor "$release_commit" origin/main
+
+      - name: Install test and static-analysis tools
+        run: brew install shellcheck rclone flock jq
+
+      - name: Validate release metadata
+        run: scripts/validate-release.sh "$GITHUB_REF_NAME"
+
+      - name: Run tests and static checks
+        run: |
+          make test
+          bash -n packaging/verify-pkg.sh
+          shellcheck -x \
+            packaging/verify-pkg.sh \
+            scripts/validate-release.sh \
+            scripts/changelog-release-notes.sh
+
+      - name: Build and verify unsigned installer
+        id: package
+        run: |
+          pkg_path="$(packaging/build-pkg.sh)"
+          packaging/verify-pkg.sh --expect-unsigned "$pkg_path"
+          printf 'path=%s\n' "$pkg_path" >>"$GITHUB_OUTPUT"
+
+      - name: Create SHA-256 digest
+        run: |
+          pkg_path="${{ steps.package.outputs.path }}"
+          pkg_dir="$(dirname "$pkg_path")"
+          pkg_name="$(basename "$pkg_path")"
+          (
+            cd "$pkg_dir"
+            shasum -a 256 "$pkg_name" >SHA256SUMS.txt
+            shasum -a 256 -c SHA256SUMS.txt
+          )
+
+      - name: Upload verified workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-installer-${{ github.ref_name }}
+          path: |
+            ${{ steps.package.outputs.path }}
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes_path="$RUNNER_TEMP/release-notes.md"
+          scripts/changelog-release-notes.sh "$GITHUB_REF_NAME" >"$notes_path"
+          printf '\n%s\n' \
+            'The installer is currently unsigned. Verify the attached SHA-256 file and follow the macOS Gatekeeper instructions in README.md.' \
+            >>"$notes_path"
+          pkg_path="${{ steps.package.outputs.path }}"
+          gh release create "$GITHUB_REF_NAME" \
+            "$pkg_path" \
+            "dist/SHA256SUMS.txt" \
+            --verify-tag \
+            --latest \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file "$notes_path"

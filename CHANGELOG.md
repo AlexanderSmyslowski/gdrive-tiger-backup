@@ -1,5 +1,162 @@
 # Changelog
 
+## Unreleased
+
+## v2.4.0 - 2026-07-29
+
+- Offer a previously unknown directly attached physical disk once per attachment through a passive macOS notification, without opening a window, taking focus, writing, formatting, changing settings, or starting a backup; setup begins only after an explicit, revalidated action and preserves the active NAS target and schedule until Save.
+- Group multi-volume media by physical disk, suppress the unknown-media notice when any named profile already retains one of its volume UUIDs, rebuild attachment state after a controller restart, keep one banner usable when a sibling volume leaves, remember a human dismissal across controller restarts in the same boot session, and clear that state after the disk fully disconnects.
+- Request notification permission only after an explicit setup save, retry one transient unknown-media delivery failure, and bind asynchronous delivery state to both disk and volume identity so reused macOS disk numbers cannot suppress another attachment.
+- Wait for an automatically mounted NAS to become both verified and writable instead of failing in the short post-mount readiness interval.
+- Retry one transient scheduled NAS mount/readiness failure after 30 minutes, revalidate it immediately before launch, retain it across sleep for up to 24 hours, restart the controller after a crash, and issue a distinct alert if that retry also fails.
+- Keep delivered automatic-failure alerts associated with their profile and remove them only after manual dismissal by the user or a newer successful automatic backup; document macOS's required **Persistent** notification style.
+- Preserve the new retry trigger and safe NAS readiness reasons in the status UI and privacy-filtered diagnostics.
+- Reuse one in-process setup window from the persistent controller, present it before network discovery, and drain command output without deadlocking or spawning extra Dock instances.
+- Retry transient NAS codec-manifest read errors and report a persistently unreadable destination separately from a genuinely invalid manifest.
+- Keep passive mount confirmations visible and clickable without activating the app or entering another application's fullscreen Space.
+- Bind external APFS targets to their stable volume UUID, resolve the current macOS mount path before every run, and reject same-name or swapped volumes before Drive access.
+- Refuse APFS path traversal, symbolic-link escapes, nested foreign file systems, post-confirmation swaps, and retention operations whose UUID or device identity changes.
+- Identify an automatically created APFS volume by the one new UUID in its container instead of assuming an unsuffixed `/Volumes` name, and atomically replace stale or empty saved identity fields.
+- Keep legacy path-only profiles available for manual and scheduled runs but prevent them from starting a mount backup until a human explicitly identifies the volume; opening or saving unrelated setup settings never binds whichever same-name volume currently owns that path.
+- Let source-based upgrades verify and atomically persist a caller-supplied APFS path, name, and UUID in both the legacy config and active profile instead of inferring identity from a volume name.
+- Open the visible overview when Finder reopens the already-running menu bar controller.
+- Let saved launchd schedules run unattended after the backup engine verifies the exact configured destination.
+- Link every required application source file from the source installer so local upgrades build successfully.
+- Add opt-out macOS notifications for failed automatic backups and daily 20:00 runs still missing at 21:00, deduplicated per profile and run.
+- Keep the menu bar warning active until a newer successful backup clears the reported problem.
+- Read each durable run summary once per refresh so the overview and notification watchdog evaluate the same state.
+- Preserve a per-profile last-success timestamp so later manual failures cannot make an already successful daily run appear missing.
+- Run scheduled, mount-triggered, and menu-bar-only backups without opening a progress window.
+- Keep progress and passive confirmation windows out of unrelated fullscreen Spaces, avoid forced front ordering, and never reshow hidden progress at completion.
+- Allow foreground confirmation only when a manual backup was requested from an already visible app window.
+- Apply a reversible, manifest-backed NAS name codec for exact `.bin` directories and reserved codec-like names that some network file systems reject.
+- Present codec-backed files and folders under their original logical names in restore browsing, and reject malformed or mismatched physical layers instead of guessing.
+- Detect exact-name Google Drive collisions that rclone would otherwise ignore, including duplicates at a Drive root, preserve every verified provider ID in a separate internal archive, and fail the run if that archive is incomplete.
+- Render app icons into fixed-size bitmap targets so Retina build hosts produce valid `AppIcon.icns` and asset catalogs, covered by an isolated signed Universal 2 build test.
+- Document that each run checks the source while transferring only new or changed files, and that Google Docs, Sheets, and Slides are Office exports rather than copies of Drive's native revision history.
+
+## v2.3.2 - 2026-07-12
+
+- Let the persistent overview controller yield its Dock presence after a successful manual start so the foreground progress window is the app’s only Dock icon.
+- Keep the overview’s Dock icon when process launch fails, preserving a reliable retry path.
+
+## v2.3.1 - 2026-07-12
+
+- Keep **Check backup** visibly busy while its no-copy process runs and prevent duplicate starts.
+- Show a localized success, unavailable-destination, or generic failure result when the check finishes instead of leaving the setup window at “started.”
+- Restore setup actions after every terminal check result while keeping concurrent system checks and real backup starts mutually exclusive.
+
+## v2.3.0 - 2026-07-12
+
+- Require a configured NAS destination to be an actual SMB, AFP, or NFS mount before setup reports it ready or the backup engine writes anything.
+- Revalidate the network mount before each copy phase so a disconnected share cannot fall back to a plain folder on the internal disk.
+- Add a localized menu-bar action to pause or resume schedule and mount-triggered backups without changing the saved schedule or blocking manual backups.
+- Keep paused automatic attempts silent, preserve the last real backup result, and reject damaged pause settings instead of silently enabling automation.
+
+## v2.2.2 - 2026-07-12
+
+- Show preparation and disable repeated clicks before macOS can block process launch on a first network-volume permission prompt.
+- Bring the existing Tiger progress window and its Dock presence forward exactly once for manual backups while scheduled and mount-triggered runs stay passive.
+- Add a localized, keyboard- and VoiceOver-accessible **Cancel backup…** action to the progress window.
+- Cancel only after the sentinel and versioned run state agree on one live process-group leader, then send `TERM` to that isolated backup group so `rclone` children stop and the durable result becomes `cancelled`.
+
+## v2.2.1 - 2026-07-12
+
+- Identify menu bar and overview destinations by device type, NAS host, and backup folder instead of relying on an ambiguous mounted-volume path.
+- Keep meaningful profile names while removing the generic `Default` prefix from the compact destination summary.
+- Parse NAS URLs into credential-free display components so legacy SMB user names and passwords can never enter the status UI.
+
+## v2.2.0 - 2026-07-12
+
+- Add an optional `rclone crypt` mode that encrypts contents plus file and directory names while keeping all passwords inside rclone.
+- Require one safe named crypt remote bound to the exact physical app destination, with password, salt, standard name encryption, directory encryption, content encryption, and mapping output disabled.
+- Revalidate the crypt policy and physical ciphertext tree before each copy, rejecting source-remote reuse, symbolic links, nested file systems, path redirection, and weakened settings.
+- Send live backups and `--backup-dir` version deltas through the same crypt remote without creating cleartext backup-area directories.
+- Thin encrypted history with the existing hourly/daily/weekly cadence, merging sparse deltas first and then moving only the deterministically mapped ciphertext directory to recoverable Trash or quarantine.
+- Browse current and sparse historical encrypted copies through logical names and publish a restore only after `rclone cryptcheck` plus a local SHA-256 succeeds.
+- Replace the APFS-only checkbox with one native encryption-mode popup and a conditional crypt-remote field, localized and accessible in all seven languages.
+- Verify crypt readiness in the setup health check without returning remote names, command output, or key material in diagnostics.
+- Make every compiled test recipe fail fast so compiler or test failures can no longer be reported as a successful suite.
+
+## v2.1.0 - 2026-07-12
+
+- Add a manual **Check for Updates…** action to the application menu and menu bar in all seven supported languages.
+- Compare stable numeric versions from the exact official GitHub API endpoint without cookies, credentials, cached responses, or authentication tokens.
+- Reject foreign redirects, malformed and prerelease versions, oversized bodies, non-200 responses, and untrusted release URLs.
+- Open only the hard-coded official GitHub releases page after a second explicit user action.
+- Never check on launch, download a package, start macOS Installer, or install an update automatically.
+
+## v2.0.0 - 2026-07-12
+
+- Add native create, rename, switch, and delete controls for named backup profiles in setup.
+- Copy the existing configuration into a private default profile without modifying the legacy source file.
+- Keep each profile’s destination, schedule, encryption policy, remote, and last-run summary separate while identifying the active profile in the overview and menu bar.
+- Block profile switches when setup has unsaved edits unless the user explicitly discards them, and roll back activation if launchd cannot apply the new schedule.
+- Resolve profiles through path-safe generated IDs, reject traversal and symbolic links for the config directory, config files, and active-pointer file, and keep files owner-only.
+- Let the backup engine source exactly the active trusted profile while preserving explicit config overrides and the legacy fallback.
+
+## v1.9.0 - 2026-07-12
+
+- Add one native diagnostics window to the application menu and menu bar for tools, Google Drive, destination, schedule, services, backup engine, and the last run.
+- Run diagnostics asynchronously with explicit ready, failed, blocked, unknown, and refreshing states in all seven supported languages.
+- Generate a stable allowlist-only support report without paths, URLs, credentials, remote names, file names, provider output, or log contents.
+- Copy or save the report only after an explicit user action; never send it automatically and save it with owner-only permissions.
+- Keep the diagnostics window at the normal macOS window level so other applications can cover it, and leave the menu bar controller running when it closes.
+
+## v1.8.0 - 2026-07-12
+
+- Add a native restore browser reachable from both the overview and menu bar.
+- Merge the live backup with sparse retained version trees so deleted or replaced files remain discoverable without presenting them as full snapshots.
+- List the current copy and every actually available older copy newest-first, with localized dates and sizes.
+- Restore only to a user-selected folder outside the backup tree, preserve existing files with a new name, and never overwrite silently.
+- Verify the source before and after copying and compare the restored file with SHA-256 before publishing it under its final name.
+- Reject traversal, symbolic links, sources outside the configured backup, retired quarantine data, and destinations inside the independent backup.
+- Provide native keyboard and VoiceOver navigation, explicit loading and empty states, and a Finder reveal action after verified recovery.
+
+## v1.7.0 - 2026-07-11
+
+- Add an in-app system check for required tools, the configured Google Drive remote, and the exact local or NAS destination.
+- Keep setup checks asynchronous, accessible, localized, and free of command output or credentials.
+- Detect a NAS share that disappears during copying, stop later copy phases, and show a specific reconnect-and-retry explanation.
+- Expand and reflow the setup window so the system check, destination controls, schedule, and actions never overlap.
+- Preserve the manual-start contract: a launched backup closes setup exactly once, while a process launch failure stays explicitly retryable.
+
+## v1.6.1 - 2026-07-11
+
+- Show the real progress window as soon as a manual run owns the backup lock, before slow remote and destination checks.
+- Close the setup window after a successful launch, block duplicate clicks there, and keep it open when the process cannot be launched.
+- Treat transiently missing or partial run-state reads as pending while the verified owner process is alive, preventing premature failure screens.
+- Serialize NAS writes and disable multi-threaded destination streams for compatibility with SMB servers that reject concurrent file and directory creation.
+- Classify destination permission failures without persisting private paths and show a specific localized permissions explanation.
+- Open setup only on a first package installation; upgrades keep the single refreshed menu bar controller instead of launching a duplicate overview process.
+
+## v1.6.0 - 2026-07-11
+
+> Historical note: this internal milestone was never tagged or released. The
+> app metadata moved directly from v1.5.0/build 10 to v1.6.1/build 12, which
+> incorporated these changes.
+
+- Add a persistent overview and menu bar controller showing the last verified run, next configured schedule, exact destination, and destination capacity.
+- Replace the broad launchd `StartOnMount` job with exact-volume mount handling in the menu bar controller, including duplicate-event debouncing.
+- Stop `Backup now` and `Check backup` from silently saving edited setup values; unsaved changes now block the action with a localized explanation.
+- Show the full resolved external-disk or NAS destination in setup and preserve it for VoiceOver and pointer users even when visually truncated.
+- Persist a private, atomic last-run summary with explicit running, success, failure, and cancellation state for the overview.
+- Use native close, minimize, buttons, text, progress, keyboard focus, VoiceOver announcements, and Reduce Motion behavior while retaining the Tiger visual signature.
+
+- Preserve overwritten destination files in timestamped `.gdrive-versions` trees by default, with an explicit opt-out.
+- Thin successful version runs with a Time Machine-like hourly, daily, and weekly cadence; coalesce sparse per-file deltas before moving retired runs to recoverable Trash or retriable quarantine.
+- Let ordinary progress windows fall behind other applications while keeping confirmation prompts visible.
+- Add a fail-closed mode for already unlocked encrypted APFS destinations without storing volume passphrases.
+- Make the NAS mount-trigger opt-in effective and return a failure status when manual or scheduled backups have no available target.
+- Add hermetic backup-control, rclone command, NAS parsing, config roundtrip, release metadata, and package payload tests.
+- Split configuration and localization responsibilities out of the AppKit entry point.
+- Harden config roundtrips for Unicode and shell quoting, preserve unreadable files, and enforce owner-only permissions.
+- Surface schedule serialization and launchctl failures instead of reporting a false successful save.
+- Add macOS GitHub Actions for tests, app linking, package construction, payload verification, and unsigned artifact upload.
+- Add optional Developer ID application/installer signing and Apple notarization support without storing credentials in the repository.
+- Build and verify Universal 2 app binaries with an explicit macOS 13 deployment target.
+- Clarify that the Tiger name describes the visual style and that the app requires macOS 13 or later.
+
 ## v1.5.0 - 2026-05-24
 
 - Add a reproducible macOS `.pkg` build for GitHub releases.
