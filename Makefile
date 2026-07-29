@@ -17,6 +17,7 @@ MACOS_DEPLOYMENT_TARGET ?= 13.0
 APP_ARCH_FLAGS ?= -arch arm64 -arch x86_64
 APP_OBJC_FLAGS := $(OBJC_FLAGS) -mmacosx-version-min=$(MACOS_DEPLOYMENT_TARGET) $(APP_ARCH_FLAGS)
 USER_NOTIFICATIONS_FRAMEWORK := -framework UserNotifications
+APP_ENTITLEMENTS := macos/GDriveBackupTiger/GDriveBackupTiger.entitlements
 
 .PHONY: build install dry-run pkg test clean
 
@@ -39,7 +40,7 @@ build:
 		test -s "$(APP_DIR)/Contents/Resources/Assets.car"; \
 		./scripts/trash-path.sh "$$ICON_WORK"
 	xattr -cr "$(APP_DIR)"
-	codesign --force --deep --sign - "$(APP_DIR)"
+	codesign --force --deep --entitlements "$(APP_ENTITLEMENTS)" --sign - "$(APP_DIR)"
 
 install:
 	./install.sh

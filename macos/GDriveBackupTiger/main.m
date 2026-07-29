@@ -1799,6 +1799,11 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     content.body = T(self.language ?: @"en", decision[@"bodyKey"]);
     content.sound = UNNotificationSound.defaultSound;
     content.categoryIdentifier = @"GDT_BACKUP_ALERT";
+    if (@available(macOS 12.0, *)) {
+        // Backup failures must be noticeable during Focus without activating
+        // the app or stealing a full-screen workspace.
+        content.interruptionLevel = UNNotificationInterruptionLevelTimeSensitive;
+    }
     return content;
 }
 

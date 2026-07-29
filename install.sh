@@ -396,7 +396,9 @@ test -s "$APP_CONTENTS/Resources/Assets.car"
 "$ROOT/scripts/trash-path.sh" "$ICON_WORK"
 
 /usr/bin/xattr -cr "$APP_DIR"
-codesign --force --deep --sign - "$APP_DIR" >/dev/null
+codesign --force --deep \
+  --entitlements "$ROOT/macos/GDriveBackupTiger/GDriveBackupTiger.entitlements" \
+  --sign - "$APP_DIR" >/dev/null
 
 sudo install -m 755 "$ROOT/bin/backup-google-drive.sh" /usr/local/bin/backup-google-drive.sh
 install -m 644 "$AGENT_SRC" "$AGENT_DST"

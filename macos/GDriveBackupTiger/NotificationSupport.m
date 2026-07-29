@@ -25,6 +25,17 @@ static NSString *GDTSafeRetryProfileID(NSString *value) {
     return GDTSafeNotificationProfileID(value);
 }
 
+static BOOL GDTIsRetryableNASReason(NSString *reason) {
+    return [@[
+        @"nas_mount_unavailable",
+        @"nas_mount_not_ready",
+        // The shell emits this only when its read-only NAS codec preflight
+        // cannot safely inspect the destination. A later retry repeats every
+        // fail-closed check before any copy can start.
+        @"destination_unreadable"
+    ] containsObject:reason ?: @""];
+}
+
 static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
     NSDate *watchdog = [calendar dateBySettingHour:21 minute:0 second:0 ofDate:now options:0];
     if ([watchdog compare:now] == NSOrderedDescending) {
@@ -92,8 +103,7 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
         NSString *reason = summary[@"reason"] ?: @"";
         if (retryFailure) {
             bodyKey = @"backupNotificationRetryFailureBody";
-        } else if ([@[@"nas_mount_unavailable", @"nas_mount_not_ready"]
-                       containsObject:reason]) {
+        } else if (GDTIsRetryableNASReason(reason)) {
             bodyKey = @"backupNotificationNASRetryBody";
         } else if ([reason isEqualToString:@"destination_permission_denied"]) {
             bodyKey = @"failedPermissionHint";
@@ -164,10 +174,10 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
         return nil;
     }
 
-    // Exit 69 also covers permanent safety failures. Only mount-readiness
-    // outcomes are transient enough to repeat without user intervention.
+    // Exit 69 also covers permanent safety failures, so retry only the
+    // explicitly fail-closed NAS outcomes above.
     NSString *reason = summary[@"reason"] ?: @"";
-    if (![@[@"nas_mount_unavailable", @"nas_mount_not_ready"] containsObject:reason]) {
+    if (!GDTIsRetryableNASReason(reason)) {
         return nil;
     }
 
