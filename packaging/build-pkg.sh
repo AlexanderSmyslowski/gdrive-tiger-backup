@@ -25,7 +25,7 @@ fi
 
 BUILD_DIR="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/gdrive-pkg-build.XXXXXX")"
 PKG_ROOT="$BUILD_DIR/root"
-DIST_DIR="$ROOT/dist"
+DIST_DIR="${DIST_DIR:-$ROOT/dist}"
 COMPONENT_PKG="$BUILD_DIR/${PKG_NAME}"
 FINAL_PKG="$DIST_DIR/${PKG_NAME}"
 APP_PATH="$PKG_ROOT/Applications/GDrive Backup Tiger.app"
@@ -42,6 +42,9 @@ mkdir -p "$PKG_ROOT/usr/local/bin" \
 /usr/bin/make -C "$ROOT" build APP_DIR="$APP_PATH" >&2
 
 if [[ -n "$APP_SIGN_IDENTITY" ]]; then
+  # A Developer ID signature alone does not authorize protected notification
+  # capabilities. Keep this build launchable until a verified provisioning
+  # profile flow exists.
   /usr/bin/codesign \
     --force \
     --options runtime \
@@ -52,7 +55,6 @@ if [[ -n "$APP_SIGN_IDENTITY" ]]; then
     --force \
     --options runtime \
     --timestamp \
-    --entitlements "$ROOT/macos/GDriveBackupTiger/GDriveBackupTiger.entitlements" \
     --sign "$APP_SIGN_IDENTITY" \
     "$APP_PATH" >&2
 fi

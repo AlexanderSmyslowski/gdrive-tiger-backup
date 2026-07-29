@@ -12,6 +12,7 @@
                                 completion:(void (^)(BOOL delivered))completion;
 - (UNMutableNotificationContent *)backupNotificationContentForDecision:
     (NSDictionary<NSString *, NSString *> *)decision;
+- (BOOL)timeSensitiveBackupNotificationsEnabled;
 - (void)clearBackupFailureNotificationsForConfig:
     (NSDictionary<NSString *, NSString *> *)config
     summary:(NSDictionary<NSString *, NSString *> *)summary
@@ -40,6 +41,7 @@
 @property(nonatomic, strong) NSUserDefaults *testDefaults;
 @property(nonatomic) NSInteger deliveryCalls;
 @property(nonatomic) BOOL deliverySucceeds;
+@property(nonatomic) BOOL testTimeSensitiveNotificationsEnabled;
 @property(nonatomic, copy) NSArray<NSString *> *removedNotificationIdentifiers;
 @property(nonatomic, copy) NSArray<NSString *> *extraDeliveredNotificationIdentifiers;
 @end
@@ -206,6 +208,10 @@
 
 - (NSUserDefaults *)backupNotificationDefaultsStore {
     return self.testDefaults;
+}
+
+- (BOOL)timeSensitiveBackupNotificationsEnabled {
+    return self.testTimeSensitiveNotificationsEnabled;
 }
 
 - (void)deliverBackupNotificationDecision:(NSDictionary<NSString *, NSString *> *)decision
@@ -427,21 +433,35 @@ int main(void) {
                @"a stale asynchronous retry decision is revalidated before launch");
 
         SEL contentSelector = NSSelectorFromString(@"backupNotificationContentForDecision:");
+        typedef UNMutableNotificationContent *(*ContentMethod)(
+            id, SEL, NSDictionary *);
+        ContentMethod contentMethod = nil;
         UNMutableNotificationContent *content = nil;
         if ([delegate respondsToSelector:contentSelector]) {
-            typedef UNMutableNotificationContent *(*ContentMethod)(id, SEL, NSDictionary *);
-            ContentMethod contentMethod = (ContentMethod)[delegate methodForSelector:contentSelector];
+            contentMethod = (ContentMethod)[delegate methodForSelector:contentSelector];
             content = contentMethod(delegate, contentSelector, first);
         }
-        BOOL timeSensitiveLevel = NO;
+        BOOL activeLevel = NO;
         if (@available(macOS 12.0, *)) {
-            timeSensitiveLevel =
-                content.interruptionLevel == UNNotificationInterruptionLevelTimeSensitive;
+            activeLevel =
+                content.interruptionLevel == UNNotificationInterruptionLevelActive;
         }
         Assert(content.sound != nil &&
                [content.categoryIdentifier isEqualToString:@"GDT_BACKUP_ALERT"] &&
-               timeSensitiveLevel,
-               @"automatic backup alerts are time-sensitive and audible without opening a window");
+               activeLevel,
+               @"ad-hoc builds keep backup alerts audible without requesting a protected level");
+
+        delegate.testTimeSensitiveNotificationsEnabled = YES;
+        UNMutableNotificationContent *entitledContent = contentMethod
+            ? contentMethod(delegate, contentSelector, first) : nil;
+        BOOL timeSensitiveLevel = NO;
+        if (@available(macOS 12.0, *)) {
+            timeSensitiveLevel =
+                entitledContent.interruptionLevel ==
+                    UNNotificationInterruptionLevelTimeSensitive;
+        }
+        Assert(timeSensitiveLevel,
+               @"properly entitled builds elevate automatic backup alerts to time-sensitive");
 
         NSSet<UNNotificationCategory *> *categories = nil;
         SEL categoriesSelector = NSSelectorFromString(@"appNotificationCategories");

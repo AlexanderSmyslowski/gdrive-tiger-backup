@@ -1,4 +1,5 @@
 #import <Cocoa/Cocoa.h>
+#import <Security/SecTask.h>
 #import <UserNotifications/UserNotifications.h>
 #include <errno.h>
 #include <signal.h>
@@ -1792,6 +1793,24 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     }
 }
 
+- (BOOL)timeSensitiveBackupNotificationsEnabled {
+    SecTaskRef task = SecTaskCreateFromSelf(kCFAllocatorDefault);
+    if (!task) return NO;
+
+    CFErrorRef error = NULL;
+    CFTypeRef value = SecTaskCopyValueForEntitlement(
+        task,
+        CFSTR("com.apple.developer.usernotifications.time-sensitive"),
+        &error);
+    BOOL enabled = value &&
+        CFGetTypeID(value) == CFBooleanGetTypeID() &&
+        CFBooleanGetValue((CFBooleanRef)value);
+    if (value) CFRelease(value);
+    if (error) CFRelease(error);
+    CFRelease(task);
+    return enabled;
+}
+
 - (UNMutableNotificationContent *)backupNotificationContentForDecision:
     (NSDictionary<NSString *, NSString *> *)decision {
     UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
@@ -1800,9 +1819,11 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     content.sound = UNNotificationSound.defaultSound;
     content.categoryIdentifier = @"GDT_BACKUP_ALERT";
     if (@available(macOS 12.0, *)) {
-        // Backup failures must be noticeable during Focus without activating
-        // the app or stealing a full-screen workspace.
-        content.interruptionLevel = UNNotificationInterruptionLevelTimeSensitive;
+        // A protected level without its signed entitlement can make delivery
+        // fail. Ad-hoc builds keep the durable alert at the normal active level.
+        content.interruptionLevel = [self timeSensitiveBackupNotificationsEnabled]
+            ? UNNotificationInterruptionLevelTimeSensitive
+            : UNNotificationInterruptionLevelActive;
     }
     return content;
 }

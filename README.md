@@ -4,7 +4,7 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window. “Tiger” describes the visual style; the app requires macOS 13 Ventura or later and does not run on Mac OS X 10.4 Tiger.
 
-Current release: `v2.4.1` with time-sensitive persistent automatic-failure alerts and a safe retry for transient NAS read failures, passive handling of unknown external disks, verified APFS and NAS identity, one coherent Dock presence, optional end-to-end `rclone crypt` backups, retained versions, verified recovery, named profiles, diagnostics, and a persistent menu bar overview.
+Current release: `v2.4.2` with launch-safe, audible persistent automatic-failure alerts and a safe retry for transient NAS read failures, passive handling of unknown external disks, verified APFS and NAS identity, one coherent Dock presence, optional end-to-end `rclone crypt` backups, retained versions, verified recovery, named profiles, diagnostics, and a persistent menu bar overview.
 
 It backs up:
 
@@ -87,7 +87,7 @@ rclone lsd gdrive:
 For most users, download the latest installer from the GitHub releases page:
 
 1. Open <https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/latest>
-2. Download `GDrive-Backup-Tiger-2.4.1.pkg` from `Assets`.
+2. Download `GDrive-Backup-Tiger-2.4.2.pkg` from `Assets`.
 3. Double-click the package and follow the macOS Installer.
 4. Open `/Applications/GDrive Backup Tiger.app` to choose language, external disk, NAS, and schedule settings.
 
@@ -104,13 +104,13 @@ The package is currently unsigned because the project does not yet have an Apple
 
 1. Click `Done`, not `Move to Trash`.
 2. Open `System Settings > Privacy & Security`.
-3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-2.4.1.pkg`.
+3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-2.4.2.pkg`.
 4. Confirm with `Open Anyway`, then install the package.
 
 Advanced users can also remove the download quarantine flag before opening:
 
 ```bash
-xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-2.4.1.pkg"
+xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-2.4.2.pkg"
 ```
 
 ### Install from source
@@ -240,7 +240,7 @@ Legacy profiles without the key retain exact-path behavior. Merely opening setup
 Saved schedules run unattended after the script verifies the configured destination. `GDRIVE_BACKUP_CONFIRM=1` still protects mount-triggered runs with a prompt. Set it to `0` only if you also deliberately want those mount-triggered backups to start unattended whenever the configured volume is mounted.
 Set `GDRIVE_BACKUP_PAUSED=1` to silence schedule and mount-triggered runs without changing the saved schedule. The menu bar toggles this setting; **Backup now** always remains manual and available.
 Set `GDRIVE_BACKUP_NOTIFY_FAILURES=0` to disable macOS alerts for automatic failures and missed daily runs. The menu bar and overview continue to show backup status even when alerts are disabled or macOS notification permission is denied.
-To keep a failure visible until a person dismisses it or a later automatic backup succeeds, set the macOS notification style for **GDrive Backup Tiger** to **Persistent** (`System Settings` → `Notifications` → `GDrive Backup Tiger`). Leave **Time Sensitive Notifications** enabled there so macOS may present backup failures during Focus. macOS controls both presentation settings; the app never opens a modal window or takes foreground focus for an automatic failure. A manual success deliberately leaves the alert in place.
+To keep a failure visible until a person dismisses it or a later automatic backup succeeds, set the macOS notification style for **GDrive Backup Tiger** to **Persistent** (`System Settings` → `Notifications` → `GDrive Backup Tiger`). macOS controls this presentation setting; the app never opens a modal window or takes foreground focus for an automatic failure. A manual success deliberately leaves the alert in place. The public unsigned package uses normal active notification delivery and therefore does not bypass Focus. A future properly provisioned signed build may elevate the same alert to time-sensitive delivery only when macOS confirms the required protected entitlement.
 For NAS targets, `GDRIVE_BACKUP_NAS_MOUNT_TIMEOUT_SECONDS` bounds the macOS mount request (default `90`, range `1`–`300`) and `GDRIVE_BACKUP_NAS_READY_TIMEOUT_SECONDS` bounds the subsequent verified-writable readiness wait (default `60`, range `0`–`300`).
 Set `GDRIVE_BACKUP_AUTO_CREATE_VOLUME=0` if you want to create the backup volume yourself.
 Set `GDRIVE_BACKUP_NAS_START_ON_MOUNT=1` only if mount events should also start the configured NAS backup; the default `0` reserves mount-triggered runs for the external APFS target.
