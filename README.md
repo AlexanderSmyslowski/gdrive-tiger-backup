@@ -4,7 +4,7 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window. “Tiger” describes the visual style; the app requires macOS 13 Ventura or later and does not run on Mac OS X 10.4 Tiger.
 
-Current release: `v2.4.0` with persistent automatic-failure alerts and a safe retry, passive handling of unknown external disks, verified APFS and NAS identity, one coherent Dock presence, optional end-to-end `rclone crypt` backups, retained versions, verified recovery, named profiles, diagnostics, and a persistent menu bar overview.
+Current release: `v2.4.1` with time-sensitive persistent automatic-failure alerts and a safe retry for transient NAS read failures, passive handling of unknown external disks, verified APFS and NAS identity, one coherent Dock presence, optional end-to-end `rclone crypt` backups, retained versions, verified recovery, named profiles, diagnostics, and a persistent menu bar overview.
 
 It backs up:
 
@@ -26,7 +26,7 @@ the backup does not preserve Google Drive's native document revision history.
 - The controller observes macOS mount events. When an APFS volume UUID is saved, a changed `/Volumes/… 2` suffix is resolved automatically and a merely same-name disk cannot trigger a backup. Older path-only profiles remain available for manual and scheduled use, but a mount event is treated as unknown until a human explicitly binds the disk's UUID.
 - A previously unknown directly attached physical disk produces at most one passive notification per attachment. Mounting it never opens a window, takes focus, formats or writes to the disk, or starts a backup. **Set up as backup destination** revalidates the same disk and only stages it in setup; **Save** registers the disk while leaving the currently selected primary target and schedule as shown, so a NAS target is never replaced silently. **Ignore** makes no change. A dismissal remains remembered if the controller restarts during the same attachment, while fully unplugging the disk clears the notice and makes a later attachment eligible again. UUIDs retained by any named profile suppress the unknown-disk notice for that whole physical disk.
 - The overview shows the last verified run, configured schedule, exact local destination, and available destination capacity.
-- With notifications enabled, macOS reports a failed automatic run immediately and a daily 20:00 run that is still missing at 21:00. A transient NAS mount/readiness failure gets exactly one controller-managed retry after 30 minutes; after sleep it remains eligible until the next wake within 24 hours, and a failed retry creates a separate alert. The controller restarts after a crash, alerts are deduplicated per profile and run, and only a newer successful automatic backup removes still-delivered failure alerts for that profile.
+- With notifications enabled, macOS reports a failed automatic run immediately and a daily 20:00 run that is still missing at 21:00. A transient NAS mount/readiness or fail-closed destination-read failure gets exactly one controller-managed retry after 30 minutes; after sleep it remains eligible until the next wake within 24 hours, and a failed retry creates a separate alert. The controller restarts after a crash, alerts are deduplicated per profile and run, and only a newer successful automatic backup removes still-delivered failure alerts for that profile.
 - Scheduled, mount-triggered, and menu-bar-only runs stay headless. Their live and final state remains available through the menu bar, with a macOS notification for automatic failures.
 - Named profiles keep distinct destinations, schedules, encryption policies, and last-run histories while making the one active profile explicit in setup, the overview, and the menu bar.
 - On first use, if the backup volume does not exist yet, the helper can ask to create a dedicated APFS volume on the newly attached external APFS disk.
@@ -87,7 +87,7 @@ rclone lsd gdrive:
 For most users, download the latest installer from the GitHub releases page:
 
 1. Open <https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/latest>
-2. Download `GDrive-Backup-Tiger-2.4.0.pkg` from `Assets`.
+2. Download `GDrive-Backup-Tiger-2.4.1.pkg` from `Assets`.
 3. Double-click the package and follow the macOS Installer.
 4. Open `/Applications/GDrive Backup Tiger.app` to choose language, external disk, NAS, and schedule settings.
 
@@ -104,13 +104,13 @@ The package is currently unsigned because the project does not yet have an Apple
 
 1. Click `Done`, not `Move to Trash`.
 2. Open `System Settings > Privacy & Security`.
-3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-2.4.0.pkg`.
+3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-2.4.1.pkg`.
 4. Confirm with `Open Anyway`, then install the package.
 
 Advanced users can also remove the download quarantine flag before opening:
 
 ```bash
-xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-2.4.0.pkg"
+xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-2.4.1.pkg"
 ```
 
 ### Install from source
@@ -240,7 +240,7 @@ Legacy profiles without the key retain exact-path behavior. Merely opening setup
 Saved schedules run unattended after the script verifies the configured destination. `GDRIVE_BACKUP_CONFIRM=1` still protects mount-triggered runs with a prompt. Set it to `0` only if you also deliberately want those mount-triggered backups to start unattended whenever the configured volume is mounted.
 Set `GDRIVE_BACKUP_PAUSED=1` to silence schedule and mount-triggered runs without changing the saved schedule. The menu bar toggles this setting; **Backup now** always remains manual and available.
 Set `GDRIVE_BACKUP_NOTIFY_FAILURES=0` to disable macOS alerts for automatic failures and missed daily runs. The menu bar and overview continue to show backup status even when alerts are disabled or macOS notification permission is denied.
-To keep a failure visible until a person dismisses it or a later automatic backup succeeds, set the macOS notification style for **GDrive Backup Tiger** to **Persistent** (`System Settings` → `Notifications` → `GDrive Backup Tiger`). macOS controls this presentation setting; the app never opens a modal window or takes foreground focus for an automatic failure. A manual success deliberately leaves the alert in place.
+To keep a failure visible until a person dismisses it or a later automatic backup succeeds, set the macOS notification style for **GDrive Backup Tiger** to **Persistent** (`System Settings` → `Notifications` → `GDrive Backup Tiger`). Leave **Time Sensitive Notifications** enabled there so macOS may present backup failures during Focus. macOS controls both presentation settings; the app never opens a modal window or takes foreground focus for an automatic failure. A manual success deliberately leaves the alert in place.
 For NAS targets, `GDRIVE_BACKUP_NAS_MOUNT_TIMEOUT_SECONDS` bounds the macOS mount request (default `90`, range `1`–`300`) and `GDRIVE_BACKUP_NAS_READY_TIMEOUT_SECONDS` bounds the subsequent verified-writable readiness wait (default `60`, range `0`–`300`).
 Set `GDRIVE_BACKUP_AUTO_CREATE_VOLUME=0` if you want to create the backup volume yourself.
 Set `GDRIVE_BACKUP_NAS_START_ON_MOUNT=1` only if mount events should also start the configured NAS backup; the default `0` reserves mount-triggered runs for the external APFS target.

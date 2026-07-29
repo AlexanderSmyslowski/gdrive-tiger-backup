@@ -52,6 +52,7 @@ if [[ -n "$APP_SIGN_IDENTITY" ]]; then
     --force \
     --options runtime \
     --timestamp \
+    --entitlements "$ROOT/macos/GDriveBackupTiger/GDriveBackupTiger.entitlements" \
     --sign "$APP_SIGN_IDENTITY" \
     "$APP_PATH" >&2
 fi

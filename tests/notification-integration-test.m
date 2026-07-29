@@ -433,9 +433,15 @@ int main(void) {
             ContentMethod contentMethod = (ContentMethod)[delegate methodForSelector:contentSelector];
             content = contentMethod(delegate, contentSelector, first);
         }
+        BOOL timeSensitiveLevel = NO;
+        if (@available(macOS 12.0, *)) {
+            timeSensitiveLevel =
+                content.interruptionLevel == UNNotificationInterruptionLevelTimeSensitive;
+        }
         Assert(content.sound != nil &&
-               [content.categoryIdentifier isEqualToString:@"GDT_BACKUP_ALERT"],
-               @"automatic backup alerts remain audible without opening a window");
+               [content.categoryIdentifier isEqualToString:@"GDT_BACKUP_ALERT"] &&
+               timeSensitiveLevel,
+               @"automatic backup alerts are time-sensitive and audible without opening a window");
 
         NSSet<UNNotificationCategory *> *categories = nil;
         SEL categoriesSelector = NSSelectorFromString(@"appNotificationCategories");

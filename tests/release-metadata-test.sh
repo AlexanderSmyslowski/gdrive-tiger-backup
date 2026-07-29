@@ -18,12 +18,15 @@ check_contains() {
 }
 
 version="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$INFO_PLIST")"
+build="$(/usr/bin/plutil -extract CFBundleVersion raw -o - "$INFO_PLIST")"
 minimum_macos="$(/usr/bin/plutil -extract LSMinimumSystemVersion raw -o - "$INFO_PLIST")"
 
 check_contains "$ROOT/README.md" "Current release: \`v${version}\`" \
   "README release matches the app version"
 check_contains "$ROOT/CHANGELOG.md" "## v${version} " \
   "changelog contains the app version"
+check_contains "$ROOT/docs/version-history.md" "| v${version} | ${build} |" \
+  "publication history contains the app version and build"
 check_contains "$ROOT/README.md" "macOS ${minimum_macos%%.*}" \
   "README states the minimum macOS generation"
 check_contains "$ROOT/install.sh" "GDRIVE_BACKUP_RETENTION=1" \

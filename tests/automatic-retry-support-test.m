@@ -70,12 +70,37 @@ int main(void) {
                         [NSDate dateWithTimeIntervalSince1970:2840]) != nil,
                @"an unavailable configured NAS mount is retryable");
 
+        NSMutableDictionary<NSString *, NSString *> *destinationUnreadable =
+            [mountNotReady mutableCopy];
+        destinationUnreadable[@"reason"] = @"destination_unreadable";
+        NSDictionary<NSString *, NSString *> *unreadableRetry = Decision(
+            policyClass, dailyNAS, destinationUnreadable, @"failure",
+            [NSDate dateWithTimeIntervalSince1970:2840]);
+        Assert([unreadableRetry[@"identifier"]
+                   isEqualToString:@"office.automatic-retry.1000"] &&
+               [unreadableRetry[@"trigger"] isEqualToString:@"schedule-retry"],
+               @"a fail-closed transient NAS read failure is retried once");
+
         NSMutableDictionary<NSString *, NSString *> *permissionFailure =
             [mountNotReady mutableCopy];
         permissionFailure[@"reason"] = @"destination_permission_denied";
         Assert(Decision(policyClass, dailyNAS, permissionFailure, @"failure",
                         [NSDate dateWithTimeIntervalSince1970:2840]) == nil,
                @"a permanent destination permission failure is not retried");
+
+        for (NSString *reason in @[
+                 @"invalid_name_codec",
+                 @"name_codec_collision",
+                 @"unsupported_rclone"
+             ]) {
+            NSMutableDictionary<NSString *, NSString *> *unsafeFailure =
+                [mountNotReady mutableCopy];
+            unsafeFailure[@"reason"] = reason;
+            Assert(Decision(policyClass, dailyNAS, unsafeFailure, @"failure",
+                            [NSDate dateWithTimeIntervalSince1970:2840]) == nil,
+                   [NSString stringWithFormat:
+                       @"the permanent safety failure %@ is never retried", reason]);
+        }
 
         NSMutableDictionary<NSString *, NSString *> *unclassified =
             [mountNotReady mutableCopy];

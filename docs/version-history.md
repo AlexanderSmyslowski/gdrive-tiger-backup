@@ -31,7 +31,8 @@ records are restored transparently as historical source milestones.
 | v2.3.0 | 21 | `0714564` | Historical source milestone published retrospectively |
 | v2.3.1 | 22 | `c3c94b2` | Historical source milestone published retrospectively |
 | v2.3.2 | 23 | `7ecda45` | Historical source milestone published retrospectively |
-| v2.4.0 | 24 | tag `v2.4.0` | Current tested release |
+| v2.4.0 | 24 | tag `v2.4.0` | Published tested release |
+| v2.4.1 | 25 | tag `v2.4.1` | Current tested release |
 
 No historical binary installer is reconstructed and presented as an original
 artifact. Retrospective release pages expose GitHub's source archives and state

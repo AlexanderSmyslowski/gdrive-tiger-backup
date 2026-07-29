@@ -6,6 +6,7 @@ INFO_PLIST="$ROOT/macos/GDriveBackupTiger/Info.plist"
 VALIDATOR="$ROOT/scripts/validate-release.sh"
 NOTES_EXTRACTOR="$ROOT/scripts/changelog-release-notes.sh"
 WORKFLOW="$ROOT/.github/workflows/release.yml"
+PKG_VERIFIER="$ROOT/packaging/verify-pkg.sh"
 failures=0
 
 check_contains() {
@@ -86,6 +87,8 @@ check_contains "$WORKFLOW" "SHA256SUMS.txt" \
 check_contains "$WORKFLOW" "scripts/changelog-release-notes.sh" \
   "release workflow derives notes from the versioned changelog"
 check_contains "$WORKFLOW" "gh release create" "release workflow creates the GitHub release"
+check_contains "$PKG_VERIFIER" "com.apple.developer.usernotifications.time-sensitive" \
+  "package verification rejects an app without the time-sensitive notification entitlement"
 
 if (( failures > 0 )); then
   printf '%s release workflow check(s) failed.\n' "$failures"

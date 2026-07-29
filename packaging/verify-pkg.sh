@@ -128,6 +128,16 @@ if ! /usr/bin/grep -Fq "/bin/chmod 600 \"\$config_file\"" "$POSTINSTALL"; then
   exit 1
 fi
 /usr/bin/codesign --verify --deep --strict "$APP_PATH"
+APP_ENTITLEMENTS="$VERIFY_ROOT/app-entitlements.plist"
+if ! /usr/bin/codesign --display --entitlements :- "$APP_PATH" \
+        >"$APP_ENTITLEMENTS" 2>/dev/null ||
+   [[ "$(/usr/libexec/PlistBuddy \
+        -c 'Print :com.apple.developer.usernotifications.time-sensitive' \
+        "$APP_ENTITLEMENTS" 2>/dev/null || true)" != "true" ]]; then
+  printf '%s\n' \
+    'Packaged app is missing the time-sensitive notification entitlement.' >&2
+  exit 1
+fi
 
 if [[ "$SIGNATURE_EXPECTATION" == "signed" ]]; then
   app_signature="$(/usr/bin/codesign --display --verbose=4 "$APP_PATH" 2>&1)"

@@ -93,6 +93,17 @@ int main(void) {
                [retryPlanned[@"bodyKey"] isEqualToString:@"backupNotificationNASRetryBody"],
                @"a transient NAS readiness failure announces the later automatic retry");
 
+        NSMutableDictionary<NSString *, NSString *> *destinationUnreadable =
+            [failedSummary mutableCopy];
+        destinationUnreadable[@"reason"] = @"destination_unreadable";
+        NSDictionary<NSString *, NSString *> *readRetryPlanned = Decision(
+            policyClass, daily, destinationUnreadable, @"failure",
+            Date(calendar, 21, 20, 26), calendar);
+        Assert([readRetryPlanned[@"kind"] isEqualToString:@"failure"] &&
+               [readRetryPlanned[@"bodyKey"]
+                   isEqualToString:@"backupNotificationNASRetryBody"],
+               @"a transient NAS read failure announces the later automatic retry");
+
         NSMutableDictionary<NSString *, NSString *> *retryFailed = [nasNotReady mutableCopy];
         retryFailed[@"trigger"] = @"schedule-retry";
         retryFailed[@"started_at"] = [NSString stringWithFormat:@"%.0f",

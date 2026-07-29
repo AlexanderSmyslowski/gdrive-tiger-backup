@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v2.4.1 - 2026-07-29
+
+- Mark automatic-backup failure alerts as time-sensitive and preserve the required signing entitlement across source installs, local builds, and release packages, so Focus may present the warning without the app taking focus or opening a window.
+- Treat the fail-closed `destination_unreadable` NAS codec preflight as eligible for the same single delayed automatic retry as transient mount-readiness failures, while continuing to exclude permissions, damaged manifests, name collisions, unsupported tooling, and unclassified exit codes.
+- Tell the user when this transient NAS read failure will be retried and verify the notification entitlement in both isolated app builds and packaged release artifacts.
+
 ## v2.4.0 - 2026-07-29
 
 - Offer a previously unknown directly attached physical disk once per attachment through a passive macOS notification, without opening a window, taking focus, writing, formatting, changing settings, or starting a backup; setup begins only after an explicit, revalidated action and preserves the active NAS target and schedule until Save.
