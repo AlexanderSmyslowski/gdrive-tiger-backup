@@ -63,6 +63,7 @@ test:
 	bash tests/test-harness-safety-test.sh
 	bash tests/launch-agent-safety-test.sh
 	bash tests/release-metadata-test.sh
+	bash tests/release-workflow-test.sh
 	bash tests/app-build-artifacts-test.sh
 	bash tests/update-flow-safety-test.sh
 	@set -e; RUN_STATE_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-run-state-test.XXXXXX")"; \

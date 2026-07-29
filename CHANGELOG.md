@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.4.0 - 2026-07-29
+
 - Offer a previously unknown directly attached physical disk once per attachment through a passive macOS notification, without opening a window, taking focus, writing, formatting, changing settings, or starting a backup; setup begins only after an explicit, revalidated action and preserves the active NAS target and schedule until Save.
 - Group multi-volume media by physical disk, suppress the unknown-media notice when any named profile already retains one of its volume UUIDs, rebuild attachment state after a controller restart, keep one banner usable when a sibling volume leaves, remember a human dismissal across controller restarts in the same boot session, and clear that state after the disk fully disconnects.
 - Request notification permission only after an explicit setup save, retry one transient unknown-media delivery failure, and bind asynchronous delivery state to both disk and volume identity so reused macOS disk numbers cannot suppress another attachment.
@@ -129,6 +131,10 @@
 - Open setup only on a first package installation; upgrades keep the single refreshed menu bar controller instead of launching a duplicate overview process.
 
 ## v1.6.0 - 2026-07-11
+
+> Historical note: this internal milestone was never tagged or released. The
+> app metadata moved directly from v1.5.0/build 10 to v1.6.1/build 12, which
+> incorporated these changes.
 
 - Add a persistent overview and menu bar controller showing the last verified run, next configured schedule, exact destination, and destination capacity.
 - Replace the broad launchd `StartOnMount` job with exact-volume mount handling in the menu bar controller, including duplicate-event debouncing.

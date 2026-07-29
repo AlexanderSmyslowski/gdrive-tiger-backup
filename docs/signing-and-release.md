@@ -6,6 +6,13 @@ use both Apple Developer ID certificate types:
 - `Developer ID Application` for `GDrive Backup Tiger.app`
 - `Developer ID Installer` for the final `.pkg`
 
+Until those identities and a notarization profile are available, the tag
+workflow publishes an explicitly unsigned installer together with
+`SHA256SUMS.txt`. Its release notes and README must retain the Gatekeeper
+warning; an unsigned package must never be described as signed or notarized.
+When release credentials become available, update the reviewed workflow to use
+the signed commands below before removing that warning.
+
 The build never stores certificate material or notarization credentials in the
 repository. Import the certificates into the login keychain through Apple's
 normal certificate workflow.

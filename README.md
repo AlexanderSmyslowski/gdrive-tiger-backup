@@ -4,7 +4,7 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window. “Tiger” describes the visual style; the app requires macOS 13 Ventura or later and does not run on Mac OS X 10.4 Tiger.
 
-Current release: `v2.3.2` with one coherent Dock presence during manual backups, visible check-run progress and results, verified network-mount safety, pausable automatic backups, immediate manual-start feedback, a non-intrusive Tiger progress window with safe cancellation, clearly identified disk and NAS destinations, optional end-to-end `rclone crypt` backups, Time Machine-like encrypted retention, verified encrypted recovery, manual safe update checks, named profiles, diagnostics, and a persistent menu bar overview.
+Current release: `v2.4.0` with persistent automatic-failure alerts and a safe retry, passive handling of unknown external disks, verified APFS and NAS identity, one coherent Dock presence, optional end-to-end `rclone crypt` backups, retained versions, verified recovery, named profiles, diagnostics, and a persistent menu bar overview.
 
 It backs up:
 
@@ -87,9 +87,12 @@ rclone lsd gdrive:
 For most users, download the latest installer from the GitHub releases page:
 
 1. Open <https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/latest>
-2. Download `GDrive-Backup-Tiger-2.3.2.pkg` from `Assets`.
+2. Download `GDrive-Backup-Tiger-2.4.0.pkg` from `Assets`.
 3. Double-click the package and follow the macOS Installer.
 4. Open `/Applications/GDrive Backup Tiger.app` to choose language, external disk, NAS, and schedule settings.
+
+The complete source-version and publication chronology is recorded in
+[`docs/version-history.md`](docs/version-history.md).
 
 The package installs:
 
@@ -101,13 +104,13 @@ The package is currently unsigned because the project does not yet have an Apple
 
 1. Click `Done`, not `Move to Trash`.
 2. Open `System Settings > Privacy & Security`.
-3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-2.3.2.pkg`.
+3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-2.4.0.pkg`.
 4. Confirm with `Open Anyway`, then install the package.
 
 Advanced users can also remove the download quarantine flag before opening:
 
 ```bash
-xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-2.3.2.pkg"
+xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-2.4.0.pkg"
 ```
 
 ### Install from source
