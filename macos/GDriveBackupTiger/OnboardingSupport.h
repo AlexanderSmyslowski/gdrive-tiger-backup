@@ -8,6 +8,9 @@ FOUNDATION_EXPORT NSString * const GDTOnboardingVersionKey;
 FOUNDATION_EXPORT BOOL GDTOnboardingNeedsPresentation(
     NSDictionary<NSString *, NSString *> *config);
 FOUNDATION_EXPORT NSDictionary<NSString *, NSString *> *GDTOnboardingCompletionUpdate(void);
+FOUNDATION_EXPORT NSDictionary<NSString *, NSString *> *GDTOnboardingConfigurationUpdates(
+    NSDictionary<NSString *, NSString *> *config,
+    NSString *automaticTarget);
 
 typedef NS_ENUM(NSInteger, GDTOnboardingStep) {
     GDTOnboardingStepDestination = 0,
@@ -29,6 +32,7 @@ typedef NS_ENUM(NSInteger, GDTOnboardingStep) {
 @property(nonatomic, copy, nullable) void (^advanceHandler)(void);
 @property(nonatomic, copy, nullable) void (^advancedSetupHandler)(void);
 @property(nonatomic, copy, nullable) void (^cancelHandler)(void);
+@property(nonatomic, copy, nullable) void (^destinationHandler)(NSString *target);
 @property(nonatomic, strong, readonly) NSArray<NSButton *> *destinationButtons;
 @property(nonatomic, strong, readonly) NSButton *backButton;
 @property(nonatomic, strong, readonly) NSButton *advanceButton;
@@ -38,4 +42,3 @@ typedef NS_ENUM(NSInteger, GDTOnboardingStep) {
 @end
 
 NS_ASSUME_NONNULL_END
-

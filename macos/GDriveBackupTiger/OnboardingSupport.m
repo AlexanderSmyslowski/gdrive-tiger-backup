@@ -14,6 +14,19 @@ NSDictionary<NSString *, NSString *> *GDTOnboardingCompletionUpdate(void) {
     return @{GDTOnboardingVersionKey: GDTOnboardingVersion};
 }
 
+NSDictionary<NSString *, NSString *> *GDTOnboardingConfigurationUpdates(
+    NSDictionary<NSString *, NSString *> *config,
+    NSString *automaticTarget) {
+    NSMutableDictionary<NSString *, NSString *> *updates =
+        [config mutableCopy] ?: [NSMutableDictionary dictionary];
+    NSString *target = [automaticTarget.lowercaseString isEqualToString:@"nas"]
+        ? @"nas" : @"apfs";
+    updates[@"GDRIVE_BACKUP_TARGET"] = target;
+    updates[@"GDRIVE_BACKUP_SCHEDULE"] = @"daily";
+    updates[@"GDRIVE_BACKUP_NOTIFY_FAILURES"] = @"1";
+    return updates;
+}
+
 @interface TigerOnboardingView ()
 @property(nonatomic, strong, readwrite) NSArray<NSButton *> *destinationButtons;
 @property(nonatomic, strong, readwrite) NSButton *backButton;
@@ -96,10 +109,10 @@ NSDictionary<NSString *, NSString *> *GDTOnboardingCompletionUpdate(void) {
     }
     self.stepLabels = steps;
 
-    self.automaticLabel = [self labelWithFrame:NSMakeRect(48, 194, 554, 46)];
+    self.automaticLabel = [self labelWithFrame:NSMakeRect(48, 236, 554, 40)];
     self.automaticLabel.font = [NSFont systemFontOfSize:16];
     [self addSubview:self.automaticLabel];
-    self.manualLabel = [self labelWithFrame:NSMakeRect(48, 250, 554, 46)];
+    self.manualLabel = [self labelWithFrame:NSMakeRect(48, 282, 554, 40)];
     self.manualLabel.font = [NSFont systemFontOfSize:16];
     [self addSubview:self.manualLabel];
     self.readinessLabel = [self labelWithFrame:NSMakeRect(48, 314, 554, 90)];
@@ -113,6 +126,10 @@ NSDictionary<NSString *, NSString *> *GDTOnboardingCompletionUpdate(void) {
     NSButton *externalButton = [self buttonWithFrame:NSMakeRect(222, 194, 160, 30)];
     nasButton.accessibilityIdentifier = @"onboarding-automatic-nas";
     externalButton.accessibilityIdentifier = @"onboarding-automatic-external";
+    nasButton.target = self;
+    nasButton.action = @selector(nasDestinationPressed:);
+    externalButton.target = self;
+    externalButton.action = @selector(externalDestinationPressed:);
     self.destinationButtons = @[nasButton, externalButton];
     [self addSubview:nasButton];
     [self addSubview:externalButton];
@@ -246,5 +263,14 @@ NSDictionary<NSString *, NSString *> *GDTOnboardingCompletionUpdate(void) {
     if (self.cancelHandler) self.cancelHandler();
 }
 
-@end
+- (void)nasDestinationPressed:(id)sender {
+    (void)sender;
+    if (self.destinationHandler) self.destinationHandler(@"nas");
+}
 
+- (void)externalDestinationPressed:(id)sender {
+    (void)sender;
+    if (self.destinationHandler) self.destinationHandler(@"apfs");
+}
+
+@end

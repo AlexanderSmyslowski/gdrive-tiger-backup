@@ -91,6 +91,20 @@ For most users, download the latest installer from the GitHub releases page:
 3. Double-click the package and follow the macOS Installer.
 4. Open `/Applications/GDrive Backup Tiger.app` to choose language, external disk, NAS, and schedule settings.
 
+On a new installation the app opens a short, public-facing onboarding flow:
+
+1. choose one automatic primary destination (NAS or an external disk);
+2. run the existing readiness check for the tools, Google Drive, and destination;
+3. confirm daily 20:00 runs and failure notifications, then save and optionally start the first backup.
+
+An additional external disk can be retained as a manual destination and used
+with **Backup jetzt** whenever it is connected. It does not replace the
+automatic primary destination and it never creates a second schedule. An
+unknown disk is passive until a person explicitly chooses **Als Backup-Ziel
+einrichten** and saves it; mounting alone never writes, formats, starts a
+backup, or brings a window to the foreground. **Erweiterte Einrichtung** keeps
+all detailed NAS, encryption, profile, and volume controls available.
+
 The complete source-version and publication chronology is recorded in
 [`docs/version-history.md`](docs/version-history.md).
 

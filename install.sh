@@ -379,6 +379,7 @@ clang -fobjc-arc -Wall -Wextra -mmacosx-version-min=13.0 \
   "$ROOT/macos/GDriveBackupTiger/DiagnosticsView.m" \
   "$ROOT/macos/GDriveBackupTiger/UpdateSupport.m" \
   "$ROOT/macos/GDriveBackupTiger/NetworkMountSupport.m" \
+  "$ROOT/macos/GDriveBackupTiger/OnboardingSupport.m" \
   "$ROOT/macos/GDriveBackupTiger/Localization.m" \
   -o "$APP_CONTENTS/MacOS/GDriveBackupTiger"
 
