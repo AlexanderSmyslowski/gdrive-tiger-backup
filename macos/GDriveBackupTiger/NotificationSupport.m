@@ -21,6 +21,14 @@ static NSTimeInterval GDTTimestamp(NSString *value) {
     return (NSTimeInterval)timestamp;
 }
 
+static NSTimeInterval GDTCanonicalTimestamp(id value) {
+    if (![value isKindOfClass:NSString.class]) return 0;
+    NSTimeInterval timestamp = GDTTimestamp(value);
+    if (timestamp <= 0) return 0;
+    NSString *canonical = [NSString stringWithFormat:@"%.0f", timestamp];
+    return [(NSString *)value isEqualToString:canonical] ? timestamp : 0;
+}
+
 static NSString *GDTSafeRetryProfileID(NSString *value) {
     return GDTSafeNotificationProfileID(value);
 }
@@ -62,11 +70,62 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
         NSArray<NSString *> *parts = [suffix componentsSeparatedByString:@"."];
         if (parts.count != 2 ||
             ![@[@"failure", @"missed"] containsObject:parts[0]] ||
-            GDTTimestamp(parts[1]) <= 0 ||
+            GDTCanonicalTimestamp(parts[1]) <= 0 ||
             [accepted containsObject:candidate]) {
             continue;
         }
         [accepted addObject:candidate];
+    }
+    return accepted;
+}
+
++ (NSArray<NSString *> *)failureNotificationIdentifiersForProfileID:(NSString *)profileID
+                                 throughIssueOriginTimestamp:(NSTimeInterval)cutoff
+                                      candidateNotifications:
+                                          (NSArray<NSDictionary<NSString *, id> *> *)candidates {
+    if (cutoff <= 0) return @[];
+    NSString *safeProfileID = GDTSafeNotificationProfileID(profileID);
+    NSMutableArray<NSString *> *accepted = [NSMutableArray array];
+    for (id value in candidates ?: @[]) {
+        if (![value isKindOfClass:NSDictionary.class]) continue;
+        NSDictionary<NSString *, id> *candidate = value;
+        NSString *identifier = [candidate[@"identifier"] isKindOfClass:NSString.class]
+            ? candidate[@"identifier"] : @"";
+        NSArray<NSString *> *safeIdentifiers =
+            [self failureNotificationIdentifiersForProfileID:safeProfileID
+                                         candidateIdentifiers:identifier.length
+                                             ? @[identifier] : @[]];
+        if (safeIdentifiers.count != 1) continue;
+
+        NSArray<NSString *> *identifierParts =
+            [identifier componentsSeparatedByString:@"."];
+        NSTimeInterval issueOrigin =
+            GDTCanonicalTimestamp(identifierParts.lastObject);
+        BOOL hasNotificationMetadata =
+            candidate[@"categoryIdentifier"] != nil || candidate[@"userInfo"] != nil;
+        if (hasNotificationMetadata) {
+            NSString *category =
+                [candidate[@"categoryIdentifier"] isKindOfClass:NSString.class]
+                    ? candidate[@"categoryIdentifier"] : @"";
+            NSDictionary *userInfo = [candidate[@"userInfo"]
+                isKindOfClass:NSDictionary.class] ? candidate[@"userInfo"] : nil;
+            NSString *metadataProfileID =
+                [userInfo[@"profileID"] isKindOfClass:NSString.class]
+                    ? userInfo[@"profileID"] : @"";
+            NSTimeInterval metadataOrigin =
+                GDTCanonicalTimestamp(userInfo[@"issueOriginTimestamp"]);
+            // A delivered request with partial or conflicting metadata is not
+            // legacy. Falling back to its identifier could retire another issue.
+            if (![category isEqualToString:@"GDT_BACKUP_ALERT"] ||
+                ![metadataProfileID isEqualToString:safeProfileID] ||
+                metadataOrigin <= 0) {
+                continue;
+            }
+            issueOrigin = metadataOrigin;
+        }
+        if (issueOrigin <= cutoff && ![accepted containsObject:identifier]) {
+            [accepted addObject:identifier];
+        }
     }
     return accepted;
 }

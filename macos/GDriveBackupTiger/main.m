@@ -2489,21 +2489,55 @@ static void GDTAdvanceBackupNotificationAcceptedState(
                                        forProfileID:profileID];
 }
 
+- (void)enumerateDeliveredBackupNotificationsWithCompletion:
+    (void (^)(NSArray<UNNotification *> *notifications))completion {
+    [UNUserNotificationCenter.currentNotificationCenter
+        getDeliveredNotificationsWithCompletionHandler:completion];
+}
+
 - (void)removeBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers
-                                forProfileID:(NSString *)profileID {
-    UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
-    [center getDeliveredNotificationsWithCompletionHandler:
+                                forProfileID:(NSString *)profileID
+                 throughIssueOriginTimestamp:(NSTimeInterval)cutoff {
+    [self enumerateDeliveredBackupNotificationsWithCompletion:
         ^(NSArray<UNNotification *> *notifications) {
-        NSMutableArray<NSString *> *candidates =
-            [identifiers mutableCopy] ?: [NSMutableArray array];
-        for (UNNotification *notification in notifications) {
+        NSMutableOrderedSet<NSString *> *candidateOrder =
+            [NSMutableOrderedSet orderedSet];
+        NSMutableDictionary<NSString *, NSDictionary<NSString *, id> *> *candidatesByID =
+            [NSMutableDictionary dictionary];
+        for (id value in identifiers ?: @[]) {
+            if (![value isKindOfClass:NSString.class] || ![value length]) continue;
+            NSString *identifier = value;
+            [candidateOrder addObject:identifier];
+            candidatesByID[identifier] = @{@"identifier": identifier};
+        }
+        for (UNNotification *notification in notifications ?: @[]) {
             NSString *identifier = notification.request.identifier;
-            if (identifier.length) [candidates addObject:identifier];
+            if (!identifier.length) continue;
+            UNNotificationContent *content = notification.request.content;
+            NSString *category = content.categoryIdentifier ?: @"";
+            NSDictionary *userInfo = [content.userInfo isKindOfClass:NSDictionary.class]
+                ? content.userInfo : @{};
+            NSMutableDictionary<NSString *, id> *candidate =
+                [@{@"identifier": identifier} mutableCopy];
+            if (category.length || userInfo.count) {
+                candidate[@"categoryIdentifier"] = category;
+                candidate[@"userInfo"] = userInfo;
+            }
+            [candidateOrder addObject:identifier];
+            // Notification Center is authoritative for a currently delivered
+            // identifier; its metadata must not be bypassed by a legacy entry.
+            candidatesByID[identifier] = candidate;
+        }
+        NSMutableArray<NSDictionary<NSString *, id> *> *candidates =
+            [NSMutableArray arrayWithCapacity:candidateOrder.count];
+        for (NSString *identifier in candidateOrder) {
+            [candidates addObject:candidatesByID[identifier]];
         }
         NSArray<NSString *> *safeIdentifiers =
             [GDTBackupNotificationPolicy
                 failureNotificationIdentifiersForProfileID:profileID
-                                      candidateIdentifiers:candidates];
+                             throughIssueOriginTimestamp:cutoff
+                                  candidateNotifications:candidates];
         if (!safeIdentifiers.count) return;
         [self removeDeliveredBackupNotificationIdentifiers:safeIdentifiers];
         [self removePendingBackupNotificationIdentifiers:safeIdentifiers];
@@ -2578,7 +2612,9 @@ static void GDTAdvanceBackupNotificationAcceptedState(
     if (legacyIdentifier.length && ![identifiers containsObject:legacyIdentifier]) {
         [identifiers addObject:legacyIdentifier];
     }
-    [self removeBackupNotificationIdentifiers:identifiers forProfileID:profileID];
+    [self removeBackupNotificationIdentifiers:identifiers
+                                  forProfileID:profileID
+                   throughIssueOriginTimestamp:finishedAt];
     [defaults removeObjectForKey:deliveredKey];
     [defaults removeObjectForKey:lastKey];
     [defaults removeObjectForKey:[self backupNotificationDefaultsKeyForProfileID:profileID

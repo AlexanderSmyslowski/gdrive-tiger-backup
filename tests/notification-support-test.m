@@ -48,6 +48,20 @@ static NSArray<NSString *> *ProfileFailureIdentifiers(
     return method(policyClass, selector, profileID, candidates);
 }
 
+static NSArray<NSString *> *ProfileFailureIdentifiersThroughOrigin(
+    Class policyClass,
+    NSString *profileID,
+    NSTimeInterval cutoff,
+    NSArray<NSDictionary<NSString *, id> *> *candidates) {
+    SEL selector = NSSelectorFromString(
+        @"failureNotificationIdentifiersForProfileID:throughIssueOriginTimestamp:candidateNotifications:");
+    if (!policyClass || ![policyClass respondsToSelector:selector]) return nil;
+    typedef NSArray<NSString *> *(*FilterMethod)(
+        id, SEL, NSString *, NSTimeInterval, NSArray<NSDictionary<NSString *, id> *> *);
+    FilterMethod method = (FilterMethod)[policyClass methodForSelector:selector];
+    return method(policyClass, selector, profileID, cutoff, candidates);
+}
+
 int main(void) {
     @autoreleasepool {
         Class policyClass = NSClassFromString(@"GDTBackupNotificationPolicy");
@@ -383,6 +397,60 @@ int main(void) {
                    @"com.commcats.gdrivebackup.office.missed.200"
                ]],
                @"notification cleanup accepts only exact safe failure IDs for one profile");
+
+        NSArray<NSString *> *cutoffFailures =
+            ProfileFailureIdentifiersThroughOrigin(policyClass, @"office", 500, @[
+                @{@"identifier": @"com.commcats.gdrivebackup.office.failure.100"},
+                @{@"identifier": @"com.commcats.gdrivebackup.office.missed.200"},
+                @{@"identifier": @"com.commcats.gdrivebackup.office.failure.600"},
+                @{
+                    @"identifier": @"com.commcats.gdrivebackup.office.failure.700",
+                    @"categoryIdentifier": @"GDT_BACKUP_ALERT",
+                    @"userInfo": @{
+                        @"profileID": @"office",
+                        @"issueOriginTimestamp": @"400"
+                    }
+                },
+                @{
+                    @"identifier": @"com.commcats.gdrivebackup.office.failure.300",
+                    @"categoryIdentifier": @"GDT_BACKUP_ALERT",
+                    @"userInfo": @{
+                        @"profileID": @"office",
+                        @"issueOriginTimestamp": @"600"
+                    }
+                },
+                @{@"identifier": @"com.commcats.gdrivebackup.office.missed.0200"},
+                @{
+                    @"identifier": @"com.commcats.gdrivebackup.office.failure.250",
+                    @"categoryIdentifier": @"GDT_BACKUP_ALERT",
+                    @"userInfo": @{
+                        @"profileID": @"office",
+                        @"issueOriginTimestamp": @"0400"
+                    }
+                },
+                @{
+                    @"identifier": @"com.commcats.gdrivebackup.office.failure.230",
+                    @"categoryIdentifier": @"GDT_BACKUP_ALERT",
+                    @"userInfo": @{
+                        @"profileID": @"archive",
+                        @"issueOriginTimestamp": @"230"
+                    }
+                },
+                @{
+                    @"identifier": @"com.commcats.gdrivebackup.office.failure.240",
+                    @"categoryIdentifier": @"GDT_UNKNOWN_EXTERNAL_VOLUME",
+                    @"userInfo": @{
+                        @"profileID": @"office",
+                        @"issueOriginTimestamp": @"240"
+                    }
+                }
+            ]);
+        Assert([cutoffFailures isEqualToArray:@[
+                   @"com.commcats.gdrivebackup.office.failure.100",
+                   @"com.commcats.gdrivebackup.office.missed.200",
+                   @"com.commcats.gdrivebackup.office.failure.700"
+               ]],
+               @"success cleanup trusts exact metadata and keeps newer or malformed origins");
     }
 
     if (failures > 0) {

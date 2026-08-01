@@ -19,6 +19,8 @@
                                       forProfileID:(NSString *)profileID;
 - (void)removeDeliveredBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers;
 - (void)removePendingBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers;
+- (void)enumerateDeliveredBackupNotificationsWithCompletion:
+    (void (^)(NSArray<UNNotification *> *notifications))completion;
 - (void)clearBackupFailureNotificationsForConfig:
     (NSDictionary<NSString *, NSString *> *)config
     summary:(NSDictionary<NSString *, NSString *> *)summary
@@ -80,6 +82,14 @@
 @interface BackupRemovalSeamTestDelegate : AppDelegate
 @property(nonatomic, copy) NSArray<NSString *> *removedDeliveredNotificationIdentifiers;
 @property(nonatomic, copy) NSArray<NSString *> *removedPendingNotificationIdentifiers;
+@end
+
+@interface BackupCleanupRaceTestDelegate : AppDelegate
+@property(nonatomic, strong) NSUserDefaults *testDefaults;
+@property(nonatomic, copy) NSArray<NSString *> *removedDeliveredNotificationIdentifiers;
+@property(nonatomic, copy) NSArray<NSString *> *removedPendingNotificationIdentifiers;
+@property(nonatomic, copy) void (^deferredDeliveredEnumeration)(
+    NSArray<UNNotification *> *notifications);
 @end
 
 @interface UnknownVolumeNotificationTestDelegate : NotificationTestDelegate
@@ -277,14 +287,19 @@
     finish(self.deliverySucceeds);
 }
 
-- (void)removeBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers
-                                forProfileID:(NSString *)profileID {
-    (void)profileID;
-    NSMutableArray<NSString *> *all = [identifiers mutableCopy] ?: [NSMutableArray array];
+- (void)enumerateDeliveredBackupNotificationsWithCompletion:
+    (void (^)(NSArray<UNNotification *> *notifications))completion {
+    NSMutableArray<UNNotification *> *notifications = [NSMutableArray array];
     for (NSString *identifier in self.extraDeliveredNotificationIdentifiers ?: @[]) {
-        if (![all containsObject:identifier]) [all addObject:identifier];
+        UNMutableNotificationContent *content =
+            [[UNMutableNotificationContent alloc] init];
+        TestNotificationEnvelope *envelope = [[TestNotificationEnvelope alloc] init];
+        envelope.request = [UNNotificationRequest requestWithIdentifier:identifier
+                                                                content:content
+                                                                trigger:nil];
+        [notifications addObject:(UNNotification *)envelope];
     }
-    self.removedNotificationIdentifiers = all;
+    completion(notifications);
 }
 
 - (void)removeDeliveredBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers {
@@ -302,6 +317,27 @@
 
 
 @implementation BackupRemovalSeamTestDelegate
+
+- (void)removeDeliveredBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers {
+    self.removedDeliveredNotificationIdentifiers = identifiers;
+}
+
+- (void)removePendingBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers {
+    self.removedPendingNotificationIdentifiers = identifiers;
+}
+
+@end
+
+@implementation BackupCleanupRaceTestDelegate
+
+- (NSUserDefaults *)backupNotificationDefaultsStore {
+    return self.testDefaults;
+}
+
+- (void)enumerateDeliveredBackupNotificationsWithCompletion:
+    (void (^)(NSArray<UNNotification *> *notifications))completion {
+    self.deferredDeliveredEnumeration = completion;
+}
 
 - (void)removeDeliveredBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers {
     self.removedDeliveredNotificationIdentifiers = identifiers;
@@ -487,6 +523,18 @@ static void PrepareUnknownVolumeDeliveryState(
     delegate.unknownExternalVolumeTimersByDiskID = [NSMutableDictionary dictionary];
     delegate.knownExternalDiskIDs = [NSMutableSet set];
     delegate.notifiedUnknownExternalDiskIDs = [NSMutableSet set];
+}
+
+static UNNotification *DeliveredBackupNotification(
+    NSString *identifier, NSString *categoryIdentifier, NSDictionary *userInfo) {
+    UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
+    content.categoryIdentifier = categoryIdentifier ?: @"";
+    content.userInfo = userInfo ?: @{};
+    TestNotificationEnvelope *envelope = [[TestNotificationEnvelope alloc] init];
+    envelope.request = [UNNotificationRequest requestWithIdentifier:identifier
+                                                            content:content
+                                                            trigger:nil];
+    return (UNNotification *)envelope;
 }
 
 int main(void) {
@@ -1811,6 +1859,136 @@ int main(void) {
                [reusedDiskIDDelivery.notifiedUnknownExternalDiskIDs
                    containsObject:@"disk20"],
                @"a delayed delivery cannot latch a different disk that reused the same disk identifier");
+
+        BackupCleanupRaceTestDelegate *cleanupRace =
+            [[BackupCleanupRaceTestDelegate alloc] init];
+        NSString *cleanupSuiteName =
+            [suiteName stringByAppendingString:@".cleanup-race"];
+        cleanupRace.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:cleanupSuiteName];
+        NSString *cleanupPrefix = @"GDTBackupNotification.office.";
+        NSString *oldFailureID =
+            @"com.commcats.gdrivebackup.office.failure.100";
+        NSString *oldMissedID =
+            @"com.commcats.gdrivebackup.office.missed.200";
+        NSString *newFailureID =
+            @"com.commcats.gdrivebackup.office.failure.600";
+        [cleanupRace.testDefaults setObject:@[oldFailureID]
+            forKey:[cleanupPrefix stringByAppendingString:
+                @"deliveredFailureIdentifiers"]];
+        [cleanupRace.testDefaults setObject:oldFailureID
+            forKey:[cleanupPrefix stringByAppendingString:
+                @"lastDeliveredIdentifier"]];
+        [cleanupRace.testDefaults setObject:@{@"origin": @400, @"stage": @1}
+            forKey:[cleanupPrefix stringByAppendingString:
+                @"latestDeliveredIssueState"]];
+        [cleanupRace.testDefaults setDouble:400
+            forKey:[cleanupPrefix stringByAppendingString:
+                @"latestDeliveredIssueAt"]];
+        [cleanupRace.testDefaults setDouble:400
+            forKey:[cleanupPrefix stringByAppendingString:@"activeIssueAt"]];
+
+        [cleanupRace clearBackupFailureNotificationsForConfig:
+            @{@"GDRIVE_BACKUP_PROFILE_ID": @"office"}
+            summary:@{@"status": @"success", @"finished_at": @"500",
+                      @"trigger": @"schedule-retry"}
+            status:@"success"];
+        Assert(cleanupRace.deferredDeliveredEnumeration != nil &&
+               cleanupRace.removedDeliveredNotificationIdentifiers == nil &&
+               cleanupRace.removedPendingNotificationIdentifiers == nil,
+               @"automatic-success cleanup waits for delivered-notification enumeration");
+
+        [cleanupRace.testDefaults setObject:@[newFailureID]
+            forKey:[cleanupPrefix stringByAppendingString:
+                @"deliveredFailureIdentifiers"]];
+        [cleanupRace.testDefaults setObject:newFailureID
+            forKey:[cleanupPrefix stringByAppendingString:
+                @"lastDeliveredIdentifier"]];
+        [cleanupRace.testDefaults setObject:@{@"origin": @600, @"stage": @1}
+            forKey:[cleanupPrefix stringByAppendingString:
+                @"latestDeliveredIssueState"]];
+        [cleanupRace.testDefaults setDouble:600
+            forKey:[cleanupPrefix stringByAppendingString:
+                @"latestDeliveredIssueAt"]];
+        [cleanupRace.testDefaults setInteger:1
+            forKey:[cleanupPrefix stringByAppendingString:
+                @"latestDeliveredIssueStage"]];
+        [cleanupRace.testDefaults setDouble:600
+            forKey:[cleanupPrefix stringByAppendingString:@"activeIssueAt"]];
+        [cleanupRace.testDefaults setObject:@"failure"
+            forKey:[cleanupPrefix stringByAppendingString:@"activeIssueKind"]];
+        [cleanupRace.testDefaults setObject:newFailureID
+            forKey:[cleanupPrefix stringByAppendingString:
+                @"activeIssueIdentifier"]];
+
+        NSString *trustedOldOriginID =
+            @"com.commcats.gdrivebackup.office.failure.700";
+        NSString *trustedNewOriginID =
+            @"com.commcats.gdrivebackup.office.failure.300";
+        NSArray<UNNotification *> *deliveredDuringCleanup = @[
+            DeliveredBackupNotification(oldFailureID, @"GDT_BACKUP_ALERT",
+                @{@"profileID": @"office", @"issueOriginTimestamp": @"100"}),
+            DeliveredBackupNotification(oldMissedID, @"", @{}),
+            DeliveredBackupNotification(newFailureID, @"GDT_BACKUP_ALERT",
+                @{@"profileID": @"office", @"issueOriginTimestamp": @"600"}),
+            DeliveredBackupNotification(trustedOldOriginID, @"GDT_BACKUP_ALERT",
+                @{@"profileID": @"office", @"issueOriginTimestamp": @"400"}),
+            DeliveredBackupNotification(trustedNewOriginID, @"GDT_BACKUP_ALERT",
+                @{@"profileID": @"office", @"issueOriginTimestamp": @"600"}),
+            DeliveredBackupNotification(
+                @"com.commcats.gdrivebackup.office.failure.not-a-time",
+                @"GDT_BACKUP_ALERT",
+                @{@"profileID": @"office", @"issueOriginTimestamp": @"100"}),
+            DeliveredBackupNotification(
+                @"com.commcats.gdrivebackup.office.missed.0200", @"", @{}),
+            DeliveredBackupNotification(
+                @"com.commcats.gdrivebackup.archive.failure.100",
+                @"GDT_BACKUP_ALERT",
+                @{@"profileID": @"archive", @"issueOriginTimestamp": @"100"}),
+            DeliveredBackupNotification(
+                @"com.commcats.gdrivebackup.office.failure.250",
+                @"GDT_BACKUP_ALERT",
+                @{@"profileID": @"office", @"issueOriginTimestamp": @"0400"}),
+            DeliveredBackupNotification(
+                @"com.commcats.gdrivebackup.office.failure.230",
+                @"GDT_BACKUP_ALERT",
+                @{@"profileID": @"archive", @"issueOriginTimestamp": @"230"}),
+            DeliveredBackupNotification(
+                @"com.commcats.gdrivebackup.office.failure.240",
+                @"GDT_UNKNOWN_EXTERNAL_VOLUME",
+                @{@"profileID": @"office", @"issueOriginTimestamp": @"240"})
+        ];
+        cleanupRace.deferredDeliveredEnumeration(deliveredDuringCleanup);
+        cleanupRace.deferredDeliveredEnumeration = nil;
+
+        NSSet<NSString *> *expectedCleanupIDs = [NSSet setWithArray:@[
+            oldFailureID, oldMissedID, trustedOldOriginID
+        ]];
+        Assert(cleanupRace.removedDeliveredNotificationIdentifiers.count == 3 &&
+               [[NSSet setWithArray:
+                   cleanupRace.removedDeliveredNotificationIdentifiers]
+                       isEqualToSet:expectedCleanupIDs] &&
+               cleanupRace.removedPendingNotificationIdentifiers.count == 3 &&
+               [[NSSet setWithArray:
+                   cleanupRace.removedPendingNotificationIdentifiers]
+                       isEqualToSet:expectedCleanupIDs],
+               @"a delayed success cleanup removes only canonical issue origins at or before its cutoff");
+        NSDictionary *newAcceptedState = [cleanupRace.testDefaults
+            dictionaryForKey:[cleanupPrefix stringByAppendingString:
+                @"latestDeliveredIssueState"]];
+        Assert([newAcceptedState[@"origin"] doubleValue] == 600 &&
+               [cleanupRace.testDefaults doubleForKey:
+                   [cleanupPrefix stringByAppendingString:@"activeIssueAt"]] == 600 &&
+               [[cleanupRace.testDefaults stringForKey:
+                   [cleanupPrefix stringByAppendingString:
+                       @"activeIssueIdentifier"]]
+                           isEqualToString:newFailureID] &&
+               [[cleanupRace.testDefaults stringArrayForKey:
+                   [cleanupPrefix stringByAppendingString:
+                       @"deliveredFailureIdentifiers"]]
+                           isEqualToArray:@[newFailureID]],
+               @"a failure introduced during cleanup stays latched and deduplicated");
+        [cleanupRace.testDefaults removePersistentDomainForName:cleanupSuiteName];
 
         delegate.extraDeliveredNotificationIdentifiers = @[
             @"com.commcats.gdrivebackup.office.missed.50"
