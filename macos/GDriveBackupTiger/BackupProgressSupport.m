@@ -126,7 +126,13 @@ NSDictionary<NSString *, NSString *> *GDTReadBackupProgressAtPath(NSString *path
                               @"trigger", @"updated_at"]) {
         if (!values[key]) return nil;
     }
-    if (![values[@"status"] isEqualToString:@"finished"] && !values[@"label"]) {
+    NSString *status = values[@"status"];
+    if (status) {
+        if (![status isEqualToString:@"finished"] || values[@"label"] ||
+            values[@"phase"] || values[@"percent"] || values[@"detail"]) {
+            return nil;
+        }
+    } else if (!values[@"label"]) {
         return nil;
     }
     return values;
@@ -145,7 +151,8 @@ NSDictionary<NSString *, NSString *> *GDTValidatedBackupProgressForValues(
     for (NSString *key in @[@"protocol", @"pid", @"started_at", @"trigger"]) {
         if (!GDTProgressValueIsSafe(summary[key], 512)) return nil;
     }
-    if (![summaryStatus isEqualToString:@"running"] ||
+    if (progress[@"status"] ||
+        ![summaryStatus isEqualToString:@"running"] ||
         ![progress[@"protocol"] isEqualToString:@"1"] ||
         ![summary[@"protocol"] isEqualToString:@"1"] ||
         ![progress[@"profile_id"] isEqualToString:profileID] ||
@@ -175,7 +182,7 @@ NSDictionary<NSString *, NSString *> *GDTValidatedBackupProgressForValues(
     errno = 0;
     if (kill((pid_t)pid, 0) != 0 && errno != EPERM) return nil;
     NSTimeInterval updateTimestamp = (NSTimeInterval)updatedAt;
-    if (updateTimestamp > nowTimestamp + 1 || nowTimestamp - updateTimestamp > 60) {
+    if (updateTimestamp > nowTimestamp || nowTimestamp - updateTimestamp > 60) {
         return nil;
     }
 

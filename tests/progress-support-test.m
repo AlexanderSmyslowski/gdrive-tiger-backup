@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#include <math.h>
 #include <unistd.h>
 #import "BackupProgressSupport.h"
 
@@ -10,7 +11,7 @@ static void Assert(BOOL condition, NSString *message) {
 
 int main(void) {
     @autoreleasepool {
-        NSTimeInterval now = NSDate.date.timeIntervalSince1970;
+        NSTimeInterval now = floor(NSDate.date.timeIntervalSince1970);
         NSString *pid = [NSString stringWithFormat:@"%d", getpid()];
         NSString *started = [NSString stringWithFormat:@"%.0f", now - 10];
         NSDictionary *summary = @{
@@ -90,6 +91,25 @@ int main(void) {
                    future, summary, @"running", @"default", now) == nil,
                @"future progress is rejected");
 
+        NSMutableDictionary *oneSecondFuture = [progress mutableCopy];
+        oneSecondFuture[@"updated_at"] = @"2000000001";
+        Assert(GDTValidatedBackupProgressForValues(
+                   oneSecondFuture, summary, @"running", @"default",
+                   2000000000) == nil,
+               @"the smallest representable future timestamp is rejected");
+
+        NSMutableDictionary *mixedTerminal = [progress mutableCopy];
+        mixedTerminal[@"status"] = @"finished";
+        Assert(GDTValidatedBackupProgressForValues(
+                   mixedTerminal, summary, @"running", @"default", now) == nil,
+               @"terminal progress cannot be validated as live");
+
+        NSMutableDictionary *unknownState = [progress mutableCopy];
+        unknownState[@"status"] = @"paused";
+        Assert(GDTValidatedBackupProgressForValues(
+                   unknownState, summary, @"running", @"default", now) == nil,
+               @"unknown progress states are rejected while validating");
+
         NSMutableDictionary *missingIdentity = [progress mutableCopy];
         [missingIdentity removeObjectForKey:@"started_at"];
         Assert(GDTValidatedBackupProgressForValues(
@@ -153,6 +173,30 @@ int main(void) {
         Assert([GDTReadBackupProgressAtPath(validPath)[@"percent"]
                    isEqualToString:@"63"],
                @"a private valid progress record is parsed");
+
+        NSString *mixedTerminalPath = [fixtureRoot
+            stringByAppendingPathComponent:@"mixed-terminal.status"];
+        NSString *mixedTerminalContent = [validContent
+            stringByAppendingString:@"status=finished\n"];
+        [mixedTerminalContent writeToFile:mixedTerminalPath atomically:YES
+                                 encoding:NSUTF8StringEncoding error:nil];
+        [NSFileManager.defaultManager setAttributes:
+            @{NSFilePosixPermissions: @0600}
+                                      ofItemAtPath:mixedTerminalPath error:nil];
+        Assert(GDTReadBackupProgressAtPath(mixedTerminalPath) == nil,
+               @"mixed terminal and live records are rejected while parsing");
+
+        NSString *unknownStatePath = [fixtureRoot
+            stringByAppendingPathComponent:@"unknown-state.status"];
+        NSString *unknownStateContent = [validContent
+            stringByAppendingString:@"status=paused\n"];
+        [unknownStateContent writeToFile:unknownStatePath atomically:YES
+                                encoding:NSUTF8StringEncoding error:nil];
+        [NSFileManager.defaultManager setAttributes:
+            @{NSFilePosixPermissions: @0600}
+                                      ofItemAtPath:unknownStatePath error:nil];
+        Assert(GDTReadBackupProgressAtPath(unknownStatePath) == nil,
+               @"unknown progress states are rejected while parsing");
 
         NSString *duplicatePath = [fixtureRoot
             stringByAppendingPathComponent:@"duplicate.status"];

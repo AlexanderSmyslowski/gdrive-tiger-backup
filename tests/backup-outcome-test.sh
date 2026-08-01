@@ -1820,6 +1820,29 @@ test_concurrent_start_preserves_previous_summary() {
   fi
 }
 
+test_lock_loser_preserves_owner_progress() {
+  local name="lock loser cannot invalidate the owner's live progress"
+  local progress before after status
+  prepare_test_environment
+  progress="$TEST_HOME/profiles/default/current-progress.status"
+  mkdir -p "${progress%/*}"
+  before=$'protocol=1\nprofile_id=default\npid=4242\nstarted_at=1783790000\ntrigger=schedule\nlabel=My Drive\nphase=1/2\npercent=42\ndetail=42 MiB / 100 MiB, 1 MiB/s, ETA 58s\nupdated_at=1783790010'
+  printf '%s\n' "$before" >"$progress"
+  chmod 600 "$progress"
+
+  FAKE_FLOCK_STATUS=1 run_backup \
+    "GDRIVE_BACKUP_PROFILE_ID=default" \
+    "GDRIVE_BACKUP_PROGRESS_STATE_FILE=$progress"
+  status=$?
+  after="$(cat "$progress" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" && "$after" == "$before" ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status progress=${after//$'\n'/,})"
+  fi
+}
+
 test_headless_retry_publishes_private_progress() {
   local name="headless retry publishes private aggregate progress"
   local progress content summary mode status backup_pid attempt
@@ -2019,6 +2042,7 @@ test_success_persists_private_summary
 test_failure_persists_failed_summary
 test_later_failure_preserves_last_success_marker
 test_concurrent_start_preserves_previous_summary
+test_lock_loser_preserves_owner_progress
 test_paused_automatic_run_is_silent_and_preserves_history
 test_headless_retry_publishes_private_progress
 test_headless_retry_never_opens_progress_window

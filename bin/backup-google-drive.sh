@@ -178,6 +178,7 @@ else
 fi
 DURABLE_PROGRESS_FILE="${GDRIVE_BACKUP_PROGRESS_STATE_FILE:-}"
 PROGRESS_PROFILE_ID="${GDRIVE_BACKUP_PROFILE_ID:-${ACTIVE_PROFILE_ID:-legacy}}"
+DURABLE_PROGRESS_OWNED=0
 RUN_STARTED_AT=0
 OPEN_BIN="${GDRIVE_BACKUP_OPEN_BIN:-/usr/bin/open}"
 CONFIRM_BACKUP="${GDRIVE_BACKUP_CONFIRM:-1}"
@@ -2140,8 +2141,10 @@ cleanup() {
   # Publish the terminal result before the sentinel disappears, so the UI can
   # never infer success merely from process cleanup.
   finish_run_state "$exit_status"
-  if ! finish_durable_progress; then
-    warn_progress_unavailable
+  if [[ "$DURABLE_PROGRESS_OWNED" == "1" ]]; then
+    if ! finish_durable_progress; then
+      warn_progress_unavailable
+    fi
   fi
   stop_animation
 }
@@ -2800,6 +2803,7 @@ if ! flock -n 9; then
   RUN_STATE_REASON="already_running"
   exit 0
 fi
+DURABLE_PROGRESS_OWNED=1
 
 if ! initialize_durable_progress; then
   warn_progress_unavailable
