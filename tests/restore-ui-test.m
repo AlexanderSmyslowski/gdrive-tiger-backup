@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 
 #import "Localization.h"
+#import "TestApplicationSupport.h"
 
 static int failures = 0;
 
@@ -15,7 +16,11 @@ static void Assert(BOOL condition, NSString *name) {
 
 int main(void) {
     @autoreleasepool {
-        [NSApplication sharedApplication];
+        NSApplication *testApplication =
+            GDTInitializeAccessoryTestApplication();
+        Assert(testApplication.activationPolicy ==
+                   NSApplicationActivationPolicyAccessory,
+               @"the restore UI harness stays out of the Dock");
         Class viewClass = NSClassFromString(@"GDTRestoreBrowserView");
         Assert(viewClass != Nil, @"restore browser view is available");
         if (viewClass) {

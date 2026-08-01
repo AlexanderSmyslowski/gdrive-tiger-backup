@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 
 #import "Localization.h"
+#import "TestApplicationSupport.h"
 
 static int failures = 0;
 
@@ -23,7 +24,11 @@ static void ApplySnapshot(NSView *view, NSDictionary<NSString *, id> *snapshot) 
 
 int main(void) {
     @autoreleasepool {
-        [NSApplication sharedApplication];
+        NSApplication *testApplication =
+            GDTInitializeAccessoryTestApplication();
+        Assert(testApplication.activationPolicy ==
+                   NSApplicationActivationPolicyAccessory,
+               @"the diagnostics UI harness stays out of the Dock");
         Class viewClass = NSClassFromString(@"GDTDiagnosticsView");
         Assert(viewClass != Nil, @"native diagnostics view is available");
         if (viewClass) {

@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 
 #import "UpdateSupport.h"
+#import "TestApplicationSupport.h"
 
 #define main GDTApplicationMain
 #import "../macos/GDriveBackupTiger/main.m"
@@ -53,7 +54,11 @@ static void Assert(BOOL condition, NSString *name) {
 
 int main(void) {
     @autoreleasepool {
-        [NSApplication sharedApplication];
+        NSApplication *testApplication =
+            GDTInitializeAccessoryTestApplication();
+        Assert(testApplication.activationPolicy ==
+                   NSApplicationActivationPolicyAccessory,
+               @"the update UI harness stays out of the Dock");
         UpdateTestDelegate *delegate = [[UpdateTestDelegate alloc] init];
         delegate.language = @"de";
         DeferredUpdateChecker *checker = [[DeferredUpdateChecker alloc] init];

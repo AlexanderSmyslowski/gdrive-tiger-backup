@@ -1,5 +1,7 @@
 #import <Cocoa/Cocoa.h>
 
+#import "TestApplicationSupport.h"
+
 #define main GDTApplicationMain
 #import "../macos/GDriveBackupTiger/main.m"
 #undef main
@@ -1702,7 +1704,11 @@ int main(void) {
                actionDelegate.removedPendingNotificationIdentifiers == nil,
                @"a legacy Open action keeps overview navigation while refusing untrusted acknowledgement metadata");
 
-        [NSApplication sharedApplication];
+        NSApplication *testApplication =
+            GDTInitializeAccessoryTestApplication();
+        Assert(testApplication.activationPolicy ==
+                   NSApplicationActivationPolicyAccessory,
+               @"the notification integration harness stays out of the Dock");
         NSStatusItem *retryStatusItem = [NSStatusBar.systemStatusBar
             statusItemWithLength:NSSquareStatusItemLength];
         actionDelegate.statusItem = retryStatusItem;
