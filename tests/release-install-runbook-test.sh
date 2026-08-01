@@ -155,9 +155,8 @@ assert_contains "$PUBLISH_BLOCK" \
   'publication materializes the exact remote-tracking ref after an object push'
 assert_before "$PUBLISH_BLOCK" 'git push origin' 'git fetch --no-tags origin' \
   'publication fetches tracking state only after the immutable object push'
-assert_before "$PUBLISH_BLOCK" 'git fetch --no-tags origin' \
-  'git branch --set-upstream-to=' \
-  'publication creates tracking state before setting the upstream'
+assert_not_contains "$PUBLISH_BLOCK" 'git branch --set-upstream-to=' \
+  'publication does not depend on the repository-wide fetch refspec'
 assert_contains "$PUBLISH_BLOCK" \
   'git rev-parse "refs/remotes/origin/${BRANCH}^{commit}"' \
   'publication verifies the fetched remote-tracking object'

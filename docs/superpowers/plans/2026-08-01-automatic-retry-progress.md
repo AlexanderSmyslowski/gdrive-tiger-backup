@@ -1537,9 +1537,10 @@ done
 # after review.
 git push origin "${REVIEWED_HEAD}:refs/heads/${BRANCH}"
 # An object-to-ref push does not materialize a local remote-tracking ref. Fetch
-# that exact ref explicitly before setting the upstream, then pin both views.
+# that exact ref explicitly, then pin both views. Do not rely on
+# `--set-upstream-to`: repositories with a deliberately narrow
+# remote.origin.fetch reject it even when this exact ref exists locally.
 git fetch --no-tags origin "refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
-git branch --set-upstream-to="origin/${BRANCH}" "${BRANCH}"
 test "$(git rev-parse "refs/remotes/origin/${BRANCH}^{commit}")" = \
   "$REVIEWED_HEAD"
 test "$(git ls-remote origin "refs/heads/${BRANCH}" | /usr/bin/awk '{print $1}')" = \
