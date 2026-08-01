@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## v2.4.4 - 2026-08-01
+
+- Automatic retries now replace the stale waiting alert with a truthful running state.
+- The overview and menu bar show private, per-phase progress without opening a foreground window.
+- Progress is explicitly current-phase progress; scheduled and retry runs remain passive in full-screen Spaces.
+- Restore accountless/guest SMB remounting without Keychain lookup or UI while leaving authenticated SMB behavior unchanged.
+- Limit delayed success cleanup to issue origins older than or equal to that success, so it can never erase a newer persistent same-profile failure alert.
+- Keep unknown-total progress indeterminate, remove stale or invented percentages, and show completion only after durable terminal status publication.
+
+## v2.4.3 - 2026-07-30
+
+- Mount a configured SMB backup target through a bounded native NetFS helper before scheduled work starts, using the Finder-saved password only in memory and explicitly prohibiting Finder, AppleScript, Keychain, or mount authentication UI during automatic runs.
+- Preserve the authenticated SMB account when setup learns a mounted share, discard any password from legacy mount metadata, and provide an explicit one-time Keychain authorization mode for unattended access.
+- Replace the preliminary “retry in 30 minutes” alert after a failed automatic retry has been accepted by macOS, while retaining the final alert until a newer automatic success or a human dismissal and healing an interrupted cleanup after controller restart.
+- Make NAS mount tests inject every UI-capable executable and verify the native helper path, preventing test hostnames from reaching Finder.
+
 ## v2.4.2 - 2026-07-29
 
 - Remove the protected time-sensitive notification entitlement from ad-hoc, unsigned-package, and Developer ID build paths until a provisioning profile can authorize it; this fixes the macOS `OS_REASON_EXEC` launch rejection introduced in v2.4.1.

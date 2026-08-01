@@ -21,6 +21,14 @@ static NSTimeInterval GDTTimestamp(NSString *value) {
     return (NSTimeInterval)timestamp;
 }
 
+static NSTimeInterval GDTCanonicalTimestamp(id value) {
+    if (![value isKindOfClass:NSString.class]) return 0;
+    NSTimeInterval timestamp = GDTTimestamp(value);
+    if (timestamp <= 0) return 0;
+    NSString *canonical = [NSString stringWithFormat:@"%.0f", timestamp];
+    return [(NSString *)value isEqualToString:canonical] ? timestamp : 0;
+}
+
 static NSString *GDTSafeRetryProfileID(NSString *value) {
     return GDTSafeNotificationProfileID(value);
 }
@@ -62,11 +70,62 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
         NSArray<NSString *> *parts = [suffix componentsSeparatedByString:@"."];
         if (parts.count != 2 ||
             ![@[@"failure", @"missed"] containsObject:parts[0]] ||
-            GDTTimestamp(parts[1]) <= 0 ||
+            GDTCanonicalTimestamp(parts[1]) <= 0 ||
             [accepted containsObject:candidate]) {
             continue;
         }
         [accepted addObject:candidate];
+    }
+    return accepted;
+}
+
++ (NSArray<NSString *> *)failureNotificationIdentifiersForProfileID:(NSString *)profileID
+                                 throughIssueOriginTimestamp:(NSTimeInterval)cutoff
+                                      candidateNotifications:
+                                          (NSArray<NSDictionary<NSString *, id> *> *)candidates {
+    if (cutoff <= 0) return @[];
+    NSString *safeProfileID = GDTSafeNotificationProfileID(profileID);
+    NSMutableArray<NSString *> *accepted = [NSMutableArray array];
+    for (id value in candidates ?: @[]) {
+        if (![value isKindOfClass:NSDictionary.class]) continue;
+        NSDictionary<NSString *, id> *candidate = value;
+        NSString *identifier = [candidate[@"identifier"] isKindOfClass:NSString.class]
+            ? candidate[@"identifier"] : @"";
+        NSArray<NSString *> *safeIdentifiers =
+            [self failureNotificationIdentifiersForProfileID:safeProfileID
+                                         candidateIdentifiers:identifier.length
+                                             ? @[identifier] : @[]];
+        if (safeIdentifiers.count != 1) continue;
+
+        NSArray<NSString *> *identifierParts =
+            [identifier componentsSeparatedByString:@"."];
+        NSTimeInterval issueOrigin =
+            GDTCanonicalTimestamp(identifierParts.lastObject);
+        BOOL hasNotificationMetadata =
+            candidate[@"categoryIdentifier"] != nil || candidate[@"userInfo"] != nil;
+        if (hasNotificationMetadata) {
+            NSString *category =
+                [candidate[@"categoryIdentifier"] isKindOfClass:NSString.class]
+                    ? candidate[@"categoryIdentifier"] : @"";
+            NSDictionary *userInfo = [candidate[@"userInfo"]
+                isKindOfClass:NSDictionary.class] ? candidate[@"userInfo"] : nil;
+            NSString *metadataProfileID =
+                [userInfo[@"profileID"] isKindOfClass:NSString.class]
+                    ? userInfo[@"profileID"] : @"";
+            NSTimeInterval metadataOrigin =
+                GDTCanonicalTimestamp(userInfo[@"issueOriginTimestamp"]);
+            // A delivered request with partial or conflicting metadata is not
+            // legacy. Falling back to its identifier could retire another issue.
+            if (![category isEqualToString:@"GDT_BACKUP_ALERT"] ||
+                ![metadataProfileID isEqualToString:safeProfileID] ||
+                metadataOrigin <= 0) {
+                continue;
+            }
+            issueOrigin = metadataOrigin;
+        }
+        if (issueOrigin <= cutoff && ![accepted containsObject:identifier]) {
+            [accepted addObject:identifier];
+        }
     }
     return accepted;
 }
@@ -92,9 +151,42 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
     NSTimeInterval eventTimestamp = GDTTimestamp(summary[@"finished_at"]);
     if (eventTimestamp <= 0) eventTimestamp = GDTTimestamp(summary[@"started_at"]);
     NSString *trigger = summary[@"trigger"] ?: @"";
+    BOOL retryRunning = [status isEqualToString:@"running"] &&
+        [trigger isEqualToString:@"schedule-retry"];
+    NSTimeInterval retryOrigin = GDTTimestamp(summary[@"retry_origin_started_at"]);
+    NSTimeInterval retryStarted = GDTTimestamp(summary[@"started_at"]);
+    if (retryRunning && retryOrigin > 0 && retryStarted > retryOrigin &&
+        [summary[@"status"] isEqualToString:@"running"] &&
+        [summary[@"retry_attempt"] isEqualToString:@"1"]) {
+        NSString *origin = [NSString stringWithFormat:@"%.0f", retryOrigin];
+        return @{
+            @"identifier": [NSString stringWithFormat:
+                @"com.commcats.gdrivebackup.%@.failure.%@", profileID, origin],
+            @"revision": [NSString stringWithFormat:@"retry-running.%.0f", retryStarted],
+            @"kind": @"retry-running",
+            @"profileID": profileID,
+            @"issueTimestamp": origin,
+            @"issueOriginTimestamp": origin,
+            @"titleKey": @"backupNotificationRetryRunningTitle",
+            @"bodyKey": @"backupNotificationRetryRunningBody"
+        };
+    }
+
     BOOL retryFailure = [trigger isEqualToString:@"schedule-retry"];
     BOOL scheduledFailure = [@[@"schedule", @"schedule-retry"] containsObject:trigger] &&
         ([@[@"failure", @"interrupted", @"cancelled"] containsObject:status]);
+    NSTimeInterval retryFinished = GDTTimestamp(summary[@"finished_at"]);
+    BOOL interruptedRunningRetry = [status isEqualToString:@"interrupted"] &&
+        [summary[@"status"] isEqualToString:@"running"] &&
+        ![summary[@"finished_at"] length] && ![summary[@"exit_code"] length];
+    if (retryFailure &&
+        ((![summary[@"status"] isEqualToString:status] &&
+          !interruptedRunningRetry) ||
+         ![summary[@"retry_attempt"] isEqualToString:@"1"] ||
+         retryOrigin <= 0 || retryStarted <= retryOrigin ||
+         (!interruptedRunningRetry && retryFinished < retryStarted))) {
+        return nil;
+    }
     BOOL eventIsFresh = eventTimestamp > 0 && eventTimestamp <= nowTimestamp + 1 &&
         nowTimestamp - eventTimestamp <= 24 * 60 * 60;
     BOOL eventWasMonitored = monitorStartedAt <= 0 || eventTimestamp >= monitorStartedAt;
@@ -114,15 +206,29 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
         }
         NSTimeInterval runTimestamp = GDTTimestamp(summary[@"started_at"]);
         if (runTimestamp <= 0) runTimestamp = eventTimestamp;
-        return @{
+        NSTimeInterval retryOriginTimestamp =
+            GDTTimestamp(summary[@"retry_origin_started_at"]);
+        NSTimeInterval issueOriginTimestamp =
+            retryFailure && retryOriginTimestamp > 0
+                ? retryOriginTimestamp : runTimestamp;
+        NSMutableDictionary<NSString *, NSString *> *decision = [@{
             @"identifier": [NSString stringWithFormat:
                 @"com.commcats.gdrivebackup.%@.failure.%.0f", profileID, runTimestamp],
             @"kind": @"failure",
             @"profileID": profileID,
             @"issueTimestamp": [NSString stringWithFormat:@"%.0f", eventTimestamp],
+            @"issueOriginTimestamp":
+                [NSString stringWithFormat:@"%.0f", issueOriginTimestamp],
             @"titleKey": @"backupNotificationFailureTitle",
             @"bodyKey": bodyKey
-        };
+        } mutableCopy];
+        if (retryFailure && retryOriginTimestamp > 0 &&
+            retryOriginTimestamp < runTimestamp) {
+            decision[@"supersedesIdentifier"] = [NSString stringWithFormat:
+                @"com.commcats.gdrivebackup.%@.failure.%.0f",
+                profileID, retryOriginTimestamp];
+        }
+        return decision;
     }
 
     if (![schedule isEqualToString:@"daily"]) return nil;
@@ -150,6 +256,7 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
         @"kind": @"missed",
         @"profileID": profileID,
         @"issueTimestamp": [NSString stringWithFormat:@"%.0f", dueTimestamp],
+        @"issueOriginTimestamp": [NSString stringWithFormat:@"%.0f", dueTimestamp],
         @"titleKey": @"backupNotificationMissedTitle",
         @"bodyKey": @"backupNotificationMissedBody"
     };

@@ -48,6 +48,20 @@ static NSArray<NSString *> *ProfileFailureIdentifiers(
     return method(policyClass, selector, profileID, candidates);
 }
 
+static NSArray<NSString *> *ProfileFailureIdentifiersThroughOrigin(
+    Class policyClass,
+    NSString *profileID,
+    NSTimeInterval cutoff,
+    NSArray<NSDictionary<NSString *, id> *> *candidates) {
+    SEL selector = NSSelectorFromString(
+        @"failureNotificationIdentifiersForProfileID:throughIssueOriginTimestamp:candidateNotifications:");
+    if (!policyClass || ![policyClass respondsToSelector:selector]) return nil;
+    typedef NSArray<NSString *> *(*FilterMethod)(
+        id, SEL, NSString *, NSTimeInterval, NSArray<NSDictionary<NSString *, id> *> *);
+    FilterMethod method = (FilterMethod)[policyClass methodForSelector:selector];
+    return method(policyClass, selector, profileID, cutoff, candidates);
+}
+
 int main(void) {
     @autoreleasepool {
         Class policyClass = NSClassFromString(@"GDTBackupNotificationPolicy");
@@ -82,6 +96,8 @@ int main(void) {
         Assert([failure[@"kind"] isEqualToString:@"failure"] &&
                [failure[@"identifier"] containsString:@"office"] &&
                [failure[@"identifier"] containsString:failedSummary[@"started_at"]] &&
+               [failure[@"issueTimestamp"] isEqualToString:failedSummary[@"finished_at"]] &&
+               [failure[@"issueOriginTimestamp"] isEqualToString:failedSummary[@"started_at"]] &&
                [failure[@"bodyKey"] isEqualToString:@"failedPermissionHint"],
                @"a fresh scheduled failure creates one stable, reason-specific alert");
 
@@ -90,8 +106,142 @@ int main(void) {
         NSDictionary<NSString *, NSString *> *retryPlanned = Decision(
             policyClass, daily, nasNotReady, @"failure", Date(calendar, 21, 20, 26), calendar);
         Assert([retryPlanned[@"kind"] isEqualToString:@"failure"] &&
+               [retryPlanned[@"issueOriginTimestamp"]
+                   isEqualToString:failedSummary[@"started_at"]] &&
                [retryPlanned[@"bodyKey"] isEqualToString:@"backupNotificationNASRetryBody"],
                @"a transient NAS readiness failure announces the later automatic retry");
+
+        NSMutableDictionary *retryRunningSummary = [nasNotReady mutableCopy];
+        retryRunningSummary[@"status"] = @"running";
+        retryRunningSummary[@"trigger"] = @"schedule-retry";
+        retryRunningSummary[@"retry_origin_started_at"] = failedSummary[@"started_at"];
+        retryRunningSummary[@"retry_attempt"] = @"1";
+        retryRunningSummary[@"started_at"] = [NSString stringWithFormat:@"%.0f",
+            Date(calendar, 21, 20, 56).timeIntervalSince1970];
+        [retryRunningSummary removeObjectForKey:@"finished_at"];
+        [retryRunningSummary removeObjectForKey:@"exit_code"];
+        NSDictionary *retryRunning = Decision(
+            policyClass, daily, retryRunningSummary, @"running",
+            Date(calendar, 21, 20, 57), calendar);
+        Assert([retryRunning[@"kind"] isEqualToString:@"retry-running"] &&
+               [retryRunning[@"identifier"] isEqualToString:retryPlanned[@"identifier"]] &&
+               [retryRunning[@"revision"] hasSuffix:retryRunningSummary[@"started_at"]] &&
+               [retryRunning[@"issueTimestamp"]
+                   isEqualToString:failedSummary[@"started_at"]] &&
+               [retryRunning[@"issueOriginTimestamp"]
+                   isEqualToString:failedSummary[@"started_at"]] &&
+               [retryRunning[@"titleKey"]
+                   isEqualToString:@"backupNotificationRetryRunningTitle"] &&
+               [retryRunning[@"bodyKey"]
+                   isEqualToString:@"backupNotificationRetryRunningBody"],
+               @"a running retry updates the preliminary alert in place");
+
+        NSMutableDictionary *interruptedRetrySummary =
+            [retryRunningSummary mutableCopy];
+        interruptedRetrySummary[@"pid"] = @"99999999";
+        NSDictionary *interruptedRetry = Decision(
+            policyClass, daily, interruptedRetrySummary, @"interrupted",
+            Date(calendar, 21, 20, 57), calendar);
+        Assert([interruptedRetry[@"kind"] isEqualToString:@"failure"] &&
+               [interruptedRetry[@"issueOriginTimestamp"]
+                   isEqualToString:failedSummary[@"started_at"]] &&
+               [interruptedRetry[@"supersedesIdentifier"]
+                   isEqualToString:retryPlanned[@"identifier"]] &&
+               [interruptedRetry[@"bodyKey"]
+                   isEqualToString:@"backupNotificationRetryFailureBody"],
+               @"a dead retry process replaces progress with a terminal failure alert");
+
+        NSMutableDictionary *missingAttempt = [retryRunningSummary mutableCopy];
+        [missingAttempt removeObjectForKey:@"retry_attempt"];
+        NSMutableDictionary *wrongAttempt = [retryRunningSummary mutableCopy];
+        wrongAttempt[@"retry_attempt"] = @"2";
+        NSMutableDictionary *wrongRunningStatus = [retryRunningSummary mutableCopy];
+        NSMutableDictionary *wrongRunningTrigger = [retryRunningSummary mutableCopy];
+        wrongRunningTrigger[@"trigger"] = @"schedule";
+        NSMutableDictionary *invalidOrigin = [retryRunningSummary mutableCopy];
+        invalidOrigin[@"retry_origin_started_at"] = @"not-a-time";
+        NSMutableDictionary *missingStartedAt = [retryRunningSummary mutableCopy];
+        [missingStartedAt removeObjectForKey:@"started_at"];
+        NSMutableDictionary *invalidStartedAt = [retryRunningSummary mutableCopy];
+        invalidStartedAt[@"started_at"] = @"not-a-time";
+        NSMutableDictionary *nonAdvancingRetry = [retryRunningSummary mutableCopy];
+        nonAdvancingRetry[@"started_at"] = failedSummary[@"started_at"];
+        Assert(Decision(policyClass, daily, missingAttempt, @"running",
+                        Date(calendar, 21, 20, 57), calendar) == nil &&
+               Decision(policyClass, daily, wrongAttempt, @"running",
+                        Date(calendar, 21, 20, 57), calendar) == nil &&
+               Decision(policyClass, daily, wrongRunningStatus, @"failure",
+                        Date(calendar, 21, 20, 57), calendar) == nil &&
+               Decision(policyClass, daily, wrongRunningTrigger, @"running",
+                        Date(calendar, 21, 20, 57), calendar) == nil &&
+               Decision(policyClass, daily, invalidOrigin, @"running",
+                        Date(calendar, 21, 20, 57), calendar) == nil &&
+               Decision(policyClass, daily, missingStartedAt, @"running",
+                        Date(calendar, 21, 20, 57), calendar) == nil &&
+               Decision(policyClass, daily, invalidStartedAt, @"running",
+                        Date(calendar, 21, 20, 57), calendar) == nil &&
+               Decision(policyClass, daily, nonAdvancingRetry, @"running",
+                        Date(calendar, 21, 20, 57), calendar) == nil,
+               @"only a structurally valid first retry can replace an alert");
+
+        NSTimeInterval originStart =
+            Date(calendar, 21, 20, 0).timeIntervalSince1970;
+        NSTimeInterval originFinish =
+            Date(calendar, 21, 20, 5).timeIntervalSince1970;
+        NSMutableDictionary *differentTimes = [failedSummary mutableCopy];
+        differentTimes[@"trigger"] = @"schedule";
+        differentTimes[@"started_at"] = [NSString stringWithFormat:@"%.0f", originStart];
+        differentTimes[@"finished_at"] = [NSString stringWithFormat:@"%.0f", originFinish];
+        NSDictionary *originalFailure = Decision(
+            policyClass, daily, differentTimes, @"failure",
+            Date(calendar, 21, 20, 6), calendar);
+        Assert([originalFailure[@"issueTimestamp"] doubleValue] == originFinish &&
+               [originalFailure[@"issueOriginTimestamp"] doubleValue] == originStart &&
+               [originalFailure[@"identifier"] hasSuffix:
+                   [NSString stringWithFormat:@".%.0f", originStart]],
+               @"an original failure uses run start as canonical origin, not finish time");
+
+        NSMutableDictionary *finalRetry = [differentTimes mutableCopy];
+        finalRetry[@"trigger"] = @"schedule-retry";
+        finalRetry[@"retry_origin_started_at"] =
+            [NSString stringWithFormat:@"%.0f", originStart];
+        finalRetry[@"retry_attempt"] = @"1";
+        finalRetry[@"started_at"] = [NSString stringWithFormat:@"%.0f",
+            Date(calendar, 21, 20, 40).timeIntervalSince1970];
+        finalRetry[@"finished_at"] = [NSString stringWithFormat:@"%.0f",
+            Date(calendar, 21, 20, 45).timeIntervalSince1970];
+        NSDictionary *finalRetryDecision = Decision(
+            policyClass, daily, finalRetry, @"failure",
+            Date(calendar, 21, 20, 46), calendar);
+        Assert([finalRetryDecision[@"issueOriginTimestamp"] doubleValue] == originStart,
+               @"the final retry inherits the original run-start origin");
+
+        NSMutableDictionary *missingRetryOrigin = [finalRetry mutableCopy];
+        [missingRetryOrigin removeObjectForKey:@"retry_origin_started_at"];
+        NSMutableDictionary *invalidRetryOrigin = [finalRetry mutableCopy];
+        invalidRetryOrigin[@"retry_origin_started_at"] = @"not-a-time";
+        NSMutableDictionary *nonAdvancingRetryOrigin = [finalRetry mutableCopy];
+        nonAdvancingRetryOrigin[@"retry_origin_started_at"] =
+            nonAdvancingRetryOrigin[@"started_at"];
+        NSMutableDictionary *futureRetryOrigin = [finalRetry mutableCopy];
+        futureRetryOrigin[@"retry_origin_started_at"] = futureRetryOrigin[@"finished_at"];
+        NSMutableDictionary *missingFinalAttempt = [finalRetry mutableCopy];
+        [missingFinalAttempt removeObjectForKey:@"retry_attempt"];
+        NSMutableDictionary *wrongFinalAttempt = [finalRetry mutableCopy];
+        wrongFinalAttempt[@"retry_attempt"] = @"2";
+        Assert(Decision(policyClass, daily, missingRetryOrigin, @"failure",
+                        Date(calendar, 21, 20, 46), calendar) == nil &&
+               Decision(policyClass, daily, invalidRetryOrigin, @"failure",
+                        Date(calendar, 21, 20, 46), calendar) == nil &&
+               Decision(policyClass, daily, nonAdvancingRetryOrigin, @"failure",
+                        Date(calendar, 21, 20, 46), calendar) == nil &&
+               Decision(policyClass, daily, futureRetryOrigin, @"failure",
+                        Date(calendar, 21, 20, 46), calendar) == nil &&
+               Decision(policyClass, daily, missingFinalAttempt, @"failure",
+                        Date(calendar, 21, 20, 46), calendar) == nil &&
+               Decision(policyClass, daily, wrongFinalAttempt, @"failure",
+                        Date(calendar, 21, 20, 46), calendar) == nil,
+               @"a malformed terminal retry cannot create a second issue origin");
 
         NSMutableDictionary<NSString *, NSString *> *destinationUnreadable =
             [failedSummary mutableCopy];
@@ -106,6 +256,8 @@ int main(void) {
 
         NSMutableDictionary<NSString *, NSString *> *retryFailed = [nasNotReady mutableCopy];
         retryFailed[@"trigger"] = @"schedule-retry";
+        retryFailed[@"retry_origin_started_at"] = failedSummary[@"started_at"];
+        retryFailed[@"retry_attempt"] = @"1";
         retryFailed[@"started_at"] = [NSString stringWithFormat:@"%.0f",
             Date(calendar, 21, 20, 56).timeIntervalSince1970];
         retryFailed[@"finished_at"] = [NSString stringWithFormat:@"%.0f",
@@ -114,8 +266,14 @@ int main(void) {
             policyClass, daily, retryFailed, @"failure", Date(calendar, 21, 21, 2), calendar);
         Assert([finalFailure[@"kind"] isEqualToString:@"failure"] &&
                [finalFailure[@"identifier"] containsString:retryFailed[@"started_at"]] &&
+               [finalFailure[@"issueTimestamp"]
+                   isEqualToString:retryFailed[@"finished_at"]] &&
+               [finalFailure[@"issueOriginTimestamp"]
+                   isEqualToString:failedSummary[@"started_at"]] &&
+               [finalFailure[@"supersedesIdentifier"]
+                   isEqualToString:retryPlanned[@"identifier"]] &&
                [finalFailure[@"bodyKey"] isEqualToString:@"backupNotificationRetryFailureBody"],
-               @"a failed automatic retry creates one distinct final failure alert");
+               @"a failed automatic retry replaces the preliminary retry alert");
 
         NSMutableDictionary<NSString *, NSString *> *cancelledSummary = [failedSummary mutableCopy];
         cancelledSummary[@"status"] = @"cancelled";
@@ -148,6 +306,7 @@ int main(void) {
             policyClass, daily, @{}, @"unknown", Date(calendar, 21, 21, 5), calendar);
         Assert([missed[@"kind"] isEqualToString:@"missed"] &&
                [missed[@"identifier"] containsString:@"office"] &&
+               [missed[@"issueOriginTimestamp"] isEqualToString:missed[@"issueTimestamp"]] &&
                [missed[@"bodyKey"] isEqualToString:@"backupNotificationMissedBody"],
                @"the daily watchdog reports a run still missing after 21:00");
 
@@ -238,6 +397,60 @@ int main(void) {
                    @"com.commcats.gdrivebackup.office.missed.200"
                ]],
                @"notification cleanup accepts only exact safe failure IDs for one profile");
+
+        NSArray<NSString *> *cutoffFailures =
+            ProfileFailureIdentifiersThroughOrigin(policyClass, @"office", 500, @[
+                @{@"identifier": @"com.commcats.gdrivebackup.office.failure.100"},
+                @{@"identifier": @"com.commcats.gdrivebackup.office.missed.200"},
+                @{@"identifier": @"com.commcats.gdrivebackup.office.failure.600"},
+                @{
+                    @"identifier": @"com.commcats.gdrivebackup.office.failure.700",
+                    @"categoryIdentifier": @"GDT_BACKUP_ALERT",
+                    @"userInfo": @{
+                        @"profileID": @"office",
+                        @"issueOriginTimestamp": @"400"
+                    }
+                },
+                @{
+                    @"identifier": @"com.commcats.gdrivebackup.office.failure.300",
+                    @"categoryIdentifier": @"GDT_BACKUP_ALERT",
+                    @"userInfo": @{
+                        @"profileID": @"office",
+                        @"issueOriginTimestamp": @"600"
+                    }
+                },
+                @{@"identifier": @"com.commcats.gdrivebackup.office.missed.0200"},
+                @{
+                    @"identifier": @"com.commcats.gdrivebackup.office.failure.250",
+                    @"categoryIdentifier": @"GDT_BACKUP_ALERT",
+                    @"userInfo": @{
+                        @"profileID": @"office",
+                        @"issueOriginTimestamp": @"0400"
+                    }
+                },
+                @{
+                    @"identifier": @"com.commcats.gdrivebackup.office.failure.230",
+                    @"categoryIdentifier": @"GDT_BACKUP_ALERT",
+                    @"userInfo": @{
+                        @"profileID": @"archive",
+                        @"issueOriginTimestamp": @"230"
+                    }
+                },
+                @{
+                    @"identifier": @"com.commcats.gdrivebackup.office.failure.240",
+                    @"categoryIdentifier": @"GDT_UNKNOWN_EXTERNAL_VOLUME",
+                    @"userInfo": @{
+                        @"profileID": @"office",
+                        @"issueOriginTimestamp": @"240"
+                    }
+                }
+            ]);
+        Assert([cutoffFailures isEqualToArray:@[
+                   @"com.commcats.gdrivebackup.office.failure.100",
+                   @"com.commcats.gdrivebackup.office.missed.200",
+                   @"com.commcats.gdrivebackup.office.failure.700"
+               ]],
+               @"success cleanup trusts exact metadata and keeps newer or malformed origins");
     }
 
     if (failures > 0) {

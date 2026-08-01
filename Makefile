@@ -1,9 +1,11 @@
 APP_DIR := /Applications/GDrive Backup Tiger.app
+PROGRESS_SUPPORT_SOURCE := macos/GDriveBackupTiger/BackupProgressSupport.m
 APP_SOURCES := \
 	macos/GDriveBackupTiger/main.m \
 	macos/GDriveBackupTiger/ConfigSupport.m \
 	macos/GDriveBackupTiger/ProfileSupport.m \
 	macos/GDriveBackupTiger/BackupStatusSupport.m \
+	$(PROGRESS_SUPPORT_SOURCE) \
 	macos/GDriveBackupTiger/NotificationSupport.m \
 	macos/GDriveBackupTiger/SetupHealthSupport.m \
 	macos/GDriveBackupTiger/RestoreSupport.m \
@@ -11,12 +13,15 @@ APP_SOURCES := \
 	macos/GDriveBackupTiger/DiagnosticsSupport.m \
 	macos/GDriveBackupTiger/DiagnosticsView.m \
 	macos/GDriveBackupTiger/UpdateSupport.m \
+	macos/GDriveBackupTiger/NetworkMountSupport.m \
 	macos/GDriveBackupTiger/Localization.m
 OBJC_FLAGS := -fobjc-arc -Wall -Wextra -Werror
 MACOS_DEPLOYMENT_TARGET ?= 13.0
 APP_ARCH_FLAGS ?= -arch arm64 -arch x86_64
 APP_OBJC_FLAGS := $(OBJC_FLAGS) -mmacosx-version-min=$(MACOS_DEPLOYMENT_TARGET) $(APP_ARCH_FLAGS)
-USER_NOTIFICATIONS_FRAMEWORK := -framework UserNotifications -framework Security
+USER_NOTIFICATIONS_FRAMEWORK := -framework UserNotifications -framework Security \
+	-framework NetFS
+NETWORK_MOUNT_SOURCE := macos/GDriveBackupTiger/NetworkMountSupport.m
 
 .PHONY: build install dry-run pkg test clean
 
@@ -67,14 +72,16 @@ test:
 	bash tests/launch-agent-safety-test.sh
 	bash tests/release-metadata-test.sh
 	bash tests/release-workflow-test.sh
+	bash tests/release-install-runbook-test.sh
 	bash tests/package-entitlement-safety-test.sh
 	bash tests/app-build-artifacts-test.sh
 	bash tests/update-flow-safety-test.sh
 	@set -e; RUN_STATE_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-run-state-test.XXXXXX")"; \
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
-			tests/run-state-ui-test.m macos/GDriveBackupTiger/ConfigSupport.m \
+			tests/run-state-ui-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
 			macos/GDriveBackupTiger/ProfileSupport.m \
-			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/NotificationSupport.m \
+			macos/GDriveBackupTiger/BackupStatusSupport.m $(PROGRESS_SUPPORT_SOURCE) \
+			macos/GDriveBackupTiger/NotificationSupport.m \
 			macos/GDriveBackupTiger/SetupHealthSupport.m \
 			macos/GDriveBackupTiger/RestoreSupport.m macos/GDriveBackupTiger/RestoreBrowserView.m \
 			macos/GDriveBackupTiger/DiagnosticsSupport.m macos/GDriveBackupTiger/DiagnosticsView.m \
@@ -84,9 +91,10 @@ test:
 		./scripts/trash-path.sh "$$RUN_STATE_TEST_BIN"
 	@set -e; ACCESSIBILITY_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-accessibility-test.XXXXXX")"; \
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
-			tests/tiger-accessibility-test.m macos/GDriveBackupTiger/ConfigSupport.m \
+			tests/tiger-accessibility-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
 			macos/GDriveBackupTiger/ProfileSupport.m \
-			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/NotificationSupport.m \
+			macos/GDriveBackupTiger/BackupStatusSupport.m $(PROGRESS_SUPPORT_SOURCE) \
+			macos/GDriveBackupTiger/NotificationSupport.m \
 			macos/GDriveBackupTiger/SetupHealthSupport.m \
 			macos/GDriveBackupTiger/RestoreSupport.m macos/GDriveBackupTiger/RestoreBrowserView.m \
 			macos/GDriveBackupTiger/DiagnosticsSupport.m macos/GDriveBackupTiger/DiagnosticsView.m \
@@ -112,11 +120,25 @@ test:
 			-o "$$AUTOMATIC_RETRY_TEST_BIN"; \
 		"$$AUTOMATIC_RETRY_TEST_BIN"; \
 		./scripts/trash-path.sh "$$AUTOMATIC_RETRY_TEST_BIN"
+	@set -e; PROGRESS_SUPPORT_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-progress-support-test.XXXXXX")"; \
+		PROGRESS_SUPPORT_TEST_DIR="$$(/usr/bin/mktemp -d "$${TMPDIR:-/tmp}/gdrive-progress-support-fixtures.XXXXXX")"; \
+		COMPILE_STATUS=0; clang $(OBJC_FLAGS) -framework Foundation -I macos/GDriveBackupTiger \
+			tests/progress-support-test.m macos/GDriveBackupTiger/BackupProgressSupport.m \
+			-o "$$PROGRESS_SUPPORT_TEST_BIN" || COMPILE_STATUS=$$?; \
+		TEST_STATUS="$$COMPILE_STATUS"; \
+		if [ "$$COMPILE_STATUS" -eq 0 ]; then \
+			GDRIVE_PROGRESS_TEST_DIR="$$PROGRESS_SUPPORT_TEST_DIR" \
+				"$$PROGRESS_SUPPORT_TEST_BIN" || TEST_STATUS=$$?; \
+		fi; \
+		./scripts/trash-path.sh "$$PROGRESS_SUPPORT_TEST_BIN" \
+			"$$PROGRESS_SUPPORT_TEST_DIR"; \
+		exit "$$TEST_STATUS"
 	@set -e; NOTIFICATION_INTEGRATION_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-notification-integration-test.XXXXXX")"; \
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
-			tests/notification-integration-test.m macos/GDriveBackupTiger/ConfigSupport.m \
+			tests/notification-integration-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
 			macos/GDriveBackupTiger/ProfileSupport.m \
-			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/NotificationSupport.m \
+			macos/GDriveBackupTiger/BackupStatusSupport.m $(PROGRESS_SUPPORT_SOURCE) \
+			macos/GDriveBackupTiger/NotificationSupport.m \
 			macos/GDriveBackupTiger/SetupHealthSupport.m macos/GDriveBackupTiger/RestoreSupport.m \
 			macos/GDriveBackupTiger/RestoreBrowserView.m macos/GDriveBackupTiger/DiagnosticsSupport.m \
 			macos/GDriveBackupTiger/DiagnosticsView.m macos/GDriveBackupTiger/UpdateSupport.m \
@@ -175,9 +197,10 @@ test:
 		./scripts/trash-path.sh "$$DIAGNOSTICS_UI_TEST_BIN"
 	@set -e; DIAGNOSTICS_INTEGRATION_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-diagnostics-integration-test.XXXXXX")"; \
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
-			tests/diagnostics-integration-test.m macos/GDriveBackupTiger/ConfigSupport.m \
+			tests/diagnostics-integration-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
 			macos/GDriveBackupTiger/ProfileSupport.m \
-			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/NotificationSupport.m \
+			macos/GDriveBackupTiger/BackupStatusSupport.m $(PROGRESS_SUPPORT_SOURCE) \
+			macos/GDriveBackupTiger/NotificationSupport.m \
 			macos/GDriveBackupTiger/SetupHealthSupport.m \
 			macos/GDriveBackupTiger/RestoreSupport.m macos/GDriveBackupTiger/RestoreBrowserView.m \
 			macos/GDriveBackupTiger/DiagnosticsSupport.m macos/GDriveBackupTiger/DiagnosticsView.m \
@@ -187,9 +210,10 @@ test:
 		./scripts/trash-path.sh "$$DIAGNOSTICS_INTEGRATION_TEST_BIN"
 	@set -e; SETUP_HEALTH_UI_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-setup-health-ui-test.XXXXXX")"; \
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
-			tests/setup-health-ui-test.m macos/GDriveBackupTiger/ConfigSupport.m \
+			tests/setup-health-ui-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
 			macos/GDriveBackupTiger/ProfileSupport.m \
-			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/NotificationSupport.m \
+			macos/GDriveBackupTiger/BackupStatusSupport.m $(PROGRESS_SUPPORT_SOURCE) \
+			macos/GDriveBackupTiger/NotificationSupport.m \
 			macos/GDriveBackupTiger/SetupHealthSupport.m \
 			macos/GDriveBackupTiger/RestoreSupport.m macos/GDriveBackupTiger/RestoreBrowserView.m \
 			macos/GDriveBackupTiger/DiagnosticsSupport.m macos/GDriveBackupTiger/DiagnosticsView.m \
@@ -199,9 +223,10 @@ test:
 		./scripts/trash-path.sh "$$SETUP_HEALTH_UI_TEST_BIN"
 	@set -e; OVERVIEW_UI_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-overview-ui-test.XXXXXX")"; \
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
-			tests/overview-ui-test.m macos/GDriveBackupTiger/ConfigSupport.m \
+			tests/overview-ui-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
 			macos/GDriveBackupTiger/ProfileSupport.m \
-			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/NotificationSupport.m \
+			macos/GDriveBackupTiger/BackupStatusSupport.m $(PROGRESS_SUPPORT_SOURCE) \
+			macos/GDriveBackupTiger/NotificationSupport.m \
 			macos/GDriveBackupTiger/SetupHealthSupport.m \
 			macos/GDriveBackupTiger/RestoreSupport.m macos/GDriveBackupTiger/RestoreBrowserView.m \
 			macos/GDriveBackupTiger/DiagnosticsSupport.m macos/GDriveBackupTiger/DiagnosticsView.m \
@@ -212,9 +237,10 @@ test:
 		./scripts/trash-path.sh "$$OVERVIEW_UI_TEST_BIN"
 	@set -e; SETUP_SAFETY_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-setup-safety-test.XXXXXX")"; \
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
-			tests/setup-safety-test.m macos/GDriveBackupTiger/ConfigSupport.m \
+			tests/setup-safety-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
 			macos/GDriveBackupTiger/ProfileSupport.m \
-			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/NotificationSupport.m \
+			macos/GDriveBackupTiger/BackupStatusSupport.m $(PROGRESS_SUPPORT_SOURCE) \
+			macos/GDriveBackupTiger/NotificationSupport.m \
 			macos/GDriveBackupTiger/SetupHealthSupport.m \
 			macos/GDriveBackupTiger/RestoreSupport.m macos/GDriveBackupTiger/RestoreBrowserView.m \
 			macos/GDriveBackupTiger/DiagnosticsSupport.m macos/GDriveBackupTiger/DiagnosticsView.m \
@@ -225,9 +251,10 @@ test:
 		./scripts/trash-path.sh "$$SETUP_SAFETY_TEST_BIN"
 	@set -e; MOUNT_TRIGGER_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-mount-trigger-test.XXXXXX")"; \
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
-			tests/mount-trigger-test.m macos/GDriveBackupTiger/ConfigSupport.m \
+			tests/mount-trigger-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
 			macos/GDriveBackupTiger/ProfileSupport.m \
-			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/NotificationSupport.m \
+			macos/GDriveBackupTiger/BackupStatusSupport.m $(PROGRESS_SUPPORT_SOURCE) \
+			macos/GDriveBackupTiger/NotificationSupport.m \
 			macos/GDriveBackupTiger/SetupHealthSupport.m \
 			macos/GDriveBackupTiger/RestoreSupport.m macos/GDriveBackupTiger/RestoreBrowserView.m \
 			macos/GDriveBackupTiger/DiagnosticsSupport.m macos/GDriveBackupTiger/DiagnosticsView.m \
@@ -238,8 +265,9 @@ test:
 		./scripts/trash-path.sh "$$MOUNT_TRIGGER_TEST_BIN"
 	@set -e; PROFILE_UI_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-profile-ui-test.XXXXXX")"; \
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
-			tests/profile-ui-test.m macos/GDriveBackupTiger/ConfigSupport.m \
+			tests/profile-ui-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
 			macos/GDriveBackupTiger/ProfileSupport.m macos/GDriveBackupTiger/BackupStatusSupport.m \
+			$(PROGRESS_SUPPORT_SOURCE) \
 			macos/GDriveBackupTiger/NotificationSupport.m \
 			macos/GDriveBackupTiger/SetupHealthSupport.m macos/GDriveBackupTiger/RestoreSupport.m \
 			macos/GDriveBackupTiger/RestoreBrowserView.m macos/GDriveBackupTiger/DiagnosticsSupport.m \
@@ -250,8 +278,9 @@ test:
 		./scripts/trash-path.sh "$$PROFILE_UI_TEST_BIN"
 	@set -e; UPDATE_UI_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-update-ui-test.XXXXXX")"; \
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
-			tests/update-ui-test.m macos/GDriveBackupTiger/ConfigSupport.m \
+			tests/update-ui-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
 			macos/GDriveBackupTiger/ProfileSupport.m macos/GDriveBackupTiger/BackupStatusSupport.m \
+			$(PROGRESS_SUPPORT_SOURCE) \
 			macos/GDriveBackupTiger/NotificationSupport.m \
 			macos/GDriveBackupTiger/SetupHealthSupport.m macos/GDriveBackupTiger/RestoreSupport.m \
 			macos/GDriveBackupTiger/RestoreBrowserView.m macos/GDriveBackupTiger/DiagnosticsSupport.m \
@@ -267,6 +296,19 @@ test:
 			tests/config-support-test.m macos/GDriveBackupTiger/ConfigSupport.m -o "$$CONFIG_TEST_BIN"; \
 		"$$CONFIG_TEST_BIN"; \
 		./scripts/trash-path.sh "$$CONFIG_TEST_BIN"
+	@set -e; NAS_MOUNT_URL_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-nas-mount-url-test.XXXXXX")"; \
+		clang $(OBJC_FLAGS) -framework Foundation -I macos/GDriveBackupTiger \
+			tests/nas-mount-url-test.m macos/GDriveBackupTiger/ConfigSupport.m \
+			-o "$$NAS_MOUNT_URL_TEST_BIN"; \
+		"$$NAS_MOUNT_URL_TEST_BIN"; \
+		./scripts/trash-path.sh "$$NAS_MOUNT_URL_TEST_BIN"
+	@set -e; NETWORK_MOUNT_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-network-mount-test.XXXXXX")"; \
+		clang $(OBJC_FLAGS) -framework Foundation -framework Security -framework NetFS \
+			-I macos/GDriveBackupTiger tests/network-mount-support-test.m \
+			macos/GDriveBackupTiger/NetworkMountSupport.m \
+			-o "$$NETWORK_MOUNT_TEST_BIN"; \
+		"$$NETWORK_MOUNT_TEST_BIN"; \
+		./scripts/trash-path.sh "$$NETWORK_MOUNT_TEST_BIN"
 	bash -n bin/backup-google-drive.sh install.sh packaging/build-pkg.sh packaging/verify-pkg.sh packaging/scripts/postinstall scripts/*.sh tests/*.sh
 	plutil -lint launchd/com.commcats.gdrivebackup.plist macos/GDriveBackupTiger/Info.plist
 	shellcheck -x bin/backup-google-drive.sh install.sh packaging/build-pkg.sh packaging/verify-pkg.sh packaging/scripts/postinstall scripts/*.sh tests/*.sh

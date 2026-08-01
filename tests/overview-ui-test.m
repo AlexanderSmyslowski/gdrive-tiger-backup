@@ -542,17 +542,24 @@ int main(void) {
             @"overviewTarget", @"overviewStorage", @"overviewSettings",
             @"overviewOpen", @"overviewNeverRun", @"overviewUnavailable",
             @"overviewFreeOf", @"overviewStatusInterrupted", @"overviewStatusUnknown",
-            @"automaticBackupsPaused", @"pauseAutomaticBackups", @"resumeAutomaticBackups"
+            @"automaticBackupsPaused", @"pauseAutomaticBackups", @"resumeAutomaticBackups",
+            @"automaticRetryRunning", @"automaticRetryRunningShort",
+            @"backupProgressCurrentPhase", @"progressAreaFormat", @"progressPreparing"
         ];
         BOOL allOverviewTextLocalized = YES;
+        BOOL allProgressAreaFormatsLocalized = YES;
         for (NSString *language in SupportedLanguageCodes()) {
             for (NSString *key in overviewKeys) {
                 NSString *value = T(language, key);
                 allOverviewTextLocalized = allOverviewTextLocalized &&
                     value.length > 0 && ![value isEqualToString:key];
             }
+            NSString *formattedArea = [NSString stringWithFormat:
+                T(language, @"progressAreaFormat"), @"3", @"5"];
+            allProgressAreaFormatsLocalized = allProgressAreaFormatsLocalized &&
+                [formattedArea containsString:@"3"] && [formattedArea containsString:@"5"];
         }
-        Assert(allOverviewTextLocalized,
+        Assert(allOverviewTextLocalized && allProgressAreaFormatsLocalized,
                @"overview and menu bar text is localized in all supported languages");
 
         BOOL actionTitlesFit = YES;
@@ -588,6 +595,83 @@ int main(void) {
         nowParts.hour = 19;
         NSDate *now = [calendar dateFromComponents:nowParts];
         delegate.language = @"en";
+        NSDictionary *dailyNAS = @{
+            @"GDRIVE_BACKUP_PROFILE_ID": @"default",
+            @"GDRIVE_BACKUP_TARGET": @"nas",
+            @"GDRIVE_BACKUP_NAS_MOUNT": @"/Volumes/alexander",
+            @"GDRIVE_BACKUP_NAS_SUBDIR": @"GoogleDrive-Backup",
+            @"GDRIVE_BACKUP_SCHEDULE": @"daily"
+        };
+        NSDictionary *retrySummary = @{
+            @"protocol": @"1", @"status": @"running", @"pid": @"123",
+            @"started_at": @"1785522633", @"trigger": @"schedule-retry",
+            @"retry_origin_started_at": @"1785520805", @"retry_attempt": @"1"
+        };
+        NSDictionary *retryProgress = @{
+            @"label": @"Shared Drive", @"phase": @"3/5", @"percent": @"63",
+            @"detail": @"1.2 GiB / 1.9 GiB, 12.4 MiB/s, ETA 58s"
+        };
+        NSDictionary *retrySnapshot = [delegate overviewSnapshotForConfig:dailyNAS
+            summary:retrySummary status:@"running" progress:retryProgress
+            now:now calendar:calendar];
+        NSString *phaseText = [NSString stringWithFormat:T(@"en", @"progressAreaFormat"),
+            @"3", @"5"];
+        NSString *retryStart = [[delegate overviewDateFormatterWithCalendar:calendar]
+            stringFromDate:[NSDate dateWithTimeIntervalSince1970:1785522633]];
+        Assert([retrySnapshot[@"retryRunning"] isEqualToString:@"1"] &&
+               [retrySnapshot[@"lastRun"] isEqualToString:T(@"en", @"automaticRetryRunning")] &&
+               [retrySnapshot[@"lastRunDetail"] isEqualToString:retryStart] &&
+               [retrySnapshot[@"progressPhase"] isEqualToString:phaseText] &&
+               [retrySnapshot[@"progressPercent"] isEqualToString:@"63"] &&
+               [retrySnapshot[@"progressDetail"] isEqualToString:
+                   @"1.2 GiB / 1.9 GiB, 12.4 MiB/s, ETA 58s"],
+               @"running automatic retry has explicit phase progress");
+
+        NSMenu *retryMenu = [delegate statusMenuForSnapshot:retrySnapshot];
+        NSString *retryMenuText = [[retryMenu.itemArray valueForKey:@"title"]
+            componentsJoinedByString:@" "];
+        NSMenuItem *retryProgressItem = nil;
+        for (NSMenuItem *item in retryMenu.itemArray) {
+            if ([item.title containsString:T(@"en", @"automaticRetryRunningShort")]) {
+                retryProgressItem = item;
+                break;
+            }
+        }
+        NSMenuItem *retryBackup = [retryMenu itemWithTitle:T(@"en", @"backupNow")];
+        NSMenuItem *retryOpen = [retryMenu itemWithTitle:T(@"en", @"overviewOpen")];
+        Assert([retryMenuText containsString:T(@"en", @"automaticRetryRunningShort")] &&
+               [retryMenuText containsString:phaseText] &&
+               [retryMenuText containsString:@"63 %"] &&
+               retryProgressItem != nil && !retryProgressItem.enabled &&
+               retryBackup != nil && !retryBackup.enabled &&
+               retryOpen != nil && retryOpen.enabled,
+               @"menu bar exposes compact retry progress");
+
+        NSDictionary *preparingRetrySnapshot = [delegate overviewSnapshotForConfig:dailyNAS
+            summary:retrySummary status:@"running" progress:nil
+            now:now calendar:calendar];
+        Assert([preparingRetrySnapshot[@"progressVisible"] isEqualToString:@"1"] &&
+               [preparingRetrySnapshot[@"progressPercent"] isEqualToString:@""] &&
+               [preparingRetrySnapshot[@"progressDetail"] isEqualToString:
+                   T(@"en", @"progressPreparing")] &&
+               [preparingRetrySnapshot[@"progressPhase"] isEqualToString:@""] &&
+               ![preparingRetrySnapshot[@"progressDetail"] containsString:@"Shared Drive"] &&
+               ![preparingRetrySnapshot[@"progressDetail"] containsString:@"MiB/s"],
+               @"retry without telemetry stays visibly indeterminate without invented detail");
+
+        NSDictionary *phaseOnlyRetrySnapshot = [delegate overviewSnapshotForConfig:dailyNAS
+            summary:retrySummary status:@"running" progress:@{
+                @"label": @"Shared Drive", @"phase": @"4/5"
+            } now:now calendar:calendar];
+        Assert([phaseOnlyRetrySnapshot[@"progressVisible"] isEqualToString:@"1"] &&
+               [phaseOnlyRetrySnapshot[@"progressPhase"]
+                   isEqualToString:[NSString stringWithFormat:T(@"en", @"progressAreaFormat"),
+                       @"4", @"5"]] &&
+               [phaseOnlyRetrySnapshot[@"progressPercent"] isEqualToString:@""] &&
+               [phaseOnlyRetrySnapshot[@"progressDetail"]
+                   isEqualToString:T(@"en", @"progressPreparing")],
+               @"fresh phase-only retry telemetry renders indeterminate");
+
         NSDictionary<NSString *, NSString *> *snapshot =
             [delegate overviewSnapshotForConfig:config summaryPath:summaryPath now:now calendar:calendar];
         Assert([snapshot[@"status"] isEqualToString:@"success"] &&

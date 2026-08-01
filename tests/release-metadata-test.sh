@@ -3,6 +3,8 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INFO_PLIST="$ROOT/macos/GDriveBackupTiger/Info.plist"
+EXPECTED_VERSION="2.4.4"
+EXPECTED_BUILD="28"
 failures=0
 
 check_contains() {
@@ -17,16 +19,75 @@ check_contains() {
   fi
 }
 
+check_not_contains() {
+  local file="$1"
+  local rejected="$2"
+  local description="$3"
+  if /usr/bin/grep -Fq -- "$rejected" "$file"; then
+    printf 'not ok - %s\n' "$description"
+    failures=$((failures + 1))
+  else
+    printf 'ok - %s\n' "$description"
+  fi
+}
+
 version="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$INFO_PLIST")"
 build="$(/usr/bin/plutil -extract CFBundleVersion raw -o - "$INFO_PLIST")"
 minimum_macos="$(/usr/bin/plutil -extract LSMinimumSystemVersion raw -o - "$INFO_PLIST")"
 
+if [[ "$version" != "$EXPECTED_VERSION" || "$build" != "$EXPECTED_BUILD" ]]; then
+  printf 'not ok - expected app version %s build %s, got %s build %s\n' \
+    "$EXPECTED_VERSION" "$EXPECTED_BUILD" "$version" "$build"
+  failures=$((failures + 1))
+else
+  printf 'ok - app version and build match the release plan\n'
+fi
+
 check_contains "$ROOT/README.md" "Current release: \`v${version}\`" \
   "README release matches the app version"
+check_contains "$ROOT/README.md" "GDrive-Backup-Tiger-${EXPECTED_VERSION}.pkg" \
+  "README names the exact release installer"
+installer_names="$(
+  /usr/bin/grep -Eo 'GDrive-Backup-Tiger-[0-9]+\.[0-9]+\.[0-9]+\.pkg' \
+    "$ROOT/README.md" | /usr/bin/sort -u
+)"
+if [[ "$installer_names" == "GDrive-Backup-Tiger-${EXPECTED_VERSION}.pkg" ]]; then
+  printf 'ok - README contains no stale versioned installer name\n'
+else
+  printf 'not ok - README contains no stale versioned installer name\n'
+  failures=$((failures + 1))
+fi
+check_contains "$ROOT/README.md" \
+  "Scheduled, retry, mount-triggered, and menu-bar-only runs stay headless and passive, including in full-screen Spaces." \
+  "README explicitly keeps automatic retries passive in full-screen Spaces"
+check_contains "$ROOT/README.md" \
+  "silent authenticated and guest SMB mounting" \
+  "README release summary covers authenticated and guest SMB mounting"
+check_contains "$ROOT/README.md" \
+  "Guest SMB URLs such as \`smb://nas.local/Backups\` bypass Keychain and authentication commands and remain no-UI during automatic runs." \
+  "README documents guest SMB without Keychain or UI"
+check_contains "$ROOT/README.md" \
+  "newer persistent failure for the same profile cannot be erased" \
+  "README documents the persistent notification cleanup boundary"
+check_contains "$ROOT/README.md" \
+  "the progress bar remains indeterminate and no stale or invented percentage is shown" \
+  "README documents truthful unknown-total progress"
+check_contains "$ROOT/README.md" \
+  "Completion appears only after the durable terminal status has been published." \
+  "README ties completion to durable terminal status"
 check_contains "$ROOT/CHANGELOG.md" "## v${version} " \
   "changelog contains the app version"
 check_contains "$ROOT/docs/version-history.md" "| v${version} | ${build} |" \
   "publication history contains the app version and build"
+check_contains "$ROOT/docs/version-history.md" \
+  "The v2.4.3 and v2.4.4 installers are built and verified from their exact tags" \
+  "publication history explains both exact-tag installer builds"
+check_contains "$ROOT/docs/version-history.md" \
+  "No retrospectively built installer is presented as an original historical artifact." \
+  "publication history labels retrospectively built installers honestly"
+check_not_contains "$ROOT/docs/version-history.md" \
+  "The current release alone receives the installer" \
+  "publication history does not claim only the current release receives an installer"
 check_contains "$ROOT/README.md" "macOS ${minimum_macos%%.*}" \
   "README states the minimum macOS generation"
 check_contains "$ROOT/install.sh" "GDRIVE_BACKUP_RETENTION=1" \
@@ -57,6 +118,8 @@ check_contains "$ROOT/install.sh" "MOUNTED_WRITABLE_MEDIA\" != \"true\"" \
   "source installer rejects a read-only APFS target"
 check_contains "$ROOT/install.sh" "-framework UserNotifications" \
   "source installer links the macOS notification framework"
+check_contains "$ROOT/install.sh" "-framework NetFS" \
+  "source installer links the native network mount framework"
 
 GDRIVE_BACKUP_VOLUME_UUID=not-a-uuid \
   BACKUP_TARGET=apfs \
@@ -80,13 +143,15 @@ check_contains "$ROOT/packaging/scripts/postinstall" "GDRIVE_BACKUP_NOTIFY_FAILU
 
 for source in \
   ProfileSupport.m \
+  BackupProgressSupport.m \
   NotificationSupport.m \
   SetupHealthSupport.m \
   RestoreSupport.m \
   RestoreBrowserView.m \
   DiagnosticsSupport.m \
   DiagnosticsView.m \
-  UpdateSupport.m; do
+  UpdateSupport.m \
+  NetworkMountSupport.m; do
   check_contains "$ROOT/install.sh" "macos/GDriveBackupTiger/$source" \
     "source installer links $source"
 done

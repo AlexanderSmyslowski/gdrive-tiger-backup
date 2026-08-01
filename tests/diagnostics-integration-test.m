@@ -1,5 +1,7 @@
 #import <Cocoa/Cocoa.h>
 
+#import "TestApplicationSupport.h"
+
 #define main GDTApplicationMain
 #import "../macos/GDriveBackupTiger/main.m"
 #undef main
@@ -29,7 +31,11 @@ static void Assert(BOOL condition, NSString *name) {
 
 int main(void) {
     @autoreleasepool {
-        [NSApplication sharedApplication];
+        NSApplication *testApplication =
+            GDTInitializeAccessoryTestApplication();
+        Assert(testApplication.activationPolicy ==
+                   NSApplicationActivationPolicyAccessory,
+               @"the diagnostics integration harness stays out of the Dock");
         DiagnosticsLaunchDelegate *delegate = [[DiagnosticsLaunchDelegate alloc] init];
         delegate.language = @"de";
 

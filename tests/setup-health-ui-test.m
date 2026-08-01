@@ -1,5 +1,7 @@
 #import <Cocoa/Cocoa.h>
 
+#import "TestApplicationSupport.h"
+
 #define main GDTApplicationMain
 #import "../macos/GDriveBackupTiger/main.m"
 #undef main
@@ -74,7 +76,11 @@ static void InstallHealthView(AppDelegate *delegate, NSView *contentView) {
 
 int main(void) {
     @autoreleasepool {
-        [NSApplication sharedApplication];
+        NSApplication *testApplication =
+            GDTInitializeAccessoryTestApplication();
+        Assert(testApplication.activationPolicy ==
+                   NSApplicationActivationPolicyAccessory,
+               @"the setup health harness stays out of the Dock");
         Class healthViewClass = NSClassFromString(@"TigerSetupHealthView");
         NSView *healthView = healthViewClass
             ? [[healthViewClass alloc] initWithFrame:NSMakeRect(0, 0, 580, 116)]

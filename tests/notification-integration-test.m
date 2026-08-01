@@ -1,5 +1,7 @@
 #import <Cocoa/Cocoa.h>
 
+#import "TestApplicationSupport.h"
+
 #define main GDTApplicationMain
 #import "../macos/GDriveBackupTiger/main.m"
 #undef main
@@ -13,6 +15,12 @@
 - (UNMutableNotificationContent *)backupNotificationContentForDecision:
     (NSDictionary<NSString *, NSString *> *)decision;
 - (BOOL)timeSensitiveBackupNotificationsEnabled;
+- (void)removeExactBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers
+                                      forProfileID:(NSString *)profileID;
+- (void)removeDeliveredBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers;
+- (void)removePendingBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers;
+- (void)enumerateDeliveredBackupNotificationsWithCompletion:
+    (void (^)(NSArray<UNNotification *> *notifications))completion;
 - (void)clearBackupFailureNotificationsForConfig:
     (NSDictionary<NSString *, NSString *> *)config
     summary:(NSDictionary<NSString *, NSString *> *)summary
@@ -23,6 +31,10 @@
                                 rawStatus:(NSString *)rawStatus
                                  decision:(NSDictionary<NSString *, NSString *> *)decision;
 - (NSSet<UNNotificationCategory *> *)appNotificationCategories;
+- (void)handleBackupNotificationActionIdentifier:(NSString *)actionIdentifier
+                              categoryIdentifier:(NSString *)categoryIdentifier
+                                        userInfo:(NSDictionary *)userInfo
+                          notificationIdentifier:(NSString *)notificationIdentifier;
 - (UNMutableNotificationContent *)unknownExternalVolumeNotificationContentForDescriptor:
     (NSDictionary<NSString *, id> *)descriptor;
 - (UNNotificationPresentationOptions)presentationOptionsForNotificationCategoryIdentifier:
@@ -37,13 +49,47 @@
 - (void)forgetUnknownExternalAttachmentForDiskID:(NSString *)diskID;
 @end
 
+@interface TestNotificationEnvelope : NSObject
+@property(nonatomic, strong) UNNotificationRequest *request;
+@end
+
+@implementation TestNotificationEnvelope
+@end
+
+@interface TestNotificationResponse : NSObject
+@property(nonatomic, copy) NSString *actionIdentifier;
+@property(nonatomic, strong) TestNotificationEnvelope *notification;
+@end
+
+@implementation TestNotificationResponse
+@end
+
 @interface NotificationTestDelegate : AppDelegate
 @property(nonatomic, strong) NSUserDefaults *testDefaults;
 @property(nonatomic) NSInteger deliveryCalls;
 @property(nonatomic) BOOL deliverySucceeds;
 @property(nonatomic) BOOL testTimeSensitiveNotificationsEnabled;
+@property(nonatomic) BOOL deferBackupDelivery;
+@property(nonatomic, strong) NSMutableArray<void (^)(BOOL)> *deferredBackupDeliveryCompletions;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *
+    acceptedBackupDecisionsByIdentifier;
 @property(nonatomic, copy) NSArray<NSString *> *removedNotificationIdentifiers;
+@property(nonatomic, copy) NSArray<NSString *> *removedDeliveredNotificationIdentifiers;
+@property(nonatomic, copy) NSArray<NSString *> *removedPendingNotificationIdentifiers;
 @property(nonatomic, copy) NSArray<NSString *> *extraDeliveredNotificationIdentifiers;
+@end
+
+@interface BackupRemovalSeamTestDelegate : AppDelegate
+@property(nonatomic, copy) NSArray<NSString *> *removedDeliveredNotificationIdentifiers;
+@property(nonatomic, copy) NSArray<NSString *> *removedPendingNotificationIdentifiers;
+@end
+
+@interface BackupCleanupRaceTestDelegate : AppDelegate
+@property(nonatomic, strong) NSUserDefaults *testDefaults;
+@property(nonatomic, copy) NSArray<NSString *> *removedDeliveredNotificationIdentifiers;
+@property(nonatomic, copy) NSArray<NSString *> *removedPendingNotificationIdentifiers;
+@property(nonatomic, copy) void (^deferredDeliveredEnumeration)(
+    NSArray<UNNotification *> *notifications);
 @end
 
 @interface UnknownVolumeNotificationTestDelegate : NotificationTestDelegate
@@ -216,19 +262,118 @@
 
 - (void)deliverBackupNotificationDecision:(NSDictionary<NSString *, NSString *> *)decision
                                 completion:(void (^)(BOOL delivered))completion {
-    (void)decision;
     self.deliveryCalls++;
-    completion(self.deliverySucceeds);
+    NSDictionary<NSString *, NSString *> *capturedDecision = [decision copy];
+    __weak typeof(self) weakSelf = self;
+    void (^finish)(BOOL) = ^(BOOL delivered) {
+        typeof(self) strongSelf = weakSelf;
+        if (delivered && capturedDecision[@"identifier"].length) {
+            if (!strongSelf.acceptedBackupDecisionsByIdentifier) {
+                strongSelf.acceptedBackupDecisionsByIdentifier =
+                    [NSMutableDictionary dictionary];
+            }
+            strongSelf.acceptedBackupDecisionsByIdentifier[
+                capturedDecision[@"identifier"]] = capturedDecision;
+        }
+        completion(delivered);
+    };
+    if (self.deferBackupDelivery) {
+        if (!self.deferredBackupDeliveryCompletions) {
+            self.deferredBackupDeliveryCompletions = [NSMutableArray array];
+        }
+        [self.deferredBackupDeliveryCompletions addObject:[finish copy]];
+        return;
+    }
+    finish(self.deliverySucceeds);
 }
 
-- (void)removeBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers
-                                forProfileID:(NSString *)profileID {
-    (void)profileID;
-    NSMutableArray<NSString *> *all = [identifiers mutableCopy] ?: [NSMutableArray array];
+- (void)enumerateDeliveredBackupNotificationsWithCompletion:
+    (void (^)(NSArray<UNNotification *> *notifications))completion {
+    NSMutableArray<UNNotification *> *notifications = [NSMutableArray array];
     for (NSString *identifier in self.extraDeliveredNotificationIdentifiers ?: @[]) {
-        if (![all containsObject:identifier]) [all addObject:identifier];
+        UNMutableNotificationContent *content =
+            [[UNMutableNotificationContent alloc] init];
+        TestNotificationEnvelope *envelope = [[TestNotificationEnvelope alloc] init];
+        envelope.request = [UNNotificationRequest requestWithIdentifier:identifier
+                                                                content:content
+                                                                trigger:nil];
+        [notifications addObject:(UNNotification *)envelope];
     }
-    self.removedNotificationIdentifiers = all;
+    completion(notifications);
+}
+
+- (void)removeDeliveredBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers {
+    self.removedDeliveredNotificationIdentifiers = identifiers;
+    self.removedNotificationIdentifiers = identifiers;
+    [self.acceptedBackupDecisionsByIdentifier removeObjectsForKeys:identifiers];
+}
+
+- (void)removePendingBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers {
+    self.removedPendingNotificationIdentifiers = identifiers;
+    self.removedNotificationIdentifiers = identifiers;
+}
+
+@end
+
+
+@implementation BackupRemovalSeamTestDelegate
+
+- (void)removeDeliveredBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers {
+    self.removedDeliveredNotificationIdentifiers = identifiers;
+}
+
+- (void)removePendingBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers {
+    self.removedPendingNotificationIdentifiers = identifiers;
+}
+
+@end
+
+@implementation BackupCleanupRaceTestDelegate
+
+- (NSUserDefaults *)backupNotificationDefaultsStore {
+    return self.testDefaults;
+}
+
+- (void)enumerateDeliveredBackupNotificationsWithCompletion:
+    (void (^)(NSArray<UNNotification *> *notifications))completion {
+    self.deferredDeliveredEnumeration = completion;
+}
+
+- (void)removeDeliveredBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers {
+    self.removedDeliveredNotificationIdentifiers = identifiers;
+}
+
+- (void)removePendingBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers {
+    self.removedPendingNotificationIdentifiers = identifiers;
+}
+
+@end
+
+@interface BackupActionTestDelegate : NotificationTestDelegate
+@property(nonatomic) NSInteger overviewShowCalls;
+@property(nonatomic) NSInteger overviewRefreshCalls;
+@property(nonatomic) NSInteger backupLaunchCalls;
+@end
+
+@implementation BackupActionTestDelegate
+
+- (void)showOverviewWindow {
+    self.overviewShowCalls++;
+}
+
+- (void)refreshOverviewStatus:(id)sender {
+    (void)sender;
+    self.overviewRefreshCalls++;
+}
+
+- (BOOL)launchBackupWithArgument:(NSString *)argument
+                         trigger:(NSString *)trigger
+                       assumeYes:(BOOL)assumeYes {
+    (void)argument;
+    (void)trigger;
+    (void)assumeYes;
+    self.backupLaunchCalls++;
+    return YES;
 }
 
 @end
@@ -301,6 +446,40 @@ static void ProcessRetry(RetryTestDelegate *delegate,
     method(delegate, selector, decision);
 }
 
+static void HandleBackupAction(id delegate, NSString *action,
+                               NSString *category, NSDictionary *userInfo,
+                               NSString *identifier) {
+    SEL selector = NSSelectorFromString(
+        @"handleBackupNotificationActionIdentifier:categoryIdentifier:userInfo:notificationIdentifier:");
+    typedef void (*ActionMethod)(id, SEL, NSString *, NSString *,
+                                 NSDictionary *, NSString *);
+    ActionMethod method = [delegate respondsToSelector:selector]
+        ? (ActionMethod)[delegate methodForSelector:selector] : NULL;
+    if (method) method(delegate, selector, action, category, userInfo, identifier);
+}
+
+static BOOL RouteBackupResponse(AppDelegate *delegate, NSString *action,
+                                NSString *category, NSDictionary *userInfo,
+                                NSString *identifier) {
+    UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
+    content.categoryIdentifier = category;
+    content.userInfo = userInfo;
+    TestNotificationEnvelope *notification = [[TestNotificationEnvelope alloc] init];
+    notification.request = [UNNotificationRequest requestWithIdentifier:identifier
+                                                                 content:content
+                                                                 trigger:nil];
+    TestNotificationResponse *response = [[TestNotificationResponse alloc] init];
+    response.actionIdentifier = action;
+    response.notification = notification;
+    __block BOOL completed = NO;
+    UNUserNotificationCenter *unusedCenter =
+        (UNUserNotificationCenter *)(id)[NSObject new];
+    [delegate userNotificationCenter:unusedCenter
+      didReceiveNotificationResponse:(UNNotificationResponse *)(id)response
+               withCompletionHandler:^{ completed = YES; }];
+    return completed;
+}
+
 static void ProcessUnknownVolumeAction(AppDelegate *delegate,
                                        NSString *action,
                                        NSDictionary *userInfo) {
@@ -346,6 +525,18 @@ static void PrepareUnknownVolumeDeliveryState(
     delegate.notifiedUnknownExternalDiskIDs = [NSMutableSet set];
 }
 
+static UNNotification *DeliveredBackupNotification(
+    NSString *identifier, NSString *categoryIdentifier, NSDictionary *userInfo) {
+    UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
+    content.categoryIdentifier = categoryIdentifier ?: @"";
+    content.userInfo = userInfo ?: @{};
+    TestNotificationEnvelope *envelope = [[TestNotificationEnvelope alloc] init];
+    envelope.request = [UNNotificationRequest requestWithIdentifier:identifier
+                                                            content:content
+                                                            trigger:nil];
+    return (UNNotification *)envelope;
+}
+
 int main(void) {
     @autoreleasepool {
         NotificationTestDelegate *delegate = [[NotificationTestDelegate alloc] init];
@@ -363,6 +554,7 @@ int main(void) {
             @"profileID": @"office",
             @"kind": @"failure",
             @"issueTimestamp": @"100",
+            @"issueOriginTimestamp": @"100",
             @"titleKey": @"backupNotificationFailureTitle",
             @"bodyKey": @"failedHint"
         };
@@ -374,12 +566,14 @@ int main(void) {
         NSMutableDictionary<NSString *, NSString *> *nextRun = [first mutableCopy];
         nextRun[@"identifier"] = @"com.commcats.gdrivebackup.office.failure.200";
         nextRun[@"issueTimestamp"] = @"200";
+        nextRun[@"issueOriginTimestamp"] = @"200";
         Process(delegate, nextRun);
         Assert(delegate.deliveryCalls == 2,
                @"a later failed run remains eligible for its own notification");
 
         NSMutableDictionary<NSString *, NSString *> *otherProfile = [first mutableCopy];
         otherProfile[@"profileID"] = @"archive";
+        otherProfile[@"identifier"] = @"com.commcats.gdrivebackup.archive.failure.100";
         Process(delegate, otherProfile);
         Assert(delegate.deliveryCalls == 3,
                @"notification deduplication is isolated per backup profile");
@@ -387,6 +581,8 @@ int main(void) {
         delegate.deliverySucceeds = NO;
         NSMutableDictionary<NSString *, NSString *> *notDelivered = [first mutableCopy];
         notDelivered[@"identifier"] = @"com.commcats.gdrivebackup.office.failure.300";
+        notDelivered[@"issueTimestamp"] = @"300";
+        notDelivered[@"issueOriginTimestamp"] = @"300";
         Process(delegate, notDelivered);
         Process(delegate, notDelivered);
         Assert(delegate.deliveryCalls == 5,
@@ -395,6 +591,739 @@ int main(void) {
         Process(delegate, @{});
         Assert(delegate.deliveryCalls == 5,
                @"incomplete policy output cannot create a notification");
+
+        BackupRemovalSeamTestDelegate *removalProbe =
+            [[BackupRemovalSeamTestDelegate alloc] init];
+        BOOL exactRemovalSeamsAvailable =
+            [AppDelegate instancesRespondToSelector:
+                @selector(removeDeliveredBackupNotificationIdentifiers:)] &&
+            [AppDelegate instancesRespondToSelector:
+                @selector(removePendingBackupNotificationIdentifiers:)];
+        if (exactRemovalSeamsAvailable) {
+            [removalProbe removeExactBackupNotificationIdentifiers:@[
+                @"com.commcats.gdrivebackup.office.failure.100",
+                @"com.commcats.gdrivebackup.archive.failure.100",
+                @"not-a-backup-notification"
+            ] forProfileID:@"office"];
+        }
+        NSArray<NSString *> *oneSafeRemoval =
+            @[@"com.commcats.gdrivebackup.office.failure.100"];
+        Assert(exactRemovalSeamsAvailable &&
+               [removalProbe.removedDeliveredNotificationIdentifiers
+                   isEqualToArray:oneSafeRemoval] &&
+               [removalProbe.removedPendingNotificationIdentifiers
+                   isEqualToArray:oneSafeRemoval],
+               @"exact retirement filters identifiers and removes both delivered and pending requests");
+
+        NotificationTestDelegate *replacement =
+            [[NotificationTestDelegate alloc] init];
+        replacement.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+            [suiteName stringByAppendingString:@".replacement"]];
+        replacement.deliverySucceeds = YES;
+        NSDictionary<NSString *, NSString *> *preliminary = @{
+            @"identifier": @"com.commcats.gdrivebackup.office.failure.400",
+            @"profileID": @"office",
+            @"kind": @"failure",
+            @"issueTimestamp": @"405",
+            @"issueOriginTimestamp": @"400",
+            @"titleKey": @"backupNotificationFailureTitle",
+            @"bodyKey": @"backupNotificationNASRetryBody"
+        };
+        NSMutableDictionary *retryRunningDecision = [preliminary mutableCopy];
+        retryRunningDecision[@"kind"] = @"retry-running";
+        retryRunningDecision[@"revision"] = @"retry-running.430";
+        retryRunningDecision[@"issueTimestamp"] = @"400";
+        retryRunningDecision[@"titleKey"] = @"backupNotificationRetryRunningTitle";
+        retryRunningDecision[@"bodyKey"] = @"backupNotificationRetryRunningBody";
+        NSDictionary<NSString *, NSString *> *finalRetryFailure = @{
+            @"identifier": @"com.commcats.gdrivebackup.office.failure.430",
+            @"supersedesIdentifier":
+                @"com.commcats.gdrivebackup.office.failure.400",
+            @"profileID": @"office",
+            @"kind": @"failure",
+            @"issueTimestamp": @"435",
+            @"issueOriginTimestamp": @"400",
+            @"titleKey": @"backupNotificationFailureTitle",
+            @"bodyKey": @"backupNotificationRetryFailureBody"
+        };
+        Process(replacement, preliminary);
+        Process(replacement, retryRunningDecision);
+        Process(replacement, retryRunningDecision);
+        Assert(replacement.deliveryCalls == 2 &&
+               replacement.removedNotificationIdentifiers == nil,
+               @"retry start updates one identifier once without a duplicate alert");
+
+        NotificationTestDelegate *restarted = [[NotificationTestDelegate alloc] init];
+        restarted.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:[suiteName stringByAppendingString:@".replacement"]];
+        restarted.deliverySucceeds = YES;
+        Process(restarted, retryRunningDecision);
+        Assert(restarted.deliveryCalls == 0,
+               @"a controller restart does not repeat the running revision");
+
+        NotificationTestDelegate *inFlightReplacement =
+            [[NotificationTestDelegate alloc] init];
+        inFlightReplacement.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+            [suiteName stringByAppendingString:@".in-flight-replacement"]];
+        inFlightReplacement.deliverySucceeds = YES;
+        inFlightReplacement.deferBackupDelivery = YES;
+        Process(inFlightReplacement, preliminary);
+        Process(inFlightReplacement, retryRunningDecision);
+        Process(inFlightReplacement, retryRunningDecision);
+        Assert(inFlightReplacement.deliveryCalls == 1 &&
+               inFlightReplacement.deferredBackupDeliveryCompletions.count == 1,
+               @"a running revision waits behind one in-flight preliminary request without duplicating itself");
+        void (^finishPreliminary)(BOOL) =
+            inFlightReplacement.deferredBackupDeliveryCompletions[0];
+        finishPreliminary(YES);
+        Assert(inFlightReplacement.deliveryCalls == 2 &&
+               inFlightReplacement.deferredBackupDeliveryCompletions.count == 2,
+               @"accepting the preliminary request immediately submits its queued running replacement");
+        Process(inFlightReplacement, retryRunningDecision);
+        Assert(inFlightReplacement.deliveryCalls == 2,
+               @"the same running revision is suppressed while its delivery is in flight");
+        void (^finishRunning)(BOOL) =
+            inFlightReplacement.deferredBackupDeliveryCompletions[1];
+        finishRunning(YES);
+        inFlightReplacement.deferBackupDelivery = NO;
+        Process(inFlightReplacement, retryRunningDecision);
+        NSDictionary *visibleReplacement =
+            inFlightReplacement.acceptedBackupDecisionsByIdentifier[
+                preliminary[@"identifier"]];
+        Assert(inFlightReplacement.deliveryCalls == 2 &&
+               [visibleReplacement[@"kind"] isEqualToString:@"retry-running"] &&
+               [[inFlightReplacement.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredRevision"]
+                       isEqualToString:@"retry-running.430"],
+               @"serialized acceptance leaves the running revision visible and durable");
+
+        NotificationTestDelegate *latchedRunningDelivery =
+            [[NotificationTestDelegate alloc] init];
+        latchedRunningDelivery.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+            [suiteName stringByAppendingString:@".latched-running-delivery"]];
+        latchedRunningDelivery.deliverySucceeds = YES;
+        [latchedRunningDelivery.testDefaults setDouble:400
+            forKey:@"GDTBackupNotification.office.activeIssueAt"];
+        [latchedRunningDelivery.testDefaults setObject:@"failure"
+            forKey:@"GDTBackupNotification.office.activeIssueKind"];
+        [latchedRunningDelivery.testDefaults setObject:preliminary[@"identifier"]
+            forKey:@"GDTBackupNotification.office.activeIssueIdentifier"];
+        Process(latchedRunningDelivery, retryRunningDecision);
+        Assert(latchedRunningDelivery.deliveryCalls == 1 &&
+               [latchedRunningDelivery.testDefaults doubleForKey:
+                   @"GDTBackupNotification.office.activeIssueAt"] == 400 &&
+               [[latchedRunningDelivery.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.activeIssueKind"]
+                       isEqualToString:@"failure"] &&
+               [[latchedRunningDelivery.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.activeIssueIdentifier"]
+                       isEqualToString:preliminary[@"identifier"]],
+               @"delivering retry progress never changes the canonical failure latch");
+
+        NotificationTestDelegate *successDuringDelivery =
+            [[NotificationTestDelegate alloc] init];
+        successDuringDelivery.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+            [suiteName stringByAppendingString:@".success-during-delivery"]];
+        successDuringDelivery.deliverySucceeds = YES;
+        successDuringDelivery.deferBackupDelivery = YES;
+        Process(successDuringDelivery, preliminary);
+        Process(successDuringDelivery, retryRunningDecision);
+        Assert(successDuringDelivery.deferredBackupDeliveryCompletions.count == 1,
+               @"the success race captures one in-flight callback with running work queued");
+        [successDuringDelivery clearBackupFailureNotificationsForConfig:
+            @{@"GDRIVE_BACKUP_PROFILE_ID": @"office"}
+            summary:@{@"status": @"success", @"finished_at": @"500",
+                      @"trigger": @"schedule-retry"}
+            status:@"success"];
+        void (^finishAfterSuccess)(BOOL) =
+            successDuringDelivery.deferredBackupDeliveryCompletions[0];
+        finishAfterSuccess(YES);
+        Assert(successDuringDelivery.deliveryCalls == 1 &&
+               successDuringDelivery.deferredBackupDeliveryCompletions.count == 1 &&
+               successDuringDelivery.acceptedBackupDecisionsByIdentifier[
+                   preliminary[@"identifier"]] == nil &&
+               [successDuringDelivery.testDefaults objectForKey:
+                   @"GDTBackupNotification.office.lastDeliveredIdentifier"] == nil &&
+               [successDuringDelivery.testDefaults objectForKey:
+                   @"GDTBackupNotification.office.deliveredFailureIdentifiers"] == nil &&
+               [successDuringDelivery.testDefaults objectForKey:
+                   @"GDTBackupNotification.office.latestDeliveredIssueAt"] == nil &&
+               [successDuringDelivery.testDefaults objectForKey:
+                   @"GDTBackupNotification.office.latestDeliveredIssueStage"] == nil &&
+               [successDuringDelivery.testDefaults objectForKey:
+                   @"GDTBackupNotification.office.latestDeliveredIssueState"] == nil &&
+               [successDuringDelivery.removedDeliveredNotificationIdentifiers
+                   isEqualToArray:@[preliminary[@"identifier"]]] &&
+               [successDuringDelivery.removedPendingNotificationIdentifiers
+                   isEqualToArray:@[preliminary[@"identifier"]]],
+               @"a success invalidates and retires an alert accepted by a late delivery callback");
+
+        NotificationTestDelegate *terminalSupersessionOrdering =
+            [[NotificationTestDelegate alloc] init];
+        terminalSupersessionOrdering.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:[suiteName
+                stringByAppendingString:@".terminal-supersession-ordering"]];
+        terminalSupersessionOrdering.deliverySucceeds = YES;
+        terminalSupersessionOrdering.deferBackupDelivery = YES;
+        Process(terminalSupersessionOrdering, preliminary);
+        Process(terminalSupersessionOrdering, retryRunningDecision);
+        Process(terminalSupersessionOrdering, finalRetryFailure);
+        Process(terminalSupersessionOrdering, retryRunningDecision);
+        Assert(terminalSupersessionOrdering.deliveryCalls == 1 &&
+               terminalSupersessionOrdering.deferredBackupDeliveryCompletions.count == 1,
+               @"one in-flight request coalesces retry lifecycle updates for its profile");
+        void (^finishBeforeTerminal)(BOOL) =
+            terminalSupersessionOrdering.deferredBackupDeliveryCompletions[0];
+        finishBeforeTerminal(YES);
+        Assert(terminalSupersessionOrdering.deliveryCalls == 2 &&
+               terminalSupersessionOrdering.deferredBackupDeliveryCompletions.count == 2,
+               @"the terminal retry result is the only queued request submitted next");
+        void (^finishTerminal)(BOOL) =
+            terminalSupersessionOrdering.deferredBackupDeliveryCompletions[1];
+        finishTerminal(YES);
+        Assert(terminalSupersessionOrdering.acceptedBackupDecisionsByIdentifier[
+                   preliminary[@"identifier"]] == nil &&
+               [terminalSupersessionOrdering.acceptedBackupDecisionsByIdentifier[
+                   finalRetryFailure[@"identifier"]][@"bodyKey"]
+                       isEqualToString:@"backupNotificationRetryFailureBody"] &&
+               [[terminalSupersessionOrdering.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredIdentifier"]
+                       isEqualToString:finalRetryFailure[@"identifier"]],
+               @"a stale running observation cannot displace a queued terminal retry result");
+
+        NotificationTestDelegate *staleOriginOrdering =
+            [[NotificationTestDelegate alloc] init];
+        staleOriginOrdering.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:[suiteName
+                stringByAppendingString:@".stale-origin-ordering"]];
+        staleOriginOrdering.deliverySucceeds = YES;
+        staleOriginOrdering.deferBackupDelivery = YES;
+        NSMutableDictionary<NSString *, NSString *> *newerIndependentFailure =
+            [preliminary mutableCopy];
+        newerIndependentFailure[@"identifier"] =
+            @"com.commcats.gdrivebackup.office.failure.500";
+        newerIndependentFailure[@"issueTimestamp"] = @"505";
+        newerIndependentFailure[@"issueOriginTimestamp"] = @"500";
+        Process(staleOriginOrdering, newerIndependentFailure);
+        Process(staleOriginOrdering, preliminary);
+        Assert(staleOriginOrdering.deliveryCalls == 1 &&
+               staleOriginOrdering.deferredBackupDeliveryCompletions.count == 1,
+               @"an older origin waits on neither a second request nor a queued rollback");
+        void (^finishNewerOrigin)(BOOL) =
+            staleOriginOrdering.deferredBackupDeliveryCompletions[0];
+        finishNewerOrigin(YES);
+        Assert(staleOriginOrdering.deliveryCalls == 1 &&
+               staleOriginOrdering.acceptedBackupDecisionsByIdentifier[
+                   preliminary[@"identifier"]] == nil &&
+               [staleOriginOrdering.acceptedBackupDecisionsByIdentifier[
+                   newerIndependentFailure[@"identifier"]][@"issueOriginTimestamp"]
+                       isEqualToString:@"500"],
+               @"a stale origin cannot queue behind and roll back a newer in-flight issue");
+
+        NSString *acceptedOriginKey =
+            @"GDTBackupNotification.office.latestDeliveredIssueAt";
+        NSString *acceptedStageKey =
+            @"GDTBackupNotification.office.latestDeliveredIssueStage";
+        NSString *acceptedStateKey =
+            @"GDTBackupNotification.office.latestDeliveredIssueState";
+
+        NotificationTestDelegate *acceptedTerminalOrdering =
+            [[NotificationTestDelegate alloc] init];
+        acceptedTerminalOrdering.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:[suiteName
+                stringByAppendingString:@".accepted-terminal-ordering"]];
+        acceptedTerminalOrdering.deliverySucceeds = YES;
+        Process(acceptedTerminalOrdering, preliminary);
+        Process(acceptedTerminalOrdering, finalRetryFailure);
+        Process(acceptedTerminalOrdering, retryRunningDecision);
+        Assert(acceptedTerminalOrdering.deliveryCalls == 2 &&
+               acceptedTerminalOrdering.acceptedBackupDecisionsByIdentifier[
+                   preliminary[@"identifier"]] == nil &&
+               [acceptedTerminalOrdering.acceptedBackupDecisionsByIdentifier[
+                   finalRetryFailure[@"identifier"]][@"bodyKey"]
+                       isEqualToString:@"backupNotificationRetryFailureBody"] &&
+               [acceptedTerminalOrdering.testDefaults doubleForKey:
+                   acceptedOriginKey] == 400 &&
+               [acceptedTerminalOrdering.testDefaults integerForKey:
+                   acceptedStageKey] == 3 &&
+               [[acceptedTerminalOrdering.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredIdentifier"]
+                       isEqualToString:finalRetryFailure[@"identifier"]],
+               @"an accepted terminal retry failure cannot be replaced by a later stale running observation");
+
+        NSString *terminalRestartSuite =
+            [suiteName stringByAppendingString:@".accepted-terminal-restart"];
+        NotificationTestDelegate *terminalRestartSource =
+            [[NotificationTestDelegate alloc] init];
+        terminalRestartSource.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:terminalRestartSuite];
+        terminalRestartSource.deliverySucceeds = YES;
+        Process(terminalRestartSource, preliminary);
+        Process(terminalRestartSource, finalRetryFailure);
+        NotificationTestDelegate *terminalAfterRestart =
+            [[NotificationTestDelegate alloc] init];
+        terminalAfterRestart.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:terminalRestartSuite];
+        terminalAfterRestart.deliverySucceeds = YES;
+        terminalAfterRestart.acceptedBackupDecisionsByIdentifier =
+            terminalRestartSource.acceptedBackupDecisionsByIdentifier;
+        Process(terminalAfterRestart, retryRunningDecision);
+        Assert(terminalAfterRestart.deliveryCalls == 0 &&
+               terminalAfterRestart.acceptedBackupDecisionsByIdentifier[
+                   preliminary[@"identifier"]] == nil &&
+               [terminalAfterRestart.acceptedBackupDecisionsByIdentifier[
+                   finalRetryFailure[@"identifier"]][@"bodyKey"]
+                       isEqualToString:@"backupNotificationRetryFailureBody"] &&
+               [terminalAfterRestart.testDefaults doubleForKey:
+                   acceptedOriginKey] == 400 &&
+               [terminalAfterRestart.testDefaults integerForKey:
+                   acceptedStageKey] == 3 &&
+               [[terminalAfterRestart.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredIdentifier"]
+                       isEqualToString:finalRetryFailure[@"identifier"]],
+               @"a restart preserves terminal retry ordering against a stale running observation");
+
+        NSString *missingTerminalStateSuite =
+            [suiteName stringByAppendingString:@".missing-terminal-state"];
+        NotificationTestDelegate *missingTerminalStateSource =
+            [[NotificationTestDelegate alloc] init];
+        missingTerminalStateSource.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:missingTerminalStateSuite];
+        missingTerminalStateSource.deliverySucceeds = YES;
+        Process(missingTerminalStateSource, preliminary);
+        Process(missingTerminalStateSource, finalRetryFailure);
+        [missingTerminalStateSource.testDefaults removeObjectForKey:
+            acceptedStateKey];
+        [missingTerminalStateSource.testDefaults removeObjectForKey:
+            acceptedStageKey];
+        NotificationTestDelegate *missingTerminalStateAfterRestart =
+            [[NotificationTestDelegate alloc] init];
+        missingTerminalStateAfterRestart.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:missingTerminalStateSuite];
+        missingTerminalStateAfterRestart.deliverySucceeds = YES;
+        missingTerminalStateAfterRestart.acceptedBackupDecisionsByIdentifier =
+            missingTerminalStateSource.acceptedBackupDecisionsByIdentifier;
+        Process(missingTerminalStateAfterRestart, retryRunningDecision);
+        NSDictionary *migratedMissingTerminalState =
+            [missingTerminalStateAfterRestart.testDefaults dictionaryForKey:
+                acceptedStateKey];
+        Assert(missingTerminalStateAfterRestart.deliveryCalls == 0 &&
+               missingTerminalStateAfterRestart.acceptedBackupDecisionsByIdentifier[
+                   preliminary[@"identifier"]] == nil &&
+               [missingTerminalStateAfterRestart.acceptedBackupDecisionsByIdentifier[
+                   finalRetryFailure[@"identifier"]][@"bodyKey"]
+                       isEqualToString:@"backupNotificationRetryFailureBody"] &&
+               [[missingTerminalStateAfterRestart.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredIdentifier"]
+                       isEqualToString:finalRetryFailure[@"identifier"]] &&
+               [missingTerminalStateAfterRestart.testDefaults objectForKey:
+                   @"GDTBackupNotification.office.lastDeliveredRevision"] == nil &&
+               [migratedMissingTerminalState[@"origin"] doubleValue] == 400 &&
+               [migratedMissingTerminalState[@"stage"] integerValue] == 3,
+               @"a restart infers an accepted terminal stage before any stale running replay");
+
+        NSString *incompleteTerminalStateSuite =
+            [suiteName stringByAppendingString:@".incomplete-terminal-state"];
+        NotificationTestDelegate *incompleteTerminalStateSource =
+            [[NotificationTestDelegate alloc] init];
+        incompleteTerminalStateSource.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:incompleteTerminalStateSuite];
+        incompleteTerminalStateSource.deliverySucceeds = YES;
+        incompleteTerminalStateSource.acceptedBackupDecisionsByIdentifier =
+            [@{finalRetryFailure[@"identifier"]: finalRetryFailure} mutableCopy];
+        [incompleteTerminalStateSource.testDefaults setDouble:400
+            forKey:acceptedOriginKey];
+        [incompleteTerminalStateSource.testDefaults setObject:@{@"origin": @400}
+            forKey:acceptedStateKey];
+        [incompleteTerminalStateSource.testDefaults
+            setObject:finalRetryFailure[@"identifier"]
+               forKey:@"GDTBackupNotification.office.lastDeliveredIdentifier"];
+        NotificationTestDelegate *incompleteTerminalStateAfterRestart =
+            [[NotificationTestDelegate alloc] init];
+        incompleteTerminalStateAfterRestart.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:incompleteTerminalStateSuite];
+        incompleteTerminalStateAfterRestart.deliverySucceeds = YES;
+        incompleteTerminalStateAfterRestart.acceptedBackupDecisionsByIdentifier =
+            incompleteTerminalStateSource.acceptedBackupDecisionsByIdentifier;
+        Process(incompleteTerminalStateAfterRestart, retryRunningDecision);
+        NSDictionary *migratedIncompleteTerminalState =
+            [incompleteTerminalStateAfterRestart.testDefaults dictionaryForKey:
+                acceptedStateKey];
+        Assert(incompleteTerminalStateAfterRestart.deliveryCalls == 0 &&
+               incompleteTerminalStateAfterRestart.acceptedBackupDecisionsByIdentifier[
+                   preliminary[@"identifier"]] == nil &&
+               [incompleteTerminalStateAfterRestart.acceptedBackupDecisionsByIdentifier[
+                   finalRetryFailure[@"identifier"]][@"bodyKey"]
+                       isEqualToString:@"backupNotificationRetryFailureBody"] &&
+               [[incompleteTerminalStateAfterRestart.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredIdentifier"]
+                       isEqualToString:finalRetryFailure[@"identifier"]] &&
+               [incompleteTerminalStateAfterRestart.testDefaults objectForKey:
+                   @"GDTBackupNotification.office.lastDeliveredRevision"] == nil &&
+               [migratedIncompleteTerminalState[@"origin"] doubleValue] == 400 &&
+               [migratedIncompleteTerminalState[@"stage"] integerValue] == 3,
+               @"an incomplete accepted terminal state fails closed before stale running delivery");
+
+        NSString *legacyPreliminarySuite =
+            [suiteName stringByAppendingString:@".legacy-preliminary-state"];
+        NotificationTestDelegate *legacyPreliminarySource =
+            [[NotificationTestDelegate alloc] init];
+        legacyPreliminarySource.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:legacyPreliminarySuite];
+        legacyPreliminarySource.deliverySucceeds = YES;
+        Process(legacyPreliminarySource, preliminary);
+        [legacyPreliminarySource.testDefaults removeObjectForKey:acceptedStateKey];
+        [legacyPreliminarySource.testDefaults removeObjectForKey:acceptedStageKey];
+        NotificationTestDelegate *legacyPreliminaryAfterRestart =
+            [[NotificationTestDelegate alloc] init];
+        legacyPreliminaryAfterRestart.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:legacyPreliminarySuite];
+        legacyPreliminaryAfterRestart.deliverySucceeds = YES;
+        legacyPreliminaryAfterRestart.acceptedBackupDecisionsByIdentifier =
+            legacyPreliminarySource.acceptedBackupDecisionsByIdentifier;
+        Process(legacyPreliminaryAfterRestart, retryRunningDecision);
+        NSDictionary *migratedLegacyPreliminaryState =
+            [legacyPreliminaryAfterRestart.testDefaults dictionaryForKey:
+                acceptedStateKey];
+        Assert(legacyPreliminaryAfterRestart.deliveryCalls == 1 &&
+               [legacyPreliminaryAfterRestart.acceptedBackupDecisionsByIdentifier[
+                   preliminary[@"identifier"]][@"kind"]
+                       isEqualToString:@"retry-running"] &&
+               [[legacyPreliminaryAfterRestart.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredIdentifier"]
+                       isEqualToString:preliminary[@"identifier"]] &&
+               [[legacyPreliminaryAfterRestart.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredRevision"]
+                       isEqualToString:@"retry-running.430"] &&
+               [migratedLegacyPreliminaryState[@"origin"] doubleValue] == 400 &&
+               [migratedLegacyPreliminaryState[@"stage"] integerValue] == 2,
+               @"a legacy preliminary warning still accepts its running update during migration");
+
+        NSString *tornLegacyOriginSuite =
+            [suiteName stringByAppendingString:@".torn-legacy-origin-stage"];
+        NotificationTestDelegate *tornLegacyOriginSource =
+            [[NotificationTestDelegate alloc] init];
+        tornLegacyOriginSource.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:tornLegacyOriginSuite];
+        tornLegacyOriginSource.deliverySucceeds = YES;
+        tornLegacyOriginSource.acceptedBackupDecisionsByIdentifier =
+            [@{newerIndependentFailure[@"identifier"]: newerIndependentFailure}
+                mutableCopy];
+        [tornLegacyOriginSource.testDefaults setObject:@{@"origin": @500}
+            forKey:acceptedStateKey];
+        [tornLegacyOriginSource.testDefaults setDouble:400
+            forKey:acceptedOriginKey];
+        [tornLegacyOriginSource.testDefaults setInteger:3
+            forKey:acceptedStageKey];
+        [tornLegacyOriginSource.testDefaults
+            setObject:newerIndependentFailure[@"identifier"]
+               forKey:@"GDTBackupNotification.office.lastDeliveredIdentifier"];
+        NSMutableDictionary<NSString *, NSString *> *newerLegacyRetryRunning =
+            [newerIndependentFailure mutableCopy];
+        newerLegacyRetryRunning[@"kind"] = @"retry-running";
+        newerLegacyRetryRunning[@"revision"] = @"retry-running.510";
+        newerLegacyRetryRunning[@"titleKey"] =
+            @"backupNotificationRetryRunningTitle";
+        newerLegacyRetryRunning[@"bodyKey"] =
+            @"backupNotificationRetryRunningBody";
+        NotificationTestDelegate *tornLegacyOriginAfterRestart =
+            [[NotificationTestDelegate alloc] init];
+        tornLegacyOriginAfterRestart.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:tornLegacyOriginSuite];
+        tornLegacyOriginAfterRestart.deliverySucceeds = YES;
+        tornLegacyOriginAfterRestart.acceptedBackupDecisionsByIdentifier =
+            tornLegacyOriginSource.acceptedBackupDecisionsByIdentifier;
+        Process(tornLegacyOriginAfterRestart, newerLegacyRetryRunning);
+        NSDictionary *migratedTornLegacyOriginState =
+            [tornLegacyOriginAfterRestart.testDefaults dictionaryForKey:
+                acceptedStateKey];
+        Assert(tornLegacyOriginAfterRestart.deliveryCalls == 1 &&
+               [tornLegacyOriginAfterRestart.acceptedBackupDecisionsByIdentifier[
+                   newerIndependentFailure[@"identifier"]][@"kind"]
+                       isEqualToString:@"retry-running"] &&
+               [[tornLegacyOriginAfterRestart.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredIdentifier"]
+                       isEqualToString:newerIndependentFailure[@"identifier"]] &&
+               [[tornLegacyOriginAfterRestart.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredRevision"]
+                       isEqualToString:@"retry-running.510"] &&
+               [migratedTornLegacyOriginState[@"origin"] doubleValue] == 500 &&
+               [migratedTornLegacyOriginState[@"stage"] integerValue] == 2,
+               @"an incomplete newer origin discards an unpaired older terminal stage during migration");
+
+        NSString *legacyRunningSuite =
+            [suiteName stringByAppendingString:@".legacy-running-state"];
+        NotificationTestDelegate *legacyRunningSource =
+            [[NotificationTestDelegate alloc] init];
+        legacyRunningSource.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:legacyRunningSuite];
+        legacyRunningSource.deliverySucceeds = YES;
+        Process(legacyRunningSource, preliminary);
+        Process(legacyRunningSource, retryRunningDecision);
+        [legacyRunningSource.testDefaults removeObjectForKey:acceptedStateKey];
+        [legacyRunningSource.testDefaults removeObjectForKey:acceptedStageKey];
+        NSMutableDictionary<NSString *, NSString *> *laterRetryRunning =
+            [retryRunningDecision mutableCopy];
+        laterRetryRunning[@"revision"] = @"retry-running.440";
+        NotificationTestDelegate *legacyRunningAfterRestart =
+            [[NotificationTestDelegate alloc] init];
+        legacyRunningAfterRestart.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:legacyRunningSuite];
+        legacyRunningAfterRestart.deliverySucceeds = YES;
+        legacyRunningAfterRestart.acceptedBackupDecisionsByIdentifier =
+            legacyRunningSource.acceptedBackupDecisionsByIdentifier;
+        Process(legacyRunningAfterRestart, preliminary);
+        NSDictionary *migratedLegacyRunningState =
+            [legacyRunningAfterRestart.testDefaults dictionaryForKey:
+                acceptedStateKey];
+        Assert(legacyRunningAfterRestart.deliveryCalls == 0 &&
+               [legacyRunningAfterRestart.acceptedBackupDecisionsByIdentifier[
+                   preliminary[@"identifier"]][@"kind"]
+                       isEqualToString:@"retry-running"] &&
+               [[legacyRunningAfterRestart.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredRevision"]
+                       isEqualToString:@"retry-running.430"] &&
+               [migratedLegacyRunningState[@"origin"] doubleValue] == 400 &&
+               [migratedLegacyRunningState[@"stage"] integerValue] == 2,
+               @"a legacy running warning migrates to stage two before rejecting preliminary rollback");
+        Process(legacyRunningAfterRestart, laterRetryRunning);
+        NSDictionary *advancedLegacyRunningState =
+            [legacyRunningAfterRestart.testDefaults dictionaryForKey:
+                acceptedStateKey];
+        Assert(legacyRunningAfterRestart.deliveryCalls == 1 &&
+               [legacyRunningAfterRestart.acceptedBackupDecisionsByIdentifier[
+                   preliminary[@"identifier"]][@"kind"]
+                       isEqualToString:@"retry-running"] &&
+               [[legacyRunningAfterRestart.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredRevision"]
+                       isEqualToString:@"retry-running.440"] &&
+               [advancedLegacyRunningState[@"origin"] doubleValue] == 400 &&
+               [advancedLegacyRunningState[@"stage"] integerValue] == 2,
+               @"a legacy running warning rejects preliminary rollback but accepts a later running revision");
+
+        NSString *malformedLegacyRevisionSuite =
+            [suiteName stringByAppendingString:@".malformed-legacy-revision"];
+        NotificationTestDelegate *malformedLegacyRevisionSource =
+            [[NotificationTestDelegate alloc] init];
+        malformedLegacyRevisionSource.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:malformedLegacyRevisionSuite];
+        malformedLegacyRevisionSource.deliverySucceeds = YES;
+        malformedLegacyRevisionSource.acceptedBackupDecisionsByIdentifier =
+            [@{preliminary[@"identifier"]: preliminary} mutableCopy];
+        [malformedLegacyRevisionSource.testDefaults setDouble:400
+            forKey:acceptedOriginKey];
+        [malformedLegacyRevisionSource.testDefaults
+            setObject:preliminary[@"identifier"]
+               forKey:@"GDTBackupNotification.office.lastDeliveredIdentifier"];
+        [malformedLegacyRevisionSource.testDefaults
+            setObject:@"retry-running.+430"
+               forKey:@"GDTBackupNotification.office.lastDeliveredRevision"];
+        NotificationTestDelegate *malformedLegacyRevisionAfterRestart =
+            [[NotificationTestDelegate alloc] init];
+        malformedLegacyRevisionAfterRestart.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:malformedLegacyRevisionSuite];
+        malformedLegacyRevisionAfterRestart.deliverySucceeds = YES;
+        malformedLegacyRevisionAfterRestart.acceptedBackupDecisionsByIdentifier =
+            malformedLegacyRevisionSource.acceptedBackupDecisionsByIdentifier;
+        Process(malformedLegacyRevisionAfterRestart, laterRetryRunning);
+        NSDictionary *migratedMalformedLegacyState =
+            [malformedLegacyRevisionAfterRestart.testDefaults dictionaryForKey:
+                acceptedStateKey];
+        Assert(malformedLegacyRevisionAfterRestart.deliveryCalls == 0 &&
+               [malformedLegacyRevisionAfterRestart.acceptedBackupDecisionsByIdentifier[
+                   preliminary[@"identifier"]][@"kind"]
+                       isEqualToString:@"failure"] &&
+               [[malformedLegacyRevisionAfterRestart.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredIdentifier"]
+                       isEqualToString:preliminary[@"identifier"]] &&
+               [[malformedLegacyRevisionAfterRestart.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredRevision"]
+                       isEqualToString:@"retry-running.+430"] &&
+               [migratedMalformedLegacyState[@"origin"] doubleValue] == 400 &&
+               [migratedMalformedLegacyState[@"stage"] integerValue] == 3,
+               @"a malformed legacy running revision fails closed instead of authorizing an update");
+
+        NotificationTestDelegate *interruptedTerminalPersistence =
+            [[NotificationTestDelegate alloc] init];
+        interruptedTerminalPersistence.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:[suiteName
+                stringByAppendingString:@".interrupted-terminal-persistence"]];
+        interruptedTerminalPersistence.deliverySucceeds = YES;
+        [interruptedTerminalPersistence.testDefaults
+            setObject:finalRetryFailure[@"identifier"]
+               forKey:@"GDTBackupNotification.office.lastDeliveredIdentifier"];
+        [interruptedTerminalPersistence.testDefaults
+            setObject:@[preliminary[@"identifier"]]
+               forKey:@"GDTBackupNotification.office.deliveredFailureIdentifiers"];
+        [interruptedTerminalPersistence.testDefaults setDouble:400
+            forKey:acceptedOriginKey];
+        [interruptedTerminalPersistence.testDefaults setInteger:2
+            forKey:acceptedStageKey];
+        Process(interruptedTerminalPersistence, finalRetryFailure);
+        Process(interruptedTerminalPersistence, retryRunningDecision);
+        Assert(interruptedTerminalPersistence.deliveryCalls == 0 &&
+               [interruptedTerminalPersistence.testDefaults integerForKey:
+                   acceptedStageKey] == 3 &&
+               [[interruptedTerminalPersistence.testDefaults stringArrayForKey:
+                   @"GDTBackupNotification.office.deliveredFailureIdentifiers"]
+                       isEqualToArray:@[finalRetryFailure[@"identifier"]]] &&
+               [interruptedTerminalPersistence.removedNotificationIdentifiers
+                   isEqualToArray:@[preliminary[@"identifier"]]],
+               @"replaying an interrupted accepted terminal update repairs its durable stage before stale running work");
+
+        NotificationTestDelegate *acceptedNewerOriginOrdering =
+            [[NotificationTestDelegate alloc] init];
+        acceptedNewerOriginOrdering.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:[suiteName
+                stringByAppendingString:@".accepted-newer-origin-ordering"]];
+        acceptedNewerOriginOrdering.deliverySucceeds = YES;
+        Process(acceptedNewerOriginOrdering, newerIndependentFailure);
+        Process(acceptedNewerOriginOrdering, preliminary);
+        Assert(acceptedNewerOriginOrdering.deliveryCalls == 1 &&
+               acceptedNewerOriginOrdering.acceptedBackupDecisionsByIdentifier[
+                   preliminary[@"identifier"]] == nil &&
+               [acceptedNewerOriginOrdering.acceptedBackupDecisionsByIdentifier[
+                   newerIndependentFailure[@"identifier"]][@"issueOriginTimestamp"]
+                       isEqualToString:@"500"] &&
+               [acceptedNewerOriginOrdering.testDefaults doubleForKey:
+                   acceptedOriginKey] == 500 &&
+               [acceptedNewerOriginOrdering.testDefaults integerForKey:
+                   acceptedStageKey] == 1 &&
+               [[acceptedNewerOriginOrdering.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredIdentifier"]
+                       isEqualToString:newerIndependentFailure[@"identifier"]],
+               @"an accepted newer issue origin cannot be rolled back by an older origin");
+
+        NSString *newerOriginRestartSuite =
+            [suiteName stringByAppendingString:@".accepted-newer-origin-restart"];
+        NotificationTestDelegate *newerOriginRestartSource =
+            [[NotificationTestDelegate alloc] init];
+        newerOriginRestartSource.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:newerOriginRestartSuite];
+        newerOriginRestartSource.deliverySucceeds = YES;
+        Process(newerOriginRestartSource, newerIndependentFailure);
+        NotificationTestDelegate *newerOriginAfterRestart =
+            [[NotificationTestDelegate alloc] init];
+        newerOriginAfterRestart.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:newerOriginRestartSuite];
+        newerOriginAfterRestart.deliverySucceeds = YES;
+        newerOriginAfterRestart.acceptedBackupDecisionsByIdentifier =
+            newerOriginRestartSource.acceptedBackupDecisionsByIdentifier;
+        Process(newerOriginAfterRestart, preliminary);
+        Assert(newerOriginAfterRestart.deliveryCalls == 0 &&
+               newerOriginAfterRestart.acceptedBackupDecisionsByIdentifier[
+                   preliminary[@"identifier"]] == nil &&
+               [newerOriginAfterRestart.acceptedBackupDecisionsByIdentifier[
+                   newerIndependentFailure[@"identifier"]][@"issueOriginTimestamp"]
+                       isEqualToString:@"500"] &&
+               [newerOriginAfterRestart.testDefaults doubleForKey:
+                   acceptedOriginKey] == 500 &&
+               [newerOriginAfterRestart.testDefaults integerForKey:
+                   acceptedStageKey] == 1 &&
+               [[newerOriginAfterRestart.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredIdentifier"]
+                       isEqualToString:newerIndependentFailure[@"identifier"]],
+               @"a restart preserves a newer accepted origin against an older observation");
+
+        NotificationTestDelegate *tornNewerOriginMirrors =
+            [[NotificationTestDelegate alloc] init];
+        tornNewerOriginMirrors.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:[suiteName
+                stringByAppendingString:@".torn-newer-origin-mirrors"]];
+        tornNewerOriginMirrors.deliverySucceeds = YES;
+        tornNewerOriginMirrors.acceptedBackupDecisionsByIdentifier =
+            [@{newerIndependentFailure[@"identifier"]: newerIndependentFailure}
+                mutableCopy];
+        [tornNewerOriginMirrors.testDefaults setObject:@{
+            @"origin": @500,
+            @"stage": @1
+        } forKey:acceptedStateKey];
+        [tornNewerOriginMirrors.testDefaults setDouble:500
+            forKey:acceptedOriginKey];
+        [tornNewerOriginMirrors.testDefaults setInteger:3
+            forKey:acceptedStageKey];
+        NSMutableDictionary<NSString *, NSString *> *newerRetryRunning =
+            [newerIndependentFailure mutableCopy];
+        newerRetryRunning[@"kind"] = @"retry-running";
+        newerRetryRunning[@"revision"] = @"retry-running.510";
+        newerRetryRunning[@"titleKey"] = @"backupNotificationRetryRunningTitle";
+        newerRetryRunning[@"bodyKey"] = @"backupNotificationRetryRunningBody";
+        Process(tornNewerOriginMirrors, newerRetryRunning);
+        NSDictionary *repairedNewerState =
+            [tornNewerOriginMirrors.testDefaults dictionaryForKey:acceptedStateKey];
+        Assert(tornNewerOriginMirrors.deliveryCalls == 1 &&
+               [tornNewerOriginMirrors.acceptedBackupDecisionsByIdentifier[
+                   newerIndependentFailure[@"identifier"]][@"kind"]
+                       isEqualToString:@"retry-running"] &&
+               [repairedNewerState[@"origin"] doubleValue] == 500 &&
+               [repairedNewerState[@"stage"] integerValue] == 2 &&
+               [tornNewerOriginMirrors.testDefaults integerForKey:
+                   acceptedStageKey] == 2,
+               @"one accepted-state record prevents a torn newer origin from inheriting an older terminal stage");
+
+        Process(replacement, finalRetryFailure);
+        NSArray<NSString *> *remainingFailureIdentifiers =
+            [replacement.testDefaults stringArrayForKey:
+                @"GDTBackupNotification.office.deliveredFailureIdentifiers"];
+        Assert(replacement.deliveryCalls == 3 &&
+               [replacement.removedNotificationIdentifiers isEqualToArray:
+                   @[@"com.commcats.gdrivebackup.office.failure.400"]] &&
+               [remainingFailureIdentifiers isEqualToArray:
+                   @[@"com.commcats.gdrivebackup.office.failure.430"]],
+               @"an accepted final retry failure replaces its preliminary alert");
+
+        replacement.removedNotificationIdentifiers = nil;
+        Process(replacement, finalRetryFailure);
+        Assert(replacement.deliveryCalls == 3 &&
+               [replacement.removedNotificationIdentifiers isEqualToArray:
+                   @[@"com.commcats.gdrivebackup.office.failure.400"]],
+               @"a restart safely finishes an interrupted preliminary-alert cleanup");
+
+        NotificationTestDelegate *refusedReplacement =
+            [[NotificationTestDelegate alloc] init];
+        refusedReplacement.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+            [suiteName stringByAppendingString:@".refused-replacement"]];
+        refusedReplacement.deliverySucceeds = YES;
+        Process(refusedReplacement, preliminary);
+        Process(refusedReplacement, retryRunningDecision);
+        refusedReplacement.deliverySucceeds = NO;
+        Process(refusedReplacement, finalRetryFailure);
+        Process(refusedReplacement, finalRetryFailure);
+        NSArray<NSString *> *refusedIdentifiers =
+            [refusedReplacement.testDefaults stringArrayForKey:
+                @"GDTBackupNotification.office.deliveredFailureIdentifiers"];
+        Assert(refusedReplacement.removedNotificationIdentifiers == nil &&
+               refusedReplacement.deliveryCalls == 4 &&
+               [refusedIdentifiers isEqualToArray:
+                   @[@"com.commcats.gdrivebackup.office.failure.400"]] &&
+               [[refusedReplacement.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredRevision"]
+                       isEqualToString:@"retry-running.430"] &&
+               [refusedReplacement.testDefaults integerForKey:
+                   acceptedStageKey] == 2 &&
+               [refusedReplacement.acceptedBackupDecisionsByIdentifier[
+                   preliminary[@"identifier"]][@"kind"]
+                       isEqualToString:@"retry-running"],
+               @"a rejected replacement leaves the existing visible warning intact");
+
+        NotificationTestDelegate *refusedRevision =
+            [[NotificationTestDelegate alloc] init];
+        refusedRevision.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+            [suiteName stringByAppendingString:@".refused-revision"]];
+        refusedRevision.deliverySucceeds = YES;
+        Process(refusedRevision, preliminary);
+        refusedRevision.deliverySucceeds = NO;
+        Process(refusedRevision, retryRunningDecision);
+        Process(refusedRevision, retryRunningDecision);
+        Assert(refusedRevision.deliveryCalls == 3 &&
+               [refusedRevision.testDefaults objectForKey:
+                   @"GDTBackupNotification.office.lastDeliveredRevision"] == nil &&
+               [refusedRevision.testDefaults integerForKey:
+                   acceptedStageKey] == 1 &&
+               [refusedRevision.acceptedBackupDecisionsByIdentifier[
+                   preliminary[@"identifier"]][@"kind"]
+                       isEqualToString:@"failure"],
+               @"a rejected running revision remains retryable and is never persisted");
 
         RetryTestDelegate *retryDelegate = [[RetryTestDelegate alloc] init];
         retryDelegate.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
@@ -448,8 +1377,10 @@ int main(void) {
         }
         Assert(content.sound != nil &&
                [content.categoryIdentifier isEqualToString:@"GDT_BACKUP_ALERT"] &&
+               [content.userInfo[@"profileID"] isEqualToString:@"office"] &&
+               [content.userInfo[@"issueOriginTimestamp"] isEqualToString:@"100"] &&
                activeLevel,
-               @"ad-hoc builds keep backup alerts audible without requesting a protected level");
+               @"backup alerts carry acknowledgement metadata and stay audible at an allowed level");
 
         delegate.testTimeSensitiveNotificationsEnabled = YES;
         UNMutableNotificationContent *entitledContent = contentMethod
@@ -487,13 +1418,15 @@ int main(void) {
             unknownActionsByID = actions;
         }
         Assert(categoriesByID[@"GDT_BACKUP_ALERT"] != nil &&
+               (categoriesByID[@"GDT_BACKUP_ALERT"].options &
+                    UNNotificationCategoryOptionCustomDismissAction) != 0 &&
                unknownCategory != nil &&
                unknownCategory.actions.count == 2 &&
                (unknownActionsByID[@"GDT_UNKNOWN_EXTERNAL_VOLUME_SETUP"].options &
                     UNNotificationActionOptionForeground) != 0 &&
                unknownActionsByID[@"GDT_UNKNOWN_EXTERNAL_VOLUME_IGNORE"].options ==
                     UNNotificationActionOptionNone,
-               @"backup alerts and passive unknown-disk actions are registered together");
+               @"backup alerts register explicit dismiss handling beside passive unknown-disk actions");
 
         NSDictionary<NSString *, id> *unknownDescriptor = @{
             @"path": @"/Volumes/Private Customer Folder",
@@ -605,7 +1538,9 @@ int main(void) {
                 @"unknownExternalVolumeSetupAction",
                 @"unknownExternalVolumeIgnoreAction",
                 @"unknownExternalVolumeReviewSetup",
-                @"unknownExternalVolumeUnavailable"
+                @"unknownExternalVolumeUnavailable",
+                @"backupNotificationRetryRunningTitle",
+                @"backupNotificationRetryRunningBody"
             ]) {
                 NSString *localized = T(code, key);
                 if (!localized.length || [localized isEqualToString:key]) {
@@ -615,6 +1550,33 @@ int main(void) {
         }
         Assert(unknownVolumeLocalized,
                @"unknown external-volume notification and setup text is localized in every language");
+
+        NSDictionary<NSString *, NSArray<NSString *> *> *retryRunningTranslations = @{
+            @"de": @[@"Automatischer Wiederholungsversuch läuft",
+                     @"GDrive wird erneut gesichert. Öffne GDrive Backup Tiger, um den Fortschritt zu sehen."],
+            @"en": @[@"Automatic backup retry is running",
+                     @"GDrive is being backed up again. Open GDrive Backup Tiger to view progress."],
+            @"fr": @[@"Nouvelle tentative de sauvegarde automatique en cours",
+                     @"Une nouvelle sauvegarde de GDrive est en cours. Ouvrez GDrive Backup Tiger pour suivre la progression."],
+            @"es": @[@"Reintento automático de copia de seguridad en curso",
+                     @"Se está realizando de nuevo la copia de seguridad de GDrive. Abre GDrive Backup Tiger para ver el progreso."],
+            @"ja": @[@"自動バックアップを再試行中",
+                     @"GDrive をもう一度バックアップしています。進行状況を確認するには GDrive Backup Tiger を開いてください。"],
+            @"yue": @[@"自動備份重試進行中",
+                      @"GDrive 正在再次備份。請開啟 GDrive Backup Tiger 查看進度。"],
+            @"ko": @[@"자동 백업 재시도 실행 중",
+                     @"GDrive를 다시 백업하고 있습니다. 진행 상황을 보려면 GDrive Backup Tiger를 여십시오."]
+        };
+        BOOL exactRetryRunningTranslations = YES;
+        for (NSString *code in SupportedLanguageCodes()) {
+            NSArray<NSString *> *expected = retryRunningTranslations[code];
+            exactRetryRunningTranslations = exactRetryRunningTranslations &&
+                expected.count == 2 &&
+                [T(code, @"backupNotificationRetryRunningTitle") isEqualToString:expected[0]] &&
+                [T(code, @"backupNotificationRetryRunningBody") isEqualToString:expected[1]];
+        }
+        Assert(exactRetryRunningTranslations,
+               @"the retry-running alert uses the reviewed copy in every language");
 
         UnknownVolumeNotificationTestDelegate *unknownActionDelegate =
             [[UnknownVolumeNotificationTestDelegate alloc] init];
@@ -898,11 +1860,156 @@ int main(void) {
                    containsObject:@"disk20"],
                @"a delayed delivery cannot latch a different disk that reused the same disk identifier");
 
+        BackupCleanupRaceTestDelegate *cleanupRace =
+            [[BackupCleanupRaceTestDelegate alloc] init];
+        NSString *cleanupSuiteName =
+            [suiteName stringByAppendingString:@".cleanup-race"];
+        cleanupRace.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:cleanupSuiteName];
+        NSString *cleanupPrefix = @"GDTBackupNotification.office.";
+        NSString *oldFailureID =
+            @"com.commcats.gdrivebackup.office.failure.100";
+        NSString *oldMissedID =
+            @"com.commcats.gdrivebackup.office.missed.200";
+        NSString *newFailureID =
+            @"com.commcats.gdrivebackup.office.failure.600";
+        [cleanupRace.testDefaults setObject:@[oldFailureID]
+            forKey:[cleanupPrefix stringByAppendingString:
+                @"deliveredFailureIdentifiers"]];
+        [cleanupRace.testDefaults setObject:oldFailureID
+            forKey:[cleanupPrefix stringByAppendingString:
+                @"lastDeliveredIdentifier"]];
+        [cleanupRace.testDefaults setObject:@{@"origin": @400, @"stage": @1}
+            forKey:[cleanupPrefix stringByAppendingString:
+                @"latestDeliveredIssueState"]];
+        [cleanupRace.testDefaults setDouble:400
+            forKey:[cleanupPrefix stringByAppendingString:
+                @"latestDeliveredIssueAt"]];
+        [cleanupRace.testDefaults setDouble:400
+            forKey:[cleanupPrefix stringByAppendingString:@"activeIssueAt"]];
+
+        [cleanupRace clearBackupFailureNotificationsForConfig:
+            @{@"GDRIVE_BACKUP_PROFILE_ID": @"office"}
+            summary:@{@"status": @"success", @"finished_at": @"500",
+                      @"trigger": @"schedule-retry"}
+            status:@"success"];
+        Assert(cleanupRace.deferredDeliveredEnumeration != nil &&
+               cleanupRace.removedDeliveredNotificationIdentifiers == nil &&
+               cleanupRace.removedPendingNotificationIdentifiers == nil,
+               @"automatic-success cleanup waits for delivered-notification enumeration");
+
+        [cleanupRace.testDefaults setObject:@[newFailureID]
+            forKey:[cleanupPrefix stringByAppendingString:
+                @"deliveredFailureIdentifiers"]];
+        [cleanupRace.testDefaults setObject:newFailureID
+            forKey:[cleanupPrefix stringByAppendingString:
+                @"lastDeliveredIdentifier"]];
+        [cleanupRace.testDefaults setObject:@{@"origin": @600, @"stage": @1}
+            forKey:[cleanupPrefix stringByAppendingString:
+                @"latestDeliveredIssueState"]];
+        [cleanupRace.testDefaults setDouble:600
+            forKey:[cleanupPrefix stringByAppendingString:
+                @"latestDeliveredIssueAt"]];
+        [cleanupRace.testDefaults setInteger:1
+            forKey:[cleanupPrefix stringByAppendingString:
+                @"latestDeliveredIssueStage"]];
+        [cleanupRace.testDefaults setDouble:600
+            forKey:[cleanupPrefix stringByAppendingString:@"activeIssueAt"]];
+        [cleanupRace.testDefaults setObject:@"failure"
+            forKey:[cleanupPrefix stringByAppendingString:@"activeIssueKind"]];
+        [cleanupRace.testDefaults setObject:newFailureID
+            forKey:[cleanupPrefix stringByAppendingString:
+                @"activeIssueIdentifier"]];
+
+        NSString *trustedOldOriginID =
+            @"com.commcats.gdrivebackup.office.failure.700";
+        NSString *trustedNewOriginID =
+            @"com.commcats.gdrivebackup.office.failure.300";
+        NSArray<UNNotification *> *deliveredDuringCleanup = @[
+            DeliveredBackupNotification(oldFailureID, @"GDT_BACKUP_ALERT",
+                @{@"profileID": @"office", @"issueOriginTimestamp": @"100"}),
+            DeliveredBackupNotification(oldMissedID, @"", @{}),
+            DeliveredBackupNotification(newFailureID, @"GDT_BACKUP_ALERT",
+                @{@"profileID": @"office", @"issueOriginTimestamp": @"600"}),
+            DeliveredBackupNotification(trustedOldOriginID, @"GDT_BACKUP_ALERT",
+                @{@"profileID": @"office", @"issueOriginTimestamp": @"400"}),
+            DeliveredBackupNotification(trustedNewOriginID, @"GDT_BACKUP_ALERT",
+                @{@"profileID": @"office", @"issueOriginTimestamp": @"600"}),
+            DeliveredBackupNotification(
+                @"com.commcats.gdrivebackup.office.failure.not-a-time",
+                @"GDT_BACKUP_ALERT",
+                @{@"profileID": @"office", @"issueOriginTimestamp": @"100"}),
+            DeliveredBackupNotification(
+                @"com.commcats.gdrivebackup.office.missed.0200", @"", @{}),
+            DeliveredBackupNotification(
+                @"com.commcats.gdrivebackup.archive.failure.100",
+                @"GDT_BACKUP_ALERT",
+                @{@"profileID": @"archive", @"issueOriginTimestamp": @"100"}),
+            DeliveredBackupNotification(
+                @"com.commcats.gdrivebackup.office.failure.250",
+                @"GDT_BACKUP_ALERT",
+                @{@"profileID": @"office", @"issueOriginTimestamp": @"0400"}),
+            DeliveredBackupNotification(
+                @"com.commcats.gdrivebackup.office.failure.230",
+                @"GDT_BACKUP_ALERT",
+                @{@"profileID": @"archive", @"issueOriginTimestamp": @"230"}),
+            DeliveredBackupNotification(
+                @"com.commcats.gdrivebackup.office.failure.240",
+                @"GDT_UNKNOWN_EXTERNAL_VOLUME",
+                @{@"profileID": @"office", @"issueOriginTimestamp": @"240"})
+        ];
+        cleanupRace.deferredDeliveredEnumeration(deliveredDuringCleanup);
+        cleanupRace.deferredDeliveredEnumeration = nil;
+
+        NSSet<NSString *> *expectedCleanupIDs = [NSSet setWithArray:@[
+            oldFailureID, oldMissedID, trustedOldOriginID
+        ]];
+        Assert(cleanupRace.removedDeliveredNotificationIdentifiers.count == 3 &&
+               [[NSSet setWithArray:
+                   cleanupRace.removedDeliveredNotificationIdentifiers]
+                       isEqualToSet:expectedCleanupIDs] &&
+               cleanupRace.removedPendingNotificationIdentifiers.count == 3 &&
+               [[NSSet setWithArray:
+                   cleanupRace.removedPendingNotificationIdentifiers]
+                       isEqualToSet:expectedCleanupIDs],
+               @"a delayed success cleanup removes only canonical issue origins at or before its cutoff");
+        NSDictionary *newAcceptedState = [cleanupRace.testDefaults
+            dictionaryForKey:[cleanupPrefix stringByAppendingString:
+                @"latestDeliveredIssueState"]];
+        Assert([newAcceptedState[@"origin"] doubleValue] == 600 &&
+               [cleanupRace.testDefaults doubleForKey:
+                   [cleanupPrefix stringByAppendingString:@"activeIssueAt"]] == 600 &&
+               [[cleanupRace.testDefaults stringForKey:
+                   [cleanupPrefix stringByAppendingString:
+                       @"activeIssueIdentifier"]]
+                           isEqualToString:newFailureID] &&
+               [[cleanupRace.testDefaults stringArrayForKey:
+                   [cleanupPrefix stringByAppendingString:
+                       @"deliveredFailureIdentifiers"]]
+                           isEqualToArray:@[newFailureID]],
+               @"a failure introduced during cleanup stays latched and deduplicated");
+        [cleanupRace.testDefaults removePersistentDomainForName:cleanupSuiteName];
+
         delegate.extraDeliveredNotificationIdentifiers = @[
             @"com.commcats.gdrivebackup.office.missed.50"
         ];
         [delegate.testDefaults setDouble:200
             forKey:@"GDTBackupNotification.office.activeIssueAt"];
+        [delegate.testDefaults setObject:@"failure"
+            forKey:@"GDTBackupNotification.office.activeIssueKind"];
+        [delegate.testDefaults
+            setObject:@"com.commcats.gdrivebackup.office.failure.200"
+               forKey:@"GDTBackupNotification.office.activeIssueIdentifier"];
+        [delegate.testDefaults setDouble:150
+            forKey:@"GDTBackupNotification.office.dismissedIssueAt"];
+        [delegate.testDefaults setObject:@"retry-running.190"
+            forKey:@"GDTBackupNotification.office.lastDeliveredRevision"];
+        [delegate.testDefaults setInteger:3
+            forKey:@"GDTBackupNotification.office.latestDeliveredIssueStage"];
+        [delegate.testDefaults setObject:@{
+            @"origin": @200,
+            @"stage": @3
+        } forKey:@"GDTBackupNotification.office.latestDeliveredIssueState"];
         SEL clearSelector = NSSelectorFromString(
             @"clearBackupFailureNotificationsForConfig:summary:status:");
         if ([delegate respondsToSelector:clearSelector]) {
@@ -934,7 +2041,23 @@ int main(void) {
                [delegate.removedNotificationIdentifiers
                    containsObject:@"com.commcats.gdrivebackup.office.failure.200"] &&
                [delegate.removedNotificationIdentifiers
-                   containsObject:@"com.commcats.gdrivebackup.office.missed.50"],
+                   containsObject:@"com.commcats.gdrivebackup.office.missed.50"] &&
+               [delegate.testDefaults objectForKey:
+                   @"GDTBackupNotification.office.lastDeliveredIdentifier"] == nil &&
+               [delegate.testDefaults objectForKey:
+                   @"GDTBackupNotification.office.lastDeliveredRevision"] == nil &&
+               [delegate.testDefaults objectForKey:
+                   @"GDTBackupNotification.office.latestDeliveredIssueStage"] == nil &&
+               [delegate.testDefaults objectForKey:
+                   @"GDTBackupNotification.office.latestDeliveredIssueState"] == nil &&
+               [delegate.testDefaults objectForKey:
+                   @"GDTBackupNotification.office.dismissedIssueAt"] == nil &&
+               [delegate.testDefaults objectForKey:
+                   @"GDTBackupNotification.office.activeIssueAt"] == nil &&
+               [delegate.testDefaults objectForKey:
+                   @"GDTBackupNotification.office.activeIssueKind"] == nil &&
+               [delegate.testDefaults objectForKey:
+                   @"GDTBackupNotification.office.activeIssueIdentifier"] == nil,
                @"a later automatic success removes every delivered failure alert for that profile");
 
         SEL alertStatusSelector = NSSelectorFromString(
@@ -945,8 +2068,9 @@ int main(void) {
             ? (AlertStatusMethod)[delegate methodForSelector:alertStatusSelector] : NULL;
         NSDictionary *profileConfig = @{@"GDRIVE_BACKUP_PROFILE_ID": @"office"};
         NSDictionary *missedDecision = @{
-            @"identifier": @"missed.100", @"profileID": @"office",
-            @"kind": @"missed", @"issueTimestamp": @"100"
+            @"identifier": @"com.commcats.gdrivebackup.office.missed.100",
+            @"profileID": @"office", @"kind": @"missed",
+            @"issueTimestamp": @"100", @"issueOriginTimestamp": @"100"
         };
         NSString *missedStatus = alertStatus ? alertStatus(
             delegate, alertStatusSelector, profileConfig, @{}, @"unknown", missedDecision) : nil;
@@ -967,11 +2091,32 @@ int main(void) {
                @"a missed-run warning stays active until a later automatic success");
 
         NSDictionary *failureDecision = @{
-            @"identifier": @"failure.200", @"profileID": @"office",
-            @"kind": @"failure", @"issueTimestamp": @"200"
+            @"identifier": @"com.commcats.gdrivebackup.office.failure.200",
+            @"profileID": @"office", @"kind": @"failure",
+            @"issueTimestamp": @"230", @"issueOriginTimestamp": @"200"
         };
         NSString *failureStatus = alertStatus ? alertStatus(
             delegate, alertStatusSelector, profileConfig, @{}, @"failure", failureDecision) : nil;
+        NSDictionary *runningRetryStatusDecision = @{
+            @"identifier": @"com.commcats.gdrivebackup.office.failure.200",
+            @"profileID": @"office", @"kind": @"retry-running",
+            @"revision": @"retry-running.240", @"issueTimestamp": @"200",
+            @"issueOriginTimestamp": @"200"
+        };
+        NSString *retryRunningStatus = alertStatus ? alertStatus(
+            delegate, alertStatusSelector, profileConfig,
+            @{@"started_at": @"240", @"trigger": @"schedule-retry",
+              @"retry_origin_started_at": @"200", @"retry_attempt": @"1"},
+            @"running", runningRetryStatusDecision) : nil;
+        BOOL failureLatchSurvivedRetryStart =
+            [delegate.testDefaults doubleForKey:
+                @"GDTBackupNotification.office.activeIssueAt"] == 200 &&
+            [[delegate.testDefaults stringForKey:
+                @"GDTBackupNotification.office.activeIssueKind"]
+                    isEqualToString:@"failure"] &&
+            [[delegate.testDefaults stringForKey:
+                @"GDTBackupNotification.office.activeIssueIdentifier"]
+                    isEqualToString:@"com.commcats.gdrivebackup.office.failure.200"];
         NSString *oldSuccessDoesNotClear = alertStatus ? alertStatus(
             delegate, alertStatusSelector, profileConfig,
             @{@"finished_at": @"199", @"trigger": @"schedule"},
@@ -985,10 +2130,259 @@ int main(void) {
             @{@"finished_at": @"250", @"trigger": @"schedule-retry"},
             @"success", nil) : nil;
         Assert([failureStatus isEqualToString:@"failure"] &&
+               [retryRunningStatus isEqualToString:@"retry-running"] &&
+               failureLatchSurvivedRetryStart &&
                [oldSuccessDoesNotClear isEqualToString:@"failure"] &&
                [manualNewSuccessDoesNotClear isEqualToString:@"failure"] &&
                [newSuccessClears isEqualToString:@"success"],
-               @"only a newer automatic success clears the red status latch");
+               @"a running retry is non-red without clearing the failure latch, which only a newer automatic success clears");
+
+        BackupActionTestDelegate *actionDelegate =
+            [[BackupActionTestDelegate alloc] init];
+        actionDelegate.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+            [suiteName stringByAppendingString:@".backup-actions"]];
+        actionDelegate.deliverySucceeds = YES;
+        NSString *activeAtKey = @"GDTBackupNotification.office.activeIssueAt";
+        NSString *activeKindKey = @"GDTBackupNotification.office.activeIssueKind";
+        NSString *activeIDKey = @"GDTBackupNotification.office.activeIssueIdentifier";
+        NSString *dismissedKey = @"GDTBackupNotification.office.dismissedIssueAt";
+        NSString *oldID = @"com.commcats.gdrivebackup.office.failure.400";
+        NSString *newID = @"com.commcats.gdrivebackup.office.failure.500";
+        [actionDelegate.testDefaults setDouble:400 forKey:activeAtKey];
+        [actionDelegate.testDefaults setObject:@"failure" forKey:activeKindKey];
+        [actionDelegate.testDefaults setObject:oldID forKey:activeIDKey];
+        HandleBackupAction(actionDelegate, UNNotificationDismissActionIdentifier,
+            @"GDT_BACKUP_ALERT",
+            @{@"profileID": @"office", @"issueOriginTimestamp": @"400"}, oldID);
+        Assert([actionDelegate.testDefaults doubleForKey:dismissedKey] == 400 &&
+               [actionDelegate.testDefaults objectForKey:activeAtKey] == nil &&
+               [actionDelegate.testDefaults objectForKey:activeKindKey] == nil &&
+               [actionDelegate.testDefaults objectForKey:activeIDKey] == nil &&
+               [actionDelegate.removedNotificationIdentifiers containsObject:oldID],
+               @"an explicit matching dismiss acknowledges and retires one issue");
+
+        [actionDelegate.testDefaults setDouble:500 forKey:activeAtKey];
+        [actionDelegate.testDefaults setObject:@"failure" forKey:activeKindKey];
+        [actionDelegate.testDefaults setObject:newID forKey:activeIDKey];
+        actionDelegate.removedDeliveredNotificationIdentifiers = nil;
+        actionDelegate.removedPendingNotificationIdentifiers = nil;
+        HandleBackupAction(actionDelegate, UNNotificationDismissActionIdentifier,
+            @"GDT_BACKUP_ALERT",
+            @{@"profileID": @"office", @"issueOriginTimestamp": @"400"}, oldID);
+        Assert([actionDelegate.testDefaults doubleForKey:dismissedKey] == 400 &&
+               [actionDelegate.testDefaults doubleForKey:activeAtKey] == 500 &&
+               [[actionDelegate.testDefaults stringForKey:activeKindKey]
+                   isEqualToString:@"failure"] &&
+               [[actionDelegate.testDefaults stringForKey:activeIDKey]
+                   isEqualToString:newID] &&
+               [actionDelegate.removedDeliveredNotificationIdentifiers
+                   isEqualToArray:@[oldID]] &&
+               [actionDelegate.removedPendingNotificationIdentifiers
+                   isEqualToArray:@[oldID]],
+               @"a late dismissal retires only its old issue and cannot clear a newer latch");
+
+        [actionDelegate.testDefaults removeObjectForKey:activeAtKey];
+        [actionDelegate.testDefaults removeObjectForKey:activeKindKey];
+        [actionDelegate.testDefaults removeObjectForKey:activeIDKey];
+        NSInteger deliveriesBeforeRefresh = actionDelegate.deliveryCalls;
+        NSMutableDictionary *sameIssueFinal = [finalRetryFailure mutableCopy];
+        sameIssueFinal[@"issueTimestamp"] = @"430";
+        sameIssueFinal[@"issueOriginTimestamp"] = @"400";
+        if (alertStatus) {
+            (void)alertStatus(actionDelegate, alertStatusSelector,
+                @{@"GDRIVE_BACKUP_PROFILE_ID": @"office"},
+                @{@"started_at": @"410", @"finished_at": @"430",
+                  @"trigger": @"schedule-retry"}, @"failure", sameIssueFinal);
+        }
+        Assert([actionDelegate.testDefaults objectForKey:activeAtKey] == nil &&
+               [actionDelegate.testDefaults objectForKey:activeKindKey] == nil &&
+               [actionDelegate.testDefaults objectForKey:activeIDKey] == nil,
+               @"refresh cannot relatch a human-acknowledged origin");
+        Process(actionDelegate, sameIssueFinal);
+        Assert(actionDelegate.deliveryCalls == deliveriesBeforeRefresh,
+               @"refresh cannot resurrect a dismissed origin under a later finish time");
+
+        NSMutableDictionary *newFailure = [finalRetryFailure mutableCopy];
+        newFailure[@"identifier"] = newID;
+        [newFailure removeObjectForKey:@"supersedesIdentifier"];
+        newFailure[@"issueTimestamp"] = @"530";
+        newFailure[@"issueOriginTimestamp"] = @"500";
+        NSString *newFailureStatus = alertStatus ? alertStatus(
+            actionDelegate, alertStatusSelector,
+            @{@"GDRIVE_BACKUP_PROFILE_ID": @"office"},
+            @{@"started_at": @"500", @"finished_at": @"530",
+              @"trigger": @"schedule"}, @"failure", newFailure) : nil;
+        Process(actionDelegate, newFailure);
+        Assert([newFailureStatus isEqualToString:@"failure"] &&
+               actionDelegate.deliveryCalls == deliveriesBeforeRefresh + 1 &&
+               [actionDelegate.testDefaults doubleForKey:activeAtKey] == 500 &&
+               [[actionDelegate.testDefaults stringForKey:activeIDKey]
+                   isEqualToString:newID],
+               @"a later independent issue still delivers and remains latched");
+
+        NSString *statusWithNoDeliveredRequests = alertStatus ? alertStatus(
+            actionDelegate, alertStatusSelector,
+            @{@"GDRIVE_BACKUP_PROFILE_ID": @"office"}, @{}, @"unknown", nil) : nil;
+        Assert([statusWithNoDeliveredRequests isEqualToString:@"failure"] &&
+               [actionDelegate.testDefaults doubleForKey:dismissedKey] == 400 &&
+               [actionDelegate.testDefaults doubleForKey:activeAtKey] == 500 &&
+               [[actionDelegate.testDefaults stringForKey:activeIDKey]
+                   isEqualToString:newID],
+               @"an empty delivered-notification observation never counts as human acknowledgement");
+
+        NSString *openID = @"com.commcats.gdrivebackup.office.failure.600";
+        [actionDelegate.testDefaults setDouble:600 forKey:activeAtKey];
+        [actionDelegate.testDefaults setObject:@"failure" forKey:activeKindKey];
+        [actionDelegate.testDefaults setObject:openID forKey:activeIDKey];
+        actionDelegate.removedNotificationIdentifiers = nil;
+        HandleBackupAction(actionDelegate, @"GDT_OPEN_BACKUP_OVERVIEW",
+            @"GDT_BACKUP_ALERT",
+            @{@"profileID": @"office", @"issueOriginTimestamp": @"600"}, openID);
+        Assert([actionDelegate.testDefaults doubleForKey:dismissedKey] == 600 &&
+               [actionDelegate.testDefaults objectForKey:activeAtKey] == nil &&
+               [actionDelegate.testDefaults objectForKey:activeKindKey] == nil &&
+               [actionDelegate.testDefaults objectForKey:activeIDKey] == nil &&
+               [actionDelegate.removedNotificationIdentifiers containsObject:openID] &&
+               actionDelegate.overviewShowCalls == 1 &&
+               actionDelegate.overviewRefreshCalls == 1 &&
+               actionDelegate.backupLaunchCalls == 0,
+               @"the explicit Open action acknowledges its issue and opens the overview without launching a backup");
+
+        NSString *protectedID = @"com.commcats.gdrivebackup.office.failure.700";
+        [actionDelegate.testDefaults setDouble:700 forKey:activeAtKey];
+        [actionDelegate.testDefaults setObject:@"failure" forKey:activeKindKey];
+        [actionDelegate.testDefaults setObject:protectedID forKey:activeIDKey];
+        actionDelegate.removedNotificationIdentifiers = nil;
+        HandleBackupAction(actionDelegate, UNNotificationDismissActionIdentifier,
+            @"GDT_UNKNOWN_EXTERNAL_VOLUME",
+            @{@"profileID": @"office", @"issueOriginTimestamp": @"700"}, protectedID);
+        HandleBackupAction(actionDelegate, UNNotificationDismissActionIdentifier,
+            @"GDT_BACKUP_ALERT", @{@"profileID": @"office"}, protectedID);
+        HandleBackupAction(actionDelegate, UNNotificationDefaultActionIdentifier,
+            @"GDT_BACKUP_ALERT",
+            @{@"profileID": @"office", @"issueOriginTimestamp": @"700"}, protectedID);
+        Assert([actionDelegate.testDefaults doubleForKey:dismissedKey] == 600 &&
+               [actionDelegate.testDefaults doubleForKey:activeAtKey] == 700 &&
+               [[actionDelegate.testDefaults stringForKey:activeKindKey]
+                   isEqualToString:@"failure"] &&
+               [[actionDelegate.testDefaults stringForKey:activeIDKey]
+                   isEqualToString:protectedID] &&
+               actionDelegate.removedNotificationIdentifiers == nil &&
+               actionDelegate.overviewShowCalls == 1 &&
+               actionDelegate.backupLaunchCalls == 0,
+               @"unrelated, malformed, and implicit actions cannot acknowledge or clear an issue");
+
+        NSString *routedDismissID = @"com.commcats.gdrivebackup.office.failure.800";
+        [actionDelegate.testDefaults setDouble:800 forKey:activeAtKey];
+        [actionDelegate.testDefaults setObject:@"failure" forKey:activeKindKey];
+        [actionDelegate.testDefaults setObject:routedDismissID forKey:activeIDKey];
+        actionDelegate.removedNotificationIdentifiers = nil;
+        BOOL dismissResponseCompleted = RouteBackupResponse(
+            actionDelegate, UNNotificationDismissActionIdentifier, @"GDT_BACKUP_ALERT",
+            @{@"profileID": @"office", @"issueOriginTimestamp": @"800"},
+            routedDismissID);
+        Assert(dismissResponseCompleted &&
+               [actionDelegate.testDefaults doubleForKey:dismissedKey] == 800 &&
+               [actionDelegate.testDefaults objectForKey:activeAtKey] == nil &&
+               [actionDelegate.testDefaults objectForKey:activeKindKey] == nil &&
+               [actionDelegate.testDefaults objectForKey:activeIDKey] == nil &&
+               [actionDelegate.removedDeliveredNotificationIdentifiers
+                   isEqualToArray:@[routedDismissID]] &&
+               [actionDelegate.removedPendingNotificationIdentifiers
+                   isEqualToArray:@[routedDismissID]] &&
+               actionDelegate.overviewShowCalls == 1,
+               @"the notification-center delegate immediately acknowledges a routed dismiss");
+
+        NSString *routedOpenID = @"com.commcats.gdrivebackup.office.failure.900";
+        [actionDelegate.testDefaults setDouble:900 forKey:activeAtKey];
+        [actionDelegate.testDefaults setObject:@"failure" forKey:activeKindKey];
+        [actionDelegate.testDefaults setObject:routedOpenID forKey:activeIDKey];
+        actionDelegate.removedNotificationIdentifiers = nil;
+        BOOL openResponseCompleted = RouteBackupResponse(
+            actionDelegate, @"GDT_OPEN_BACKUP_OVERVIEW", @"GDT_BACKUP_ALERT",
+            @{@"profileID": @"office", @"issueOriginTimestamp": @"900"},
+            routedOpenID);
+        Assert(openResponseCompleted &&
+               [actionDelegate.testDefaults doubleForKey:dismissedKey] == 900 &&
+               [actionDelegate.testDefaults objectForKey:activeAtKey] == nil &&
+               [actionDelegate.testDefaults objectForKey:activeKindKey] == nil &&
+               [actionDelegate.testDefaults objectForKey:activeIDKey] == nil &&
+               [actionDelegate.removedNotificationIdentifiers containsObject:routedOpenID] &&
+               actionDelegate.overviewShowCalls == 2 &&
+               actionDelegate.overviewRefreshCalls == 2 &&
+               actionDelegate.backupLaunchCalls == 0,
+               @"the notification-center delegate routes Open through acknowledgement and overview navigation");
+
+        NSString *defaultActionID =
+            @"com.commcats.gdrivebackup.office.failure.950";
+        [actionDelegate.testDefaults setDouble:950 forKey:activeAtKey];
+        [actionDelegate.testDefaults setObject:@"failure" forKey:activeKindKey];
+        [actionDelegate.testDefaults setObject:defaultActionID forKey:activeIDKey];
+        actionDelegate.removedDeliveredNotificationIdentifiers = nil;
+        actionDelegate.removedPendingNotificationIdentifiers = nil;
+        BOOL defaultResponseCompleted = RouteBackupResponse(
+            actionDelegate, UNNotificationDefaultActionIdentifier,
+            @"GDT_BACKUP_ALERT",
+            @{@"profileID": @"office", @"issueOriginTimestamp": @"950"},
+            defaultActionID);
+        BOOL defaultNavigationCompleted = WaitForCondition(^BOOL{
+            return actionDelegate.overviewShowCalls == 3 &&
+                actionDelegate.overviewRefreshCalls == 3;
+        }, 1.0);
+        Assert(defaultResponseCompleted && defaultNavigationCompleted &&
+               [actionDelegate.testDefaults doubleForKey:dismissedKey] == 900 &&
+               [actionDelegate.testDefaults doubleForKey:activeAtKey] == 950 &&
+               [[actionDelegate.testDefaults stringForKey:activeIDKey]
+                   isEqualToString:defaultActionID] &&
+               actionDelegate.removedDeliveredNotificationIdentifiers == nil &&
+               actionDelegate.removedPendingNotificationIdentifiers == nil,
+               @"the default click opens the overview without acknowledging the persistent issue");
+
+        BOOL legacyOpenCompleted = RouteBackupResponse(
+            actionDelegate, @"GDT_OPEN_BACKUP_OVERVIEW", @"GDT_BACKUP_ALERT",
+            @{}, @"com.commcats.gdrivebackup.office.failure.300");
+        BOOL legacyNavigationCompleted = WaitForCondition(^BOOL{
+            return actionDelegate.overviewShowCalls == 4 &&
+                actionDelegate.overviewRefreshCalls == 4;
+        }, 1.0);
+        Assert(legacyOpenCompleted && legacyNavigationCompleted &&
+               [actionDelegate.testDefaults doubleForKey:dismissedKey] == 900 &&
+               [actionDelegate.testDefaults doubleForKey:activeAtKey] == 950 &&
+               [[actionDelegate.testDefaults stringForKey:activeIDKey]
+                   isEqualToString:defaultActionID] &&
+               actionDelegate.removedDeliveredNotificationIdentifiers == nil &&
+               actionDelegate.removedPendingNotificationIdentifiers == nil,
+               @"a legacy Open action keeps overview navigation while refusing untrusted acknowledgement metadata");
+
+        NSApplication *testApplication =
+            GDTInitializeAccessoryTestApplication();
+        Assert(testApplication.activationPolicy ==
+                   NSApplicationActivationPolicyAccessory,
+               @"the notification integration harness stays out of the Dock");
+        NSStatusItem *retryStatusItem = [NSStatusBar.systemStatusBar
+            statusItemWithLength:NSSquareStatusItemLength];
+        actionDelegate.statusItem = retryStatusItem;
+        SEL statusPresentationSelector =
+            NSSelectorFromString(@"updateStatusItemPresentationForSnapshot:");
+        if ([actionDelegate respondsToSelector:statusPresentationSelector]) {
+            typedef void (*StatusPresentationMethod)(id, SEL, NSDictionary *);
+            StatusPresentationMethod presentStatus =
+                (StatusPresentationMethod)[actionDelegate
+                    methodForSelector:statusPresentationSelector];
+            presentStatus(actionDelegate, statusPresentationSelector,
+                @{@"alertStatus": @"retry-running", @"lastRun": @"stale failure"});
+        }
+        NSImage *expectedRetrySymbol = [NSImage
+            imageWithSystemSymbolName:@"arrow.triangle.2.circlepath"
+              accessibilityDescription:nil];
+        Assert(retryStatusItem.button.image.template &&
+               [retryStatusItem.button.image.TIFFRepresentation
+                   isEqualToData:expectedRetrySymbol.TIFFRepresentation] &&
+               [retryStatusItem.button.accessibilityLabel
+                   containsString:T(@"en", @"automaticRetryRunning")],
+               @"retry-running uses a non-red running symbol and a localized spoken status");
+        [NSStatusBar.systemStatusBar removeStatusItem:retryStatusItem];
+        actionDelegate.statusItem = nil;
 
         NSDictionary *enabledConfig = @{
             @"GDRIVE_BACKUP_PROFILE_ID": @"reactivate",

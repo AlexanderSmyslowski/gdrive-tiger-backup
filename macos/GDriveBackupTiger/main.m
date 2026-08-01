@@ -8,6 +8,7 @@
 #import "ConfigSupport.h"
 #import "ProfileSupport.h"
 #import "BackupStatusSupport.h"
+#import "BackupProgressSupport.h"
 #import "NotificationSupport.h"
 #import "SetupHealthSupport.h"
 #import "RestoreSupport.h"
@@ -16,6 +17,7 @@
 #import "DiagnosticsView.h"
 #import "UpdateSupport.h"
 #import "Localization.h"
+#import "NetworkMountSupport.h"
 
 static NSImage *CreateApplicationIcon(void) {
     NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(128, 128)];
@@ -155,19 +157,14 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *MountedNetworkVolumes(vo
         NSString *source = [line substringToIndex:onRange.location];
         NSString *path = [line substringWithRange:NSMakeRange(onRange.location + 4, typeRange.location - (onRange.location + 4))];
         NSString *name = path.lastPathComponent;
-        NSString *url = @"";
-        if ([source hasPrefix:@"//"]) {
-            NSString *withoutSlashes = [source substringFromIndex:2];
-            NSRange atRange = [withoutSlashes rangeOfString:@"@" options:NSBackwardsSearch];
-            if (atRange.location != NSNotFound) {
-                withoutSlashes = [withoutSlashes substringFromIndex:atRange.location + 1];
-            }
-            url = [@"smb://" stringByAppendingString:withoutSlashes];
-        }
-
         NSMutableDictionary<NSString *, NSString *> *volume = byPath[path];
+        NSString *url = GDTPreferredNASRemountURL(
+            volume[@"url"] ?: @"",
+            source,
+            [line containsString:@" (smbfs,"]);
+
         if (volume) {
-            if (url.length && !volume[@"url"].length) {
+            if (url.length) {
                 volume[@"url"] = url;
             }
             continue;
@@ -1138,6 +1135,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, copy) NSString *nextRunText;
 @property(nonatomic, copy) NSString *targetText;
 @property(nonatomic, copy) NSString *storageText;
+@property(nonatomic) BOOL progressVisible;
+@property(nonatomic) CGFloat progressPercent;
+@property(nonatomic, copy) NSString *progressSummary;
+@property(nonatomic, copy) NSString *progressDetail;
 @property(nonatomic, copy) void (^backupHandler)(void);
 @property(nonatomic, copy) void (^settingsHandler)(void);
 @property(nonatomic, copy) void (^restoreHandler)(void);
@@ -1152,6 +1153,11 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, strong) NSTextField *targetValueLabel;
 @property(nonatomic, strong) NSTextField *storageCaptionLabel;
 @property(nonatomic, strong) NSTextField *storageValueLabel;
+@property(nonatomic, strong) NSProgressIndicator *progressIndicator;
+@property(nonatomic, strong) NSTextField *progressSummaryLabel;
+@property(nonatomic, strong) NSTextField *progressPhaseLabel;
+@property(nonatomic, strong) NSTextField *progressPercentLabel;
+@property(nonatomic, strong) NSTextField *progressDetailLabel;
 @property(nonatomic, strong) NSButton *backupButton;
 @property(nonatomic, strong) NSButton *settingsButton;
 @property(nonatomic, strong) NSButton *restoreButton;
@@ -1219,6 +1225,27 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
                                                        font:valueFont color:muted];
     [self addSubview:self.lastRunDetailLabel];
 
+    self.progressSummaryLabel = [self overviewLabelWithFrame:NSMakeRect(116, 174, 440, 18)
+                                                         font:captionFont color:ink];
+    [self addSubview:self.progressSummaryLabel];
+    self.progressPhaseLabel = [self overviewLabelWithFrame:NSMakeRect(116, 194, 110, 18)
+                                                       font:valueFont color:muted];
+    [self addSubview:self.progressPhaseLabel];
+    self.progressIndicator = [[NSProgressIndicator alloc]
+        initWithFrame:NSMakeRect(232, 196, 200, 14)];
+    self.progressIndicator.style = NSProgressIndicatorStyleBar;
+    self.progressIndicator.minValue = 0;
+    self.progressIndicator.maxValue = 100;
+    self.progressIndicator.accessibilityRole = NSAccessibilityProgressIndicatorRole;
+    [self addSubview:self.progressIndicator];
+    self.progressPercentLabel = [self overviewLabelWithFrame:NSMakeRect(440, 193, 52, 18)
+                                                         font:valueFont color:ink];
+    [self addSubview:self.progressPercentLabel];
+    self.progressDetailLabel = [self overviewLabelWithFrame:NSMakeRect(116, 216, 440, 18)
+                                                        font:valueFont color:muted];
+    self.progressDetailLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    [self addSubview:self.progressDetailLabel];
+
     self.nextRunCaptionLabel = [self overviewLabelWithFrame:NSMakeRect(48, 232, 132, 19)
                                                         font:captionFont color:muted];
     [self addSubview:self.nextRunCaptionLabel];
@@ -1266,6 +1293,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.backupButton.nextKeyView = self.settingsButton;
 
     self.language = @"en";
+    self.progressVisible = NO;
+    self.progressPercent = -1.0;
+    self.progressSummary = @"";
+    self.progressDetail = @"";
     self.status = @"unknown";
     return self;
 }
@@ -1284,8 +1315,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.settingsButton.accessibilityLabel = self.settingsButton.title;
     self.restoreButton.accessibilityLabel = self.restoreButton.title;
     self.backupButton.accessibilityLabel = self.backupButton.title;
+    self.progressIndicator.accessibilityLabel = T(_language, @"backupProgressCurrentPhase");
     [self layoutActionButtons];
     [self updateValueAccessibilityLabels];
+    [self updateProgressPresentation];
     [self setStatus:self.status ?: @"unknown"];
 }
 
@@ -1319,6 +1352,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.statusSymbolLabel.stringValue = presentation[0];
     self.statusSymbolLabel.textColor = presentation[1];
     self.statusSymbolLabel.accessibilityLabel = T(self.language ?: @"en", presentation[2]);
+    [self updateProgressPresentation];
 }
 
 - (void)setLastRunText:(NSString *)lastRunText {
@@ -1349,6 +1383,53 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     _storageText = [storageText copy] ?: @"";
     self.storageValueLabel.stringValue = _storageText;
     [self updateValueAccessibilityLabels];
+}
+
+- (void)setProgressVisible:(BOOL)progressVisible {
+    _progressVisible = progressVisible;
+    [self updateProgressPresentation];
+}
+
+- (void)setProgressPercent:(CGFloat)progressPercent {
+    _progressPercent = progressPercent;
+    [self updateProgressPresentation];
+}
+
+- (void)setProgressSummary:(NSString *)progressSummary {
+    _progressSummary = [progressSummary copy] ?: @"";
+    self.progressSummaryLabel.stringValue = _progressSummary;
+    self.progressSummaryLabel.accessibilityLabel = _progressSummary;
+}
+
+- (void)setProgressDetail:(NSString *)progressDetail {
+    _progressDetail = [progressDetail copy] ?: @"";
+    self.progressDetailLabel.stringValue = _progressDetail;
+    self.progressDetailLabel.accessibilityLabel = _progressDetail;
+}
+
+- (void)updateProgressPresentation {
+    BOOL visible = self.progressVisible && [self.status isEqualToString:@"running"];
+    for (NSView *progressView in @[
+        self.progressSummaryLabel, self.progressPhaseLabel, self.progressIndicator,
+        self.progressPercentLabel, self.progressDetailLabel
+    ]) {
+        progressView.hidden = !visible;
+    }
+    if (!visible) {
+        [self.progressIndicator stopAnimation:nil];
+        return;
+    }
+    BOOL indeterminate = self.progressPercent < 0.0;
+    self.progressIndicator.indeterminate = indeterminate;
+    if (indeterminate) {
+        self.progressPercentLabel.stringValue = @"";
+        [self.progressIndicator startAnimation:nil];
+    } else {
+        [self.progressIndicator stopAnimation:nil];
+        CGFloat percent = MAX(0.0, MIN(100.0, self.progressPercent));
+        self.progressIndicator.doubleValue = percent;
+        self.progressPercentLabel.stringValue = [NSString stringWithFormat:@"%.0f %%", percent];
+    }
 }
 
 - (void)updateValueAccessibilityLabels {
@@ -1501,7 +1582,21 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, copy) NSString *unknownExternalVolumeBootSessionIDCache;
 @property(nonatomic, copy) NSString *terminalFailureReason;
 @property(nonatomic, strong) NSMutableSet<NSString *> *pendingBackupNotificationIdentifiers;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *
+    pendingBackupNotificationKeysByProfileID;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *
+    inFlightBackupNotificationDecisionsByProfileID;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *
+    queuedBackupNotificationDecisionsByProfileID;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *
+    backupNotificationGenerationsByProfileID;
 - (BOOL)launchAutomaticRetryDecision:(NSDictionary<NSString *, NSString *> *)decision;
+- (void)removeExactBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers
+                                      forProfileID:(NSString *)profileID;
+- (void)removeDeliveredBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers;
+- (void)removePendingBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers;
+- (void)retireSupersededBackupNotificationForDecision:
+    (NSDictionary<NSString *, NSString *> *)decision;
 - (void)requestCancelBackup:(id)sender;
 - (BOOL)cancelRunningBackup;
 - (void)completeMountedNetworkVolumeDiscovery:
@@ -1584,6 +1679,138 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     return parts.count ? [parts componentsJoinedByString:@" · "] : T(language, @"overviewUnavailable");
 }
 
+static NSString *GDTLocalizedProgressPhase(NSString *phase, NSString *language) {
+    NSArray<NSString *> *parts = [phase componentsSeparatedByString:@"/"];
+    if (parts.count != 2 || ![parts[0] length] || ![parts[1] length]) {
+        return @"";
+    }
+    return [NSString stringWithFormat:T(language, @"progressAreaFormat"),
+        parts[0], parts[1]];
+}
+
+static NSTimeInterval GDTBackupNotificationTimestamp(id value) {
+    if (![value isKindOfClass:NSString.class] || ![value length]) return 0;
+    NSScanner *scanner = [NSScanner scannerWithString:value];
+    long long timestamp = 0;
+    if (![scanner scanLongLong:&timestamp] || !scanner.isAtEnd || timestamp <= 0) {
+        return 0;
+    }
+    return (NSTimeInterval)timestamp;
+}
+
+static NSUInteger GDTBackupNotificationDecisionStage(
+    NSDictionary<NSString *, NSString *> *decision) {
+    if (decision[@"supersedesIdentifier"].length) return 3;
+    if ([decision[@"kind"] isEqualToString:@"retry-running"]) return 2;
+    return 1;
+}
+
+static BOOL GDTBackupNotificationDecisionCanReplaceQueued(
+    NSDictionary<NSString *, NSString *> *candidate,
+    NSDictionary<NSString *, NSString *> *queued) {
+    NSTimeInterval candidateOrigin =
+        GDTBackupNotificationTimestamp(candidate[@"issueOriginTimestamp"]);
+    NSTimeInterval queuedOrigin =
+        GDTBackupNotificationTimestamp(queued[@"issueOriginTimestamp"]);
+    if (candidateOrigin != queuedOrigin) return candidateOrigin > queuedOrigin;
+
+    // A delayed refresh may observe retry-running after the terminal result.
+    // Preserve the furthest known lifecycle stage for one canonical origin.
+    return GDTBackupNotificationDecisionStage(candidate) >=
+        GDTBackupNotificationDecisionStage(queued);
+}
+
+static BOOL GDTBackupNotificationAcceptedState(
+    NSUserDefaults *defaults, NSString *stateKey, NSString *originKey,
+    NSTimeInterval *acceptedOrigin, NSUInteger *acceptedStage) {
+    NSDictionary *state = [defaults dictionaryForKey:stateKey];
+    NSNumber *originValue = [state[@"origin"] isKindOfClass:NSNumber.class]
+        ? state[@"origin"] : nil;
+    NSNumber *stageValue = [state[@"stage"] isKindOfClass:NSNumber.class]
+        ? state[@"stage"] : nil;
+    NSTimeInterval origin = originValue.doubleValue;
+    NSUInteger stage = stageValue.unsignedIntegerValue;
+    BOOL hasAuthoritativeState = origin > 0 && stage >= 1 && stage <= 3;
+    if (!hasAuthoritativeState) {
+        NSTimeInterval legacyOrigin = [defaults doubleForKey:originKey];
+        origin = MAX(origin > 0 ? origin : 0, legacyOrigin);
+        // Without an atomic pair, a stage can belong to an older origin.
+        // Its identifier and revision must establish the stage instead.
+        stage = 0;
+    }
+    *acceptedOrigin = origin;
+    *acceptedStage = stage;
+    return hasAuthoritativeState;
+}
+
+static void GDTPersistBackupNotificationAcceptedState(
+    NSUserDefaults *defaults, NSString *stateKey, NSString *originKey,
+    NSString *stageKey, NSTimeInterval origin, NSUInteger stage) {
+    [defaults setObject:@{
+        @"origin": @(origin),
+        @"stage": @(stage)
+    } forKey:stateKey];
+    [defaults setDouble:origin forKey:originKey];
+    [defaults setInteger:(NSInteger)stage forKey:stageKey];
+}
+
+static NSUInteger GDTBackupNotificationLegacyAcceptedStage(
+    NSUserDefaults *defaults, NSString *profileID, NSString *identifierKey,
+    NSString *revisionKey, NSTimeInterval acceptedOrigin) {
+    NSString *identifier = [defaults stringForKey:identifierKey];
+    NSArray<NSString *> *safeIdentifiers = [GDTBackupNotificationPolicy
+        failureNotificationIdentifiersForProfileID:profileID
+                              candidateIdentifiers:identifier.length
+                                  ? @[identifier] : @[]];
+    if (safeIdentifiers.count != 1 || acceptedOrigin <= 0) return 3;
+
+    NSString *failureSuffix = [NSString stringWithFormat:
+        @".failure.%.0f", acceptedOrigin];
+    if ([identifier hasSuffix:failureSuffix]) {
+        NSString *revision = [defaults stringForKey:revisionKey];
+        if (!revision.length) return 1;
+        NSString *runningPrefix = @"retry-running.";
+        NSTimeInterval runningTimestamp = [revision hasPrefix:runningPrefix]
+            ? GDTBackupNotificationTimestamp(
+                [revision substringFromIndex:runningPrefix.length]) : 0;
+        NSString *canonicalRevision = [NSString stringWithFormat:
+            @"retry-running.%.0f", runningTimestamp];
+        if (runningTimestamp > acceptedOrigin &&
+            [revision isEqualToString:canonicalRevision]) {
+            return 2;
+        }
+        return 3;
+    }
+
+    NSString *missedSuffix = [NSString stringWithFormat:
+        @".missed.%.0f", acceptedOrigin];
+    if ([identifier hasSuffix:missedSuffix] &&
+        ![defaults stringForKey:revisionKey].length) {
+        return 1;
+    }
+    return 3;
+}
+
+static void GDTAdvanceBackupNotificationAcceptedState(
+    NSUserDefaults *defaults, NSString *stateKey, NSString *originKey,
+    NSString *stageKey, NSTimeInterval candidateOrigin,
+    NSUInteger candidateStage) {
+    NSTimeInterval acceptedOrigin = 0;
+    NSUInteger acceptedStage = 0;
+    GDTBackupNotificationAcceptedState(
+        defaults, stateKey, originKey, &acceptedOrigin, &acceptedStage);
+    BOOL advances = candidateOrigin > acceptedOrigin ||
+        (candidateOrigin == acceptedOrigin && candidateStage > acceptedStage);
+    BOOL matches = candidateOrigin == acceptedOrigin &&
+        candidateStage == acceptedStage;
+    if (!advances && !matches) return;
+
+    NSTimeInterval nextOrigin = advances ? candidateOrigin : acceptedOrigin;
+    NSUInteger nextStage = advances ? candidateStage : acceptedStage;
+    GDTPersistBackupNotificationAcceptedState(
+        defaults, stateKey, originKey, stageKey, nextOrigin, nextStage);
+}
+
 @implementation AppDelegate
 
 - (NSUserDefaults *)backupNotificationDefaultsStore {
@@ -1629,7 +1856,7 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
         categoryWithIdentifier:@"GDT_BACKUP_ALERT"
                        actions:@[openAction]
              intentIdentifiers:@[]
-                       options:UNNotificationCategoryOptionNone];
+                       options:UNNotificationCategoryOptionCustomDismissAction];
 
     UNNotificationAction *setupExternalVolume = [UNNotificationAction
         actionWithIdentifier:@"GDT_UNKNOWN_EXTERNAL_VOLUME_SETUP"
@@ -1818,6 +2045,10 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     content.body = T(self.language ?: @"en", decision[@"bodyKey"]);
     content.sound = UNNotificationSound.defaultSound;
     content.categoryIdentifier = @"GDT_BACKUP_ALERT";
+    content.userInfo = @{
+        @"profileID": decision[@"profileID"] ?: @"",
+        @"issueOriginTimestamp": decision[@"issueOriginTimestamp"] ?: @""
+    };
     if (@available(macOS 12.0, *)) {
         // A protected level without its signed entitlement can make delivery
         // fail. Ad-hoc builds keep the durable alert at the normal active level.
@@ -1988,46 +2219,211 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
 }
 
 - (void)processBackupNotificationDecision:(NSDictionary<NSString *, NSString *> *)decision {
-    NSString *identifier = decision[@"identifier"];
-    NSString *profileID = decision[@"profileID"];
-    if (!identifier.length || !profileID.length || !decision[@"titleKey"].length ||
-        !decision[@"bodyKey"].length) {
+    NSDictionary<NSString *, NSString *> *deliveryDecision = [decision copy];
+    NSString *identifier = deliveryDecision[@"identifier"];
+    NSString *profileID = deliveryDecision[@"profileID"];
+    NSTimeInterval issueOriginTimestamp =
+        GDTBackupNotificationTimestamp(deliveryDecision[@"issueOriginTimestamp"]);
+    if (!identifier.length || !profileID.length ||
+        !deliveryDecision[@"titleKey"].length ||
+        !deliveryDecision[@"bodyKey"].length || issueOriginTimestamp <= 0 ||
+        [GDTBackupNotificationPolicy
+            failureNotificationIdentifiersForProfileID:profileID
+                                  candidateIdentifiers:@[identifier]].count != 1) {
         return;
     }
-    NSString *key = [self backupNotificationDefaultsKeyForProfileID:profileID
-                                                              suffix:@"lastDeliveredIdentifier"];
+    NSString *identifierKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                        suffix:@"lastDeliveredIdentifier"];
+    NSString *revisionKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                      suffix:@"lastDeliveredRevision"];
     NSString *deliveredKey = [self backupNotificationDefaultsKeyForProfileID:profileID
                                                                        suffix:@"deliveredFailureIdentifiers"];
+    NSString *dismissedKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                       suffix:@"dismissedIssueAt"];
+    NSString *acceptedOriginKey = [self
+        backupNotificationDefaultsKeyForProfileID:profileID
+                                           suffix:@"latestDeliveredIssueAt"];
+    NSString *acceptedStageKey = [self
+        backupNotificationDefaultsKeyForProfileID:profileID
+                                           suffix:@"latestDeliveredIssueStage"];
+    NSString *acceptedStateKey = [self
+        backupNotificationDefaultsKeyForProfileID:profileID
+                                           suffix:@"latestDeliveredIssueState"];
     NSUserDefaults *defaults = [self backupNotificationDefaultsStore];
-    if ([[defaults stringForKey:key] isEqualToString:identifier]) return;
+    if (issueOriginTimestamp <= [defaults doubleForKey:dismissedKey]) {
+        return;
+    }
+    NSUInteger decisionStage =
+        GDTBackupNotificationDecisionStage(deliveryDecision);
+    NSTimeInterval acceptedOriginTimestamp = 0;
+    NSUInteger acceptedStage = 0;
+    BOOL hasAuthoritativeAcceptedState = GDTBackupNotificationAcceptedState(
+        defaults, acceptedStateKey, acceptedOriginKey,
+        &acceptedOriginTimestamp, &acceptedStage);
+    if (!hasAuthoritativeAcceptedState && acceptedOriginTimestamp > 0) {
+        // Legacy fields distinguish an in-place preliminary/running update
+        // from a terminal replacement. Ambiguous partial state stays terminal.
+        NSUInteger legacyStage = GDTBackupNotificationLegacyAcceptedStage(
+            defaults, profileID, identifierKey, revisionKey,
+            acceptedOriginTimestamp);
+        acceptedStage = legacyStage;
+        GDTPersistBackupNotificationAcceptedState(
+            defaults, acceptedStateKey, acceptedOriginKey, acceptedStageKey,
+            acceptedOriginTimestamp, acceptedStage);
+    }
+    if (acceptedOriginTimestamp > 0 &&
+        (issueOriginTimestamp < acceptedOriginTimestamp ||
+         (issueOriginTimestamp == acceptedOriginTimestamp &&
+          decisionStage < acceptedStage))) {
+        return;
+    }
+
+    NSString *revision = [deliveryDecision[@"revision"] isKindOfClass:NSString.class]
+        ? deliveryDecision[@"revision"] : @"";
+    BOOL sameIdentifier =
+        [[defaults stringForKey:identifierKey] isEqualToString:identifier];
+    BOOL alreadyDelivered = revision.length
+        ? sameIdentifier &&
+            [[defaults stringForKey:revisionKey] isEqualToString:revision]
+        : sameIdentifier;
+    if (alreadyDelivered) {
+        // Replay repairs a lifecycle watermark if acceptance was interrupted
+        // after its identifier was saved but before the stage was advanced.
+        GDTAdvanceBackupNotificationAcceptedState(
+            defaults, acceptedStateKey, acceptedOriginKey, acceptedStageKey,
+            issueOriginTimestamp, decisionStage);
+        [self retireSupersededBackupNotificationForDecision:deliveryDecision];
+        return;
+    }
     if (!self.pendingBackupNotificationIdentifiers) {
         self.pendingBackupNotificationIdentifiers = [NSMutableSet set];
     }
-    if ([self.pendingBackupNotificationIdentifiers containsObject:identifier]) return;
-    [self.pendingBackupNotificationIdentifiers addObject:identifier];
+    NSString *pendingKey = [NSString stringWithFormat:@"%@\n%@", identifier, revision];
+    if ([self.pendingBackupNotificationIdentifiers containsObject:pendingKey]) return;
+
+    if (!self.pendingBackupNotificationKeysByProfileID) {
+        self.pendingBackupNotificationKeysByProfileID = [NSMutableDictionary dictionary];
+    }
+    NSString *inFlightKey =
+        self.pendingBackupNotificationKeysByProfileID[profileID];
+    if (inFlightKey.length) {
+        NSDictionary<NSString *, NSString *> *inFlightDecision =
+            self.inFlightBackupNotificationDecisionsByProfileID[profileID];
+        if (inFlightDecision &&
+            !GDTBackupNotificationDecisionCanReplaceQueued(
+                deliveryDecision, inFlightDecision)) {
+            return;
+        }
+        if (!self.queuedBackupNotificationDecisionsByProfileID) {
+            self.queuedBackupNotificationDecisionsByProfileID =
+                [NSMutableDictionary dictionary];
+        }
+        NSDictionary<NSString *, NSString *> *previousQueued =
+            self.queuedBackupNotificationDecisionsByProfileID[profileID];
+        if (previousQueued &&
+            !GDTBackupNotificationDecisionCanReplaceQueued(
+                deliveryDecision, previousQueued)) {
+            return;
+        }
+        if (previousQueued) {
+            NSString *previousRevision =
+                [previousQueued[@"revision"] isKindOfClass:NSString.class]
+                    ? previousQueued[@"revision"] : @"";
+            NSString *previousPendingKey = [NSString stringWithFormat:@"%@\n%@",
+                previousQueued[@"identifier"] ?: @"", previousRevision];
+            [self.pendingBackupNotificationIdentifiers
+                removeObject:previousPendingKey];
+        }
+        // Notification Center may accept same-identifier updates out of order.
+        // One in-flight request per profile makes visible content ordering match
+        // the controller's durable revision ordering.
+        self.queuedBackupNotificationDecisionsByProfileID[profileID] =
+            deliveryDecision;
+        [self.pendingBackupNotificationIdentifiers addObject:pendingKey];
+        return;
+    }
+
+    [self.pendingBackupNotificationIdentifiers addObject:pendingKey];
+    self.pendingBackupNotificationKeysByProfileID[profileID] = pendingKey;
+    if (!self.inFlightBackupNotificationDecisionsByProfileID) {
+        self.inFlightBackupNotificationDecisionsByProfileID =
+            [NSMutableDictionary dictionary];
+    }
+    self.inFlightBackupNotificationDecisionsByProfileID[profileID] =
+        deliveryDecision;
+    NSUInteger deliveryGeneration =
+        self.backupNotificationGenerationsByProfileID[profileID]
+            .unsignedIntegerValue;
 
     __weak typeof(self) weakSelf = self;
-    [self deliverBackupNotificationDecision:decision completion:^(BOOL delivered) {
+    [self deliverBackupNotificationDecision:deliveryDecision
+                                  completion:^(BOOL delivered) {
         void (^finish)(void) = ^{
             typeof(self) strongSelf = weakSelf;
             if (!strongSelf) return;
-            [strongSelf.pendingBackupNotificationIdentifiers removeObject:identifier];
+            [strongSelf.pendingBackupNotificationIdentifiers removeObject:pendingKey];
+            if ([strongSelf.pendingBackupNotificationKeysByProfileID[profileID]
+                    isEqualToString:pendingKey]) {
+                [strongSelf.pendingBackupNotificationKeysByProfileID
+                    removeObjectForKey:profileID];
+                [strongSelf.inFlightBackupNotificationDecisionsByProfileID
+                    removeObjectForKey:profileID];
+            }
             if (delivered) {
                 NSUserDefaults *store = [strongSelf backupNotificationDefaultsStore];
-                [store setObject:identifier forKey:key];
-                NSMutableArray<NSString *> *identifiers =
-                    [[store stringArrayForKey:deliveredKey] mutableCopy] ?: [NSMutableArray array];
-                if (![identifiers containsObject:identifier]) {
-                    [identifiers addObject:identifier];
-                    [store setObject:identifiers forKey:deliveredKey];
+                NSUInteger currentGeneration =
+                    strongSelf.backupNotificationGenerationsByProfileID[profileID]
+                        .unsignedIntegerValue;
+                if (currentGeneration != deliveryGeneration ||
+                    issueOriginTimestamp <= [store doubleForKey:dismissedKey]) {
+                    [strongSelf removeExactBackupNotificationIdentifiers:@[identifier]
+                                                             forProfileID:profileID];
+                } else {
+                    // The monotonic watermark goes first so a replay cannot
+                    // deduplicate an identifier whose accepted stage was lost.
+                    GDTAdvanceBackupNotificationAcceptedState(
+                        store, acceptedStateKey, acceptedOriginKey,
+                        acceptedStageKey,
+                        issueOriginTimestamp, decisionStage);
+                    [store setObject:identifier forKey:identifierKey];
+                    if (revision.length) {
+                        [store setObject:revision forKey:revisionKey];
+                    } else {
+                        [store removeObjectForKey:revisionKey];
+                    }
+                    NSMutableArray<NSString *> *identifiers =
+                        [[store stringArrayForKey:deliveredKey] mutableCopy] ?:
+                            [NSMutableArray array];
+                    if (![identifiers containsObject:identifier]) {
+                        [identifiers addObject:identifier];
+                        [store setObject:identifiers forKey:deliveredKey];
+                    }
+                    [strongSelf retireSupersededBackupNotificationForDecision:
+                        deliveryDecision];
+                    NSString *activeAtKey = [strongSelf
+                        backupNotificationDefaultsKeyForProfileID:profileID
+                                                           suffix:@"activeIssueAt"];
+                    if ([store doubleForKey:activeAtKey] == issueOriginTimestamp) {
+                        [store setObject:identifier forKey:[strongSelf
+                            backupNotificationDefaultsKeyForProfileID:profileID
+                                                               suffix:@"activeIssueIdentifier"]];
+                    }
                 }
-                NSTimeInterval issueTimestamp = [decision[@"issueTimestamp"] doubleValue];
-                NSString *issueKey = [strongSelf
-                    backupNotificationDefaultsKeyForProfileID:profileID
-                                                       suffix:@"latestDeliveredIssueAt"];
-                if (issueTimestamp > [store doubleForKey:issueKey]) {
-                    [store setDouble:issueTimestamp forKey:issueKey];
-                }
+            }
+
+            NSDictionary<NSString *, NSString *> *queuedDecision =
+                strongSelf.queuedBackupNotificationDecisionsByProfileID[profileID];
+            if (queuedDecision) {
+                [strongSelf.queuedBackupNotificationDecisionsByProfileID
+                    removeObjectForKey:profileID];
+                NSString *queuedRevision =
+                    [queuedDecision[@"revision"] isKindOfClass:NSString.class]
+                        ? queuedDecision[@"revision"] : @"";
+                NSString *queuedKey = [NSString stringWithFormat:@"%@\n%@",
+                    queuedDecision[@"identifier"] ?: @"", queuedRevision];
+                [strongSelf.pendingBackupNotificationIdentifiers
+                    removeObject:queuedKey];
+                [strongSelf processBackupNotificationDecision:queuedDecision];
             }
         };
         if (NSThread.isMainThread) {
@@ -2038,24 +2434,113 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     }];
 }
 
+- (void)removeExactBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers
+                                      forProfileID:(NSString *)profileID {
+    NSArray<NSString *> *safeIdentifiers =
+        [GDTBackupNotificationPolicy
+            failureNotificationIdentifiersForProfileID:profileID
+                                  candidateIdentifiers:identifiers];
+    if (!safeIdentifiers.count) return;
+    [self removeDeliveredBackupNotificationIdentifiers:safeIdentifiers];
+    [self removePendingBackupNotificationIdentifiers:safeIdentifiers];
+}
+
+- (void)removeDeliveredBackupNotificationIdentifiers:
+    (NSArray<NSString *> *)identifiers {
+    [UNUserNotificationCenter.currentNotificationCenter
+        removeDeliveredNotificationsWithIdentifiers:identifiers];
+}
+
+- (void)removePendingBackupNotificationIdentifiers:
+    (NSArray<NSString *> *)identifiers {
+    [UNUserNotificationCenter.currentNotificationCenter
+        removePendingNotificationRequestsWithIdentifiers:identifiers];
+}
+
+- (void)retireSupersededBackupNotificationForDecision:
+    (NSDictionary<NSString *, NSString *> *)decision {
+    NSString *profileID = decision[@"profileID"];
+    NSString *identifier = decision[@"identifier"];
+    NSString *supersededIdentifier = decision[@"supersedesIdentifier"];
+    if (!profileID.length || !identifier.length ||
+        !supersededIdentifier.length ||
+        [identifier isEqualToString:supersededIdentifier]) {
+        return;
+    }
+    NSArray<NSString *> *safeSuperseded =
+        [GDTBackupNotificationPolicy
+            failureNotificationIdentifiersForProfileID:profileID
+                                  candidateIdentifiers:@[supersededIdentifier]];
+    if (safeSuperseded.count != 1) return;
+
+    NSUserDefaults *defaults = [self backupNotificationDefaultsStore];
+    NSString *deliveredKey =
+        [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                 suffix:@"deliveredFailureIdentifiers"];
+    NSMutableArray<NSString *> *identifiers =
+        [[defaults stringArrayForKey:deliveredKey] mutableCopy] ?:
+        [NSMutableArray array];
+    [identifiers removeObject:supersededIdentifier];
+    if (![identifiers containsObject:identifier]) {
+        [identifiers addObject:identifier];
+    }
+    [defaults setObject:identifiers forKey:deliveredKey];
+    [self removeExactBackupNotificationIdentifiers:safeSuperseded
+                                       forProfileID:profileID];
+}
+
+- (void)enumerateDeliveredBackupNotificationsWithCompletion:
+    (void (^)(NSArray<UNNotification *> *notifications))completion {
+    [UNUserNotificationCenter.currentNotificationCenter
+        getDeliveredNotificationsWithCompletionHandler:completion];
+}
+
 - (void)removeBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers
-                                forProfileID:(NSString *)profileID {
-    UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
-    [center getDeliveredNotificationsWithCompletionHandler:
+                                forProfileID:(NSString *)profileID
+                 throughIssueOriginTimestamp:(NSTimeInterval)cutoff {
+    [self enumerateDeliveredBackupNotificationsWithCompletion:
         ^(NSArray<UNNotification *> *notifications) {
-        NSMutableArray<NSString *> *candidates =
-            [identifiers mutableCopy] ?: [NSMutableArray array];
-        for (UNNotification *notification in notifications) {
+        NSMutableOrderedSet<NSString *> *candidateOrder =
+            [NSMutableOrderedSet orderedSet];
+        NSMutableDictionary<NSString *, NSDictionary<NSString *, id> *> *candidatesByID =
+            [NSMutableDictionary dictionary];
+        for (id value in identifiers ?: @[]) {
+            if (![value isKindOfClass:NSString.class] || ![value length]) continue;
+            NSString *identifier = value;
+            [candidateOrder addObject:identifier];
+            candidatesByID[identifier] = @{@"identifier": identifier};
+        }
+        for (UNNotification *notification in notifications ?: @[]) {
             NSString *identifier = notification.request.identifier;
-            if (identifier.length) [candidates addObject:identifier];
+            if (!identifier.length) continue;
+            UNNotificationContent *content = notification.request.content;
+            NSString *category = content.categoryIdentifier ?: @"";
+            NSDictionary *userInfo = [content.userInfo isKindOfClass:NSDictionary.class]
+                ? content.userInfo : @{};
+            NSMutableDictionary<NSString *, id> *candidate =
+                [@{@"identifier": identifier} mutableCopy];
+            if (category.length || userInfo.count) {
+                candidate[@"categoryIdentifier"] = category;
+                candidate[@"userInfo"] = userInfo;
+            }
+            [candidateOrder addObject:identifier];
+            // Notification Center is authoritative for a currently delivered
+            // identifier; its metadata must not be bypassed by a legacy entry.
+            candidatesByID[identifier] = candidate;
+        }
+        NSMutableArray<NSDictionary<NSString *, id> *> *candidates =
+            [NSMutableArray arrayWithCapacity:candidateOrder.count];
+        for (NSString *identifier in candidateOrder) {
+            [candidates addObject:candidatesByID[identifier]];
         }
         NSArray<NSString *> *safeIdentifiers =
             [GDTBackupNotificationPolicy
                 failureNotificationIdentifiersForProfileID:profileID
-                                      candidateIdentifiers:candidates];
+                             throughIssueOriginTimestamp:cutoff
+                                  candidateNotifications:candidates];
         if (!safeIdentifiers.count) return;
-        [center removeDeliveredNotificationsWithIdentifiers:safeIdentifiers];
-        [center removePendingNotificationRequestsWithIdentifiers:safeIdentifiers];
+        [self removeDeliveredBackupNotificationIdentifiers:safeIdentifiers];
+        [self removePendingBackupNotificationIdentifiers:safeIdentifiers];
     }];
 }
 
@@ -2076,12 +2561,48 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
                                                                        suffix:@"deliveredFailureIdentifiers"];
     NSString *latestIssueKey = [self backupNotificationDefaultsKeyForProfileID:profileID
                                                                         suffix:@"latestDeliveredIssueAt"];
+    NSString *latestIssueStageKey = [self
+        backupNotificationDefaultsKeyForProfileID:profileID
+                                           suffix:@"latestDeliveredIssueStage"];
+    NSString *latestIssueStateKey = [self
+        backupNotificationDefaultsKeyForProfileID:profileID
+                                           suffix:@"latestDeliveredIssueState"];
     NSString *activeIssueKey = [self backupNotificationDefaultsKeyForProfileID:profileID
                                                                         suffix:@"activeIssueAt"];
-    NSTimeInterval latestIssueAt = MAX([defaults doubleForKey:latestIssueKey],
-                                       [defaults doubleForKey:activeIssueKey]);
+    NSString *dismissedIssueKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                           suffix:@"dismissedIssueAt"];
+    NSTimeInterval latestAcceptedIssueAt = 0;
+    NSUInteger latestAcceptedIssueStage = 0;
+    GDTBackupNotificationAcceptedState(
+        defaults, latestIssueStateKey, latestIssueKey,
+        &latestAcceptedIssueAt, &latestAcceptedIssueStage);
+    NSTimeInterval latestIssueAt = MAX(
+        latestAcceptedIssueAt,
+        MAX([defaults doubleForKey:activeIssueKey],
+            [defaults doubleForKey:dismissedIssueKey]));
     if (latestIssueAt > 0 && finishedAt <= latestIssueAt) {
         return;
+    }
+    if (!self.backupNotificationGenerationsByProfileID) {
+        self.backupNotificationGenerationsByProfileID =
+            [NSMutableDictionary dictionary];
+    }
+    NSUInteger generation =
+        self.backupNotificationGenerationsByProfileID[profileID]
+            .unsignedIntegerValue;
+    self.backupNotificationGenerationsByProfileID[profileID] = @(generation + 1);
+
+    NSDictionary<NSString *, NSString *> *queuedDecision =
+        self.queuedBackupNotificationDecisionsByProfileID[profileID];
+    if (queuedDecision) {
+        NSString *queuedRevision =
+            [queuedDecision[@"revision"] isKindOfClass:NSString.class]
+                ? queuedDecision[@"revision"] : @"";
+        NSString *queuedKey = [NSString stringWithFormat:@"%@\n%@",
+            queuedDecision[@"identifier"] ?: @"", queuedRevision];
+        [self.pendingBackupNotificationIdentifiers removeObject:queuedKey];
+        [self.queuedBackupNotificationDecisionsByProfileID
+            removeObjectForKey:profileID];
     }
     NSMutableArray<NSString *> *identifiers =
         [[defaults stringArrayForKey:deliveredKey] mutableCopy] ?: [NSMutableArray array];
@@ -2091,13 +2612,22 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     if (legacyIdentifier.length && ![identifiers containsObject:legacyIdentifier]) {
         [identifiers addObject:legacyIdentifier];
     }
-    [self removeBackupNotificationIdentifiers:identifiers forProfileID:profileID];
+    [self removeBackupNotificationIdentifiers:identifiers
+                                  forProfileID:profileID
+                   throughIssueOriginTimestamp:finishedAt];
     [defaults removeObjectForKey:deliveredKey];
     [defaults removeObjectForKey:lastKey];
+    [defaults removeObjectForKey:[self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                           suffix:@"lastDeliveredRevision"]];
     [defaults removeObjectForKey:latestIssueKey];
+    [defaults removeObjectForKey:latestIssueStageKey];
+    [defaults removeObjectForKey:latestIssueStateKey];
+    [defaults removeObjectForKey:dismissedIssueKey];
     [defaults removeObjectForKey:activeIssueKey];
     [defaults removeObjectForKey:[self backupNotificationDefaultsKeyForProfileID:profileID
                                                                            suffix:@"activeIssueKind"]];
+    [defaults removeObjectForKey:[self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                           suffix:@"activeIssueIdentifier"]];
 }
 
 - (NSDictionary<NSString *, NSString *> *)currentAutomaticRetryDecision {
@@ -2155,15 +2685,50 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
                                                                   suffix:@"activeIssueKind"];
     NSString *timeKey = [self backupNotificationDefaultsKeyForProfileID:profileID
                                                                   suffix:@"activeIssueAt"];
-    if ([decision[@"profileID"] isEqualToString:profileID] &&
-        [@[@"failure", @"missed"] containsObject:decision[@"kind"]] &&
-        [decision[@"issueTimestamp"] doubleValue] > 0) {
-        [defaults setObject:decision[@"kind"] forKey:kindKey];
-        [defaults setDouble:[decision[@"issueTimestamp"] doubleValue] forKey:timeKey];
+    NSString *identifierKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                        suffix:@"activeIssueIdentifier"];
+    NSString *dismissedKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                       suffix:@"dismissedIssueAt"];
+    NSTimeInterval dismissedAt = [defaults doubleForKey:dismissedKey];
+    NSTimeInterval activeSince = [defaults doubleForKey:timeKey];
+    if (activeSince > 0 && activeSince <= dismissedAt) {
+        [defaults removeObjectForKey:kindKey];
+        [defaults removeObjectForKey:timeKey];
+        [defaults removeObjectForKey:identifierKey];
+        activeSince = 0;
     }
 
+    NSTimeInterval decisionOrigin =
+        GDTBackupNotificationTimestamp(decision[@"issueOriginTimestamp"]);
+    if ([decision[@"profileID"] isEqualToString:profileID] &&
+        [@[@"failure", @"missed"] containsObject:decision[@"kind"]] &&
+        decisionOrigin > dismissedAt && decision[@"identifier"].length &&
+        decisionOrigin >= activeSince) {
+        if (decisionOrigin > activeSince || activeSince <= 0) {
+            [defaults setObject:decision[@"kind"] forKey:kindKey];
+            [defaults setDouble:decisionOrigin forKey:timeKey];
+            [defaults setObject:decision[@"identifier"] forKey:identifierKey];
+            activeSince = decisionOrigin;
+        } else if (![defaults stringForKey:identifierKey].length) {
+            [defaults setObject:decision[@"identifier"] forKey:identifierKey];
+        }
+    }
+
+    NSTimeInterval retryOrigin =
+        GDTBackupNotificationTimestamp(summary[@"retry_origin_started_at"]);
+    NSTimeInterval retryStarted =
+        GDTBackupNotificationTimestamp(summary[@"started_at"]);
+    BOOL retryRunning = [rawStatus isEqualToString:@"running"] &&
+        [summary[@"trigger"] isEqualToString:@"schedule-retry"] &&
+        [summary[@"retry_attempt"] isEqualToString:@"1"] &&
+        retryOrigin > 0 && retryStarted > retryOrigin &&
+        [decision[@"profileID"] isEqualToString:profileID] &&
+        [decision[@"kind"] isEqualToString:@"retry-running"] &&
+        decisionOrigin == retryOrigin && decision[@"identifier"].length;
+    if (retryRunning) return @"retry-running";
+
     NSString *activeKind = [defaults stringForKey:kindKey];
-    NSTimeInterval activeSince = [defaults doubleForKey:timeKey];
+    activeSince = [defaults doubleForKey:timeKey];
     if (![@[@"failure", @"missed"] containsObject:activeKind] || activeSince <= 0) {
         return rawStatus;
     }
@@ -2171,9 +2736,10 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     BOOL automaticSuccess = [@[@"schedule", @"schedule-retry"]
         containsObject:(summary[@"trigger"] ?: @"")];
     if ([rawStatus isEqualToString:@"success"] && automaticSuccess &&
-        finishedAt >= activeSince) {
+        finishedAt > activeSince) {
         [defaults removeObjectForKey:kindKey];
         [defaults removeObjectForKey:timeKey];
+        [defaults removeObjectForKey:identifierKey];
         return rawStatus;
     }
     return activeKind;
@@ -2619,6 +3185,97 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     }
 }
 
+- (void)handleBackupNotificationActionIdentifier:(NSString *)actionIdentifier
+                              categoryIdentifier:(NSString *)categoryIdentifier
+                                        userInfo:(NSDictionary *)userInfo
+                          notificationIdentifier:(NSString *)notificationIdentifier {
+    BOOL dismissAction =
+        [actionIdentifier isEqualToString:UNNotificationDismissActionIdentifier];
+    BOOL openAction = [actionIdentifier isEqualToString:@"GDT_OPEN_BACKUP_OVERVIEW"];
+    if (![categoryIdentifier isEqualToString:@"GDT_BACKUP_ALERT"] ||
+        (!dismissAction && !openAction)) {
+        return;
+    }
+
+    if (openAction) {
+        void (^showOverview)(void) = ^{
+            [self showOverviewWindow];
+            [self refreshOverviewStatus:nil];
+        };
+        if (NSThread.isMainThread) {
+            showOverview();
+        } else {
+            dispatch_async(dispatch_get_main_queue(), showOverview);
+        }
+    }
+
+    NSString *profileID = [userInfo[@"profileID"] isKindOfClass:NSString.class]
+        ? userInfo[@"profileID"] : @"";
+    NSString *originValue =
+        [userInfo[@"issueOriginTimestamp"] isKindOfClass:NSString.class]
+            ? userInfo[@"issueOriginTimestamp"] : @"";
+    NSTimeInterval issueOriginTimestamp =
+        GDTBackupNotificationTimestamp(originValue);
+    NSString *profilePrefix = [NSString stringWithFormat:
+        @"com.commcats.gdrivebackup.%@.", profileID];
+    NSArray<NSString *> *safeIdentifiers =
+        [GDTBackupNotificationPolicy
+            failureNotificationIdentifiersForProfileID:profileID
+                                  candidateIdentifiers:@[notificationIdentifier ?: @""]];
+    if (!profileID.length || issueOriginTimestamp <= 0 ||
+        ![originValue isEqualToString:
+            [NSString stringWithFormat:@"%.0f", issueOriginTimestamp]] ||
+        ![notificationIdentifier hasPrefix:profilePrefix] ||
+        safeIdentifiers.count != 1) {
+        return;
+    }
+
+    NSUserDefaults *defaults = [self backupNotificationDefaultsStore];
+    NSString *dismissedKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                       suffix:@"dismissedIssueAt"];
+    [defaults setDouble:MAX(issueOriginTimestamp,
+                            [defaults doubleForKey:dismissedKey])
+                 forKey:dismissedKey];
+
+    NSString *activeAtKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                     suffix:@"activeIssueAt"];
+    NSString *activeIDKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                     suffix:@"activeIssueIdentifier"];
+    if ([defaults doubleForKey:activeAtKey] == issueOriginTimestamp &&
+        [[defaults stringForKey:activeIDKey]
+            isEqualToString:notificationIdentifier]) {
+        [defaults removeObjectForKey:activeAtKey];
+        [defaults removeObjectForKey:activeIDKey];
+        [defaults removeObjectForKey:[self
+            backupNotificationDefaultsKeyForProfileID:profileID
+                                               suffix:@"activeIssueKind"]];
+    }
+
+    NSString *deliveredKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                       suffix:@"deliveredFailureIdentifiers"];
+    NSMutableArray<NSString *> *delivered =
+        [[defaults stringArrayForKey:deliveredKey] mutableCopy] ?:
+            [NSMutableArray array];
+    [delivered removeObject:notificationIdentifier];
+    if (delivered.count) {
+        [defaults setObject:delivered forKey:deliveredKey];
+    } else {
+        [defaults removeObjectForKey:deliveredKey];
+    }
+    NSString *lastIdentifierKey = [self
+        backupNotificationDefaultsKeyForProfileID:profileID
+                                           suffix:@"lastDeliveredIdentifier"];
+    if ([[defaults stringForKey:lastIdentifierKey]
+            isEqualToString:notificationIdentifier]) {
+        [defaults removeObjectForKey:lastIdentifierKey];
+        [defaults removeObjectForKey:[self
+            backupNotificationDefaultsKeyForProfileID:profileID
+                                               suffix:@"lastDeliveredRevision"]];
+    }
+    [self removeExactBackupNotificationIdentifiers:safeIdentifiers
+                                       forProfileID:profileID];
+}
+
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center
 didReceiveNotificationResponse:(UNNotificationResponse *)response
          withCompletionHandler:(void (^)(void))completionHandler {
@@ -2635,6 +3292,20 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             response.notification.request.content.userInfo ?: @{}];
         completionHandler();
         return;
+    }
+    if ([action isEqualToString:UNNotificationDismissActionIdentifier] ||
+        [action isEqualToString:@"GDT_OPEN_BACKUP_OVERVIEW"]) {
+        [self handleBackupNotificationActionIdentifier:action
+                                    categoryIdentifier:category
+                                              userInfo:
+            response.notification.request.content.userInfo ?: @{}
+                                notificationIdentifier:
+            response.notification.request.identifier ?: @""];
+        if ([action isEqualToString:UNNotificationDismissActionIdentifier] ||
+            [category isEqualToString:@"GDT_BACKUP_ALERT"]) {
+            completionHandler();
+            return;
+        }
     }
     if ([action isEqualToString:UNNotificationDefaultActionIdentifier] ||
         [action isEqualToString:@"GDT_OPEN_BACKUP_OVERVIEW"]) {
@@ -2710,6 +3381,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     return [self overviewSnapshotForConfig:config
                                    summary:summary
                                     status:status
+                                  progress:nil
                                        now:now
                                   calendar:calendar];
 }
@@ -2719,7 +3391,24 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                                                                status:(NSString *)status
                                                                   now:(NSDate *)now
                                                              calendar:(NSCalendar *)calendar {
+    return [self overviewSnapshotForConfig:config
+                                   summary:summary
+                                    status:status
+                                  progress:nil
+                                       now:now
+                                  calendar:calendar];
+}
+
+- (NSDictionary<NSString *, NSString *> *)overviewSnapshotForConfig:(NSDictionary<NSString *, NSString *> *)config
+                                                              summary:(NSDictionary<NSString *, NSString *> *)summary
+                                                               status:(NSString *)status
+                                                             progress:(NSDictionary<NSString *, NSString *> *)progress
+                                                                  now:(NSDate *)now
+                                                             calendar:(NSCalendar *)calendar {
     NSString *language = self.language ?: @"en";
+    NSString *trigger = summary[@"trigger"] ?: @"";
+    BOOL retryRunning = [status isEqualToString:@"running"] &&
+        [trigger isEqualToString:@"schedule-retry"];
     NSDictionary<NSString *, NSString *> *statusKeys = @{
         @"success": @"completed",
         @"failure": @"failed",
@@ -2732,6 +3421,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         lastRun = summary.count ? T(language, @"overviewStatusUnknown") : T(language, @"overviewNeverRun");
     } else {
         lastRun = T(language, statusKeys[status] ?: @"overviewStatusUnknown");
+    }
+    if (retryRunning) {
+        lastRun = T(language, @"automaticRetryRunning");
     }
 
     NSString *timestamp = [status isEqualToString:@"running"] || [status isEqualToString:@"interrupted"]
@@ -2775,6 +3467,15 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 
     return @{
         @"status": status,
+        @"trigger": trigger,
+        @"retryRunning": retryRunning ? @"1" : @"0",
+        @"progressVisible": retryRunning ? @"1" : @"0",
+        @"progressLabel": retryRunning ? T(language, @"automaticRetryRunning") : @"",
+        @"progressPhase": retryRunning
+            ? GDTLocalizedProgressPhase(progress[@"phase"], language) : @"",
+        @"progressPercent": retryRunning ? (progress[@"percent"] ?: @"") : @"",
+        @"progressDetail": retryRunning
+            ? (progress[@"detail"] ?: T(language, @"progressPreparing")) : @"",
         @"lastRun": lastRun ?: @"",
         @"lastRunDetail": lastRunDetail,
         @"nextRun": nextRun ?: T(language, @"overviewUnavailable"),
@@ -2797,6 +3498,13 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     view.targetText = snapshot[@"target"] ?: @"";
     view.storageText = snapshot[@"storage"] ?: @"";
     view.status = status;
+    view.progressSummary = snapshot[@"progressLabel"] ?: @"";
+    view.progressPhaseLabel.stringValue = snapshot[@"progressPhase"] ?: @"";
+    view.progressPhaseLabel.accessibilityLabel = view.progressPhaseLabel.stringValue;
+    view.progressDetail = snapshot[@"progressDetail"] ?: @"";
+    NSString *progressPercent = snapshot[@"progressPercent"] ?: @"";
+    view.progressPercent = progressPercent.length ? progressPercent.doubleValue : -1.0;
+    view.progressVisible = [snapshot[@"progressVisible"] isEqualToString:@"1"];
     view.backupButton.enabled = !self.overviewLaunchPending && ![status isEqualToString:@"running"];
 }
 
@@ -2824,6 +3532,23 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         lastRun = [NSString stringWithFormat:@"%@ · %@", lastRun, detail];
     }
     [menu addItem:[self statusValueItemWithTitle:T(language, @"overviewLastRun") value:lastRun]];
+    if ([snapshot[@"retryRunning"] isEqualToString:@"1"]) {
+        NSMutableArray<NSString *> *progressParts = [NSMutableArray arrayWithObject:
+            T(language, @"automaticRetryRunningShort")];
+        if ([snapshot[@"progressPhase"] length]) {
+            [progressParts addObject:snapshot[@"progressPhase"]];
+        }
+        if ([snapshot[@"progressPercent"] length]) {
+            [progressParts addObject:[NSString stringWithFormat:@"%@ %%",
+                snapshot[@"progressPercent"]]];
+        }
+        NSMenuItem *retryProgressItem = [[NSMenuItem alloc]
+            initWithTitle:[progressParts componentsJoinedByString:@" · "]
+                   action:nil
+            keyEquivalent:@""];
+        retryProgressItem.enabled = NO;
+        [menu addItem:retryProgressItem];
+    }
     [menu addItem:[self statusValueItemWithTitle:T(language, @"overviewNextRun") value:snapshot[@"nextRun"]]];
     [menu addItem:[self statusValueItemWithTitle:T(language, @"overviewTarget") value:snapshot[@"target"]]];
     [menu addItem:[self statusValueItemWithTitle:T(language, @"overviewStorage") value:snapshot[@"storage"]]];
@@ -2891,6 +3616,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         @"missed": @"exclamationmark.triangle.fill",
         @"cancelled": @"stop.circle.fill",
         @"running": @"arrow.triangle.2.circlepath",
+        @"retry-running": @"arrow.triangle.2.circlepath",
         @"interrupted": @"exclamationmark.circle.fill",
         @"unknown": @"externaldrive.fill"
     };
@@ -2909,7 +3635,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         ? T(self.language ?: @"en", @"backupNotificationMissedTitle")
         : ([status isEqualToString:@"failure"]
             ? T(self.language ?: @"en", @"failed")
-            : snapshot[@"lastRun"]);
+            : ([status isEqualToString:@"retry-running"]
+                ? T(self.language ?: @"en", @"automaticRetryRunning")
+                : snapshot[@"lastRun"]));
     self.statusItem.button.accessibilityLabel = [NSString stringWithFormat:@"GDrive Backup Tiger — %@",
         spokenStatus ?: T(self.language ?: @"en", @"overviewStatusUnknown")];
 }
@@ -2966,9 +3694,17 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         }
         NSDictionary<NSString *, NSString *> *summary = GDTReadBackupSummaryAtPath(summaryPath);
         NSString *status = GDTBackupSummaryStatusForValues(summary);
+        NSString *progressPath = GDTBackupProgressPathForSummaryPath(summaryPath);
+        NSDictionary<NSString *, NSString *> *rawProgress =
+            GDTReadBackupProgressAtPath(progressPath);
+        NSString *profileID = config[@"GDRIVE_BACKUP_PROFILE_ID"] ?: @"legacy";
+        NSDictionary<NSString *, NSString *> *progress = rawProgress
+            ? GDTValidatedBackupProgressForValues(rawProgress, summary, status,
+                profileID, now.timeIntervalSince1970)
+            : nil;
         NSDictionary<NSString *, NSString *> *snapshot =
             [strongSelf overviewSnapshotForConfig:config summary:summary status:status
-                                               now:now calendar:calendar];
+                                          progress:progress now:now calendar:calendar];
         NSDictionary<NSString *, NSString *> *notificationDecision =
             [GDTBackupNotificationPolicy decisionForConfig:config summary:summary
                                                     status:status now:now calendar:calendar];
@@ -6088,17 +6824,15 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         contentView.progressTitle = [NSString stringWithFormat:@"%@ · %@", phase, label];
     } else if (label.length) {
         contentView.progressTitle = label;
+    } else {
+        contentView.progressTitle = nil;
     }
 
-    NSString *detail = values[@"detail"];
-    if (detail.length) {
-        contentView.progressDetail = detail;
-    }
+    contentView.progressDetail = values[@"detail"];
 
     NSString *percent = values[@"percent"];
-    if (percent.length) {
-        contentView.progressPercent = MAX(0.0, MIN(100.0, percent.doubleValue));
-    }
+    contentView.progressPercent = percent.length
+        ? MAX(0.0, MIN(100.0, percent.doubleValue)) : -1.0;
 
     contentView.needsDisplay = YES;
 }
@@ -6223,6 +6957,23 @@ int main(int argc, const char *argv[]) {
     @autoreleasepool {
         if (argc > 1 && [[NSString stringWithUTF8String:argv[1]] isEqualToString:@"--trash"]) {
             return TrashPathsFromArguments(argc, argv);
+        }
+
+        BOOL handledNetworkMountCommand = NO;
+        int networkMountResult = GDTHandleNetworkMountCLIArguments(
+            NSProcessInfo.processInfo.arguments,
+            ^int(NSString *urlString, BOOL authorizeCredential) {
+                return authorizeCredential
+                    ? GDTAuthorizeSMBCredentialForURL(urlString)
+                    : GDTMountSMBURLFromKeychain(urlString);
+            },
+            &handledNetworkMountCommand);
+        if (handledNetworkMountCommand) {
+            if (networkMountResult != 0) {
+                fprintf(stderr, "Network mount command failed (%d).\n",
+                        networkMountResult);
+            }
+            return networkMountResult;
         }
 
         NSApplication *app = NSApplication.sharedApplication;

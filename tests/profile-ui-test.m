@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 
 #import "ProfileSupport.h"
+#import "TestApplicationSupport.h"
 
 #define main GDTApplicationMain
 #import "../macos/GDriveBackupTiger/main.m"
@@ -46,7 +47,11 @@ static void Assert(BOOL condition, NSString *name) {
 
 int main(void) {
     @autoreleasepool {
-        [NSApplication sharedApplication];
+        NSApplication *testApplication =
+            GDTInitializeAccessoryTestApplication();
+        Assert(testApplication.activationPolicy ==
+                   NSApplicationActivationPolicyAccessory,
+               @"the profile UI harness stays out of the Dock");
         NSString *root = [NSTemporaryDirectory() stringByAppendingPathComponent:
             [NSString stringWithFormat:@"gdrive-profile-ui-%@", NSUUID.UUID.UUIDString]];
         NSString *legacy = [root stringByAppendingPathComponent:@"config"];
