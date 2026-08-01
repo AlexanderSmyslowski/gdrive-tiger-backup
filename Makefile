@@ -1,9 +1,11 @@
 APP_DIR := /Applications/GDrive Backup Tiger.app
+PROGRESS_SUPPORT_SOURCE := macos/GDriveBackupTiger/BackupProgressSupport.m
 APP_SOURCES := \
 	macos/GDriveBackupTiger/main.m \
 	macos/GDriveBackupTiger/ConfigSupport.m \
 	macos/GDriveBackupTiger/ProfileSupport.m \
 	macos/GDriveBackupTiger/BackupStatusSupport.m \
+	$(PROGRESS_SUPPORT_SOURCE) \
 	macos/GDriveBackupTiger/NotificationSupport.m \
 	macos/GDriveBackupTiger/SetupHealthSupport.m \
 	macos/GDriveBackupTiger/RestoreSupport.m \
@@ -77,7 +79,8 @@ test:
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
 			tests/run-state-ui-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
 			macos/GDriveBackupTiger/ProfileSupport.m \
-			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/NotificationSupport.m \
+			macos/GDriveBackupTiger/BackupStatusSupport.m $(PROGRESS_SUPPORT_SOURCE) \
+			macos/GDriveBackupTiger/NotificationSupport.m \
 			macos/GDriveBackupTiger/SetupHealthSupport.m \
 			macos/GDriveBackupTiger/RestoreSupport.m macos/GDriveBackupTiger/RestoreBrowserView.m \
 			macos/GDriveBackupTiger/DiagnosticsSupport.m macos/GDriveBackupTiger/DiagnosticsView.m \
@@ -89,7 +92,8 @@ test:
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
 			tests/tiger-accessibility-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
 			macos/GDriveBackupTiger/ProfileSupport.m \
-			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/NotificationSupport.m \
+			macos/GDriveBackupTiger/BackupStatusSupport.m $(PROGRESS_SUPPORT_SOURCE) \
+			macos/GDriveBackupTiger/NotificationSupport.m \
 			macos/GDriveBackupTiger/SetupHealthSupport.m \
 			macos/GDriveBackupTiger/RestoreSupport.m macos/GDriveBackupTiger/RestoreBrowserView.m \
 			macos/GDriveBackupTiger/DiagnosticsSupport.m macos/GDriveBackupTiger/DiagnosticsView.m \
@@ -132,7 +136,8 @@ test:
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
 			tests/notification-integration-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
 			macos/GDriveBackupTiger/ProfileSupport.m \
-			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/NotificationSupport.m \
+			macos/GDriveBackupTiger/BackupStatusSupport.m $(PROGRESS_SUPPORT_SOURCE) \
+			macos/GDriveBackupTiger/NotificationSupport.m \
 			macos/GDriveBackupTiger/SetupHealthSupport.m macos/GDriveBackupTiger/RestoreSupport.m \
 			macos/GDriveBackupTiger/RestoreBrowserView.m macos/GDriveBackupTiger/DiagnosticsSupport.m \
 			macos/GDriveBackupTiger/DiagnosticsView.m macos/GDriveBackupTiger/UpdateSupport.m \
@@ -193,7 +198,8 @@ test:
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
 			tests/diagnostics-integration-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
 			macos/GDriveBackupTiger/ProfileSupport.m \
-			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/NotificationSupport.m \
+			macos/GDriveBackupTiger/BackupStatusSupport.m $(PROGRESS_SUPPORT_SOURCE) \
+			macos/GDriveBackupTiger/NotificationSupport.m \
 			macos/GDriveBackupTiger/SetupHealthSupport.m \
 			macos/GDriveBackupTiger/RestoreSupport.m macos/GDriveBackupTiger/RestoreBrowserView.m \
 			macos/GDriveBackupTiger/DiagnosticsSupport.m macos/GDriveBackupTiger/DiagnosticsView.m \
@@ -205,7 +211,8 @@ test:
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
 			tests/setup-health-ui-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
 			macos/GDriveBackupTiger/ProfileSupport.m \
-			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/NotificationSupport.m \
+			macos/GDriveBackupTiger/BackupStatusSupport.m $(PROGRESS_SUPPORT_SOURCE) \
+			macos/GDriveBackupTiger/NotificationSupport.m \
 			macos/GDriveBackupTiger/SetupHealthSupport.m \
 			macos/GDriveBackupTiger/RestoreSupport.m macos/GDriveBackupTiger/RestoreBrowserView.m \
 			macos/GDriveBackupTiger/DiagnosticsSupport.m macos/GDriveBackupTiger/DiagnosticsView.m \
@@ -217,7 +224,8 @@ test:
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
 			tests/overview-ui-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
 			macos/GDriveBackupTiger/ProfileSupport.m \
-			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/NotificationSupport.m \
+			macos/GDriveBackupTiger/BackupStatusSupport.m $(PROGRESS_SUPPORT_SOURCE) \
+			macos/GDriveBackupTiger/NotificationSupport.m \
 			macos/GDriveBackupTiger/SetupHealthSupport.m \
 			macos/GDriveBackupTiger/RestoreSupport.m macos/GDriveBackupTiger/RestoreBrowserView.m \
 			macos/GDriveBackupTiger/DiagnosticsSupport.m macos/GDriveBackupTiger/DiagnosticsView.m \
@@ -230,7 +238,8 @@ test:
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
 			tests/setup-safety-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
 			macos/GDriveBackupTiger/ProfileSupport.m \
-			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/NotificationSupport.m \
+			macos/GDriveBackupTiger/BackupStatusSupport.m $(PROGRESS_SUPPORT_SOURCE) \
+			macos/GDriveBackupTiger/NotificationSupport.m \
 			macos/GDriveBackupTiger/SetupHealthSupport.m \
 			macos/GDriveBackupTiger/RestoreSupport.m macos/GDriveBackupTiger/RestoreBrowserView.m \
 			macos/GDriveBackupTiger/DiagnosticsSupport.m macos/GDriveBackupTiger/DiagnosticsView.m \
@@ -243,7 +252,8 @@ test:
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
 			tests/mount-trigger-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
 			macos/GDriveBackupTiger/ProfileSupport.m \
-			macos/GDriveBackupTiger/BackupStatusSupport.m macos/GDriveBackupTiger/NotificationSupport.m \
+			macos/GDriveBackupTiger/BackupStatusSupport.m $(PROGRESS_SUPPORT_SOURCE) \
+			macos/GDriveBackupTiger/NotificationSupport.m \
 			macos/GDriveBackupTiger/SetupHealthSupport.m \
 			macos/GDriveBackupTiger/RestoreSupport.m macos/GDriveBackupTiger/RestoreBrowserView.m \
 			macos/GDriveBackupTiger/DiagnosticsSupport.m macos/GDriveBackupTiger/DiagnosticsView.m \
@@ -256,6 +266,7 @@ test:
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
 			tests/profile-ui-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
 			macos/GDriveBackupTiger/ProfileSupport.m macos/GDriveBackupTiger/BackupStatusSupport.m \
+			$(PROGRESS_SUPPORT_SOURCE) \
 			macos/GDriveBackupTiger/NotificationSupport.m \
 			macos/GDriveBackupTiger/SetupHealthSupport.m macos/GDriveBackupTiger/RestoreSupport.m \
 			macos/GDriveBackupTiger/RestoreBrowserView.m macos/GDriveBackupTiger/DiagnosticsSupport.m \
@@ -268,6 +279,7 @@ test:
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
 			tests/update-ui-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
 			macos/GDriveBackupTiger/ProfileSupport.m macos/GDriveBackupTiger/BackupStatusSupport.m \
+			$(PROGRESS_SUPPORT_SOURCE) \
 			macos/GDriveBackupTiger/NotificationSupport.m \
 			macos/GDriveBackupTiger/SetupHealthSupport.m macos/GDriveBackupTiger/RestoreSupport.m \
 			macos/GDriveBackupTiger/RestoreBrowserView.m macos/GDriveBackupTiger/DiagnosticsSupport.m \

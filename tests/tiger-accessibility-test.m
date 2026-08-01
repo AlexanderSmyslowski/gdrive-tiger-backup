@@ -165,6 +165,46 @@ int main(void) {
                @"animation can resume when Reduce Motion is disabled");
 
         AppDelegate *delegate = [[AppDelegate alloc] init];
+        delegate.language = @"en";
+        TigerOverviewView *overviewView = [[TigerOverviewView alloc]
+            initWithFrame:NSMakeRect(0, 0, 620, 420)];
+        [delegate applyOverviewSnapshot:@{
+            @"status": @"running", @"retryRunning": @"1",
+            @"progressVisible": @"1",
+            @"progressLabel": T(@"en", @"automaticRetryRunning"),
+            @"progressPhase": @"Area 3 of 5", @"progressPercent": @"63",
+            @"progressDetail": @"1.2 GiB / 1.9 GiB, 12.4 MiB/s, ETA 58s"
+        } toView:overviewView];
+        Assert(overviewView.progressIndicator != nil &&
+               !overviewView.progressIndicator.hidden &&
+               !overviewView.progressIndicator.indeterminate &&
+               overviewView.progressIndicator.doubleValue == 63 &&
+               [overviewView.progressPercentLabel.stringValue isEqualToString:@"63 %"] &&
+               [overviewView.progressDetailLabel.stringValue isEqualToString:
+                   @"1.2 GiB / 1.9 GiB, 12.4 MiB/s, ETA 58s"] &&
+               overviewView.progressDetailLabel.frame.size.width >= 400 &&
+               !overviewView.backupButton.enabled,
+               @"retry overview exposes visible percent and full aggregate detail");
+        Assert([overviewView.progressIndicator.accessibilityRole
+                   isEqualToString:NSAccessibilityProgressIndicatorRole] &&
+               [overviewView.progressIndicator.accessibilityLabel
+                   isEqualToString:T(@"en", @"backupProgressCurrentPhase")],
+               @"retry progress is announced as current-phase progress");
+
+        [delegate applyOverviewSnapshot:@{
+            @"status": @"running", @"retryRunning": @"1",
+            @"progressVisible": @"1",
+            @"progressLabel": T(@"en", @"automaticRetryRunning"),
+            @"progressPhase": @"", @"progressPercent": @"",
+            @"progressDetail": T(@"en", @"progressPreparing")
+        } toView:overviewView];
+        Assert(!overviewView.progressIndicator.hidden &&
+               overviewView.progressIndicator.indeterminate &&
+               [overviewView.progressPercentLabel.stringValue isEqualToString:@""] &&
+               [overviewView.progressDetailLabel.stringValue isEqualToString:
+                   T(@"en", @"progressPreparing")],
+               @"retry preparation uses an indeterminate native progress indicator");
+
         SEL delegateReduceSelector = NSSelectorFromString(@"setReduceMotion:");
         SEL durationSelector = NSSelectorFromString(@"animationDuration:");
         CGFloat reducedDuration = -1;

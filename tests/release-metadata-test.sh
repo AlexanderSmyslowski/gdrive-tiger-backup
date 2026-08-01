@@ -82,6 +82,7 @@ check_contains "$ROOT/packaging/scripts/postinstall" "GDRIVE_BACKUP_NOTIFY_FAILU
 
 for source in \
   ProfileSupport.m \
+  BackupProgressSupport.m \
   NotificationSupport.m \
   SetupHealthSupport.m \
   RestoreSupport.m \

@@ -370,6 +370,7 @@ clang -fobjc-arc -Wall -Wextra -mmacosx-version-min=13.0 \
   "$ROOT/macos/GDriveBackupTiger/ConfigSupport.m" \
   "$ROOT/macos/GDriveBackupTiger/ProfileSupport.m" \
   "$ROOT/macos/GDriveBackupTiger/BackupStatusSupport.m" \
+  "$ROOT/macos/GDriveBackupTiger/BackupProgressSupport.m" \
   "$ROOT/macos/GDriveBackupTiger/NotificationSupport.m" \
   "$ROOT/macos/GDriveBackupTiger/SetupHealthSupport.m" \
   "$ROOT/macos/GDriveBackupTiger/RestoreSupport.m" \

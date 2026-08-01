@@ -8,6 +8,7 @@
 #import "ConfigSupport.h"
 #import "ProfileSupport.h"
 #import "BackupStatusSupport.h"
+#import "BackupProgressSupport.h"
 #import "NotificationSupport.h"
 #import "SetupHealthSupport.h"
 #import "RestoreSupport.h"
@@ -1134,6 +1135,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, copy) NSString *nextRunText;
 @property(nonatomic, copy) NSString *targetText;
 @property(nonatomic, copy) NSString *storageText;
+@property(nonatomic) BOOL progressVisible;
+@property(nonatomic) CGFloat progressPercent;
+@property(nonatomic, copy) NSString *progressSummary;
+@property(nonatomic, copy) NSString *progressDetail;
 @property(nonatomic, copy) void (^backupHandler)(void);
 @property(nonatomic, copy) void (^settingsHandler)(void);
 @property(nonatomic, copy) void (^restoreHandler)(void);
@@ -1148,6 +1153,11 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, strong) NSTextField *targetValueLabel;
 @property(nonatomic, strong) NSTextField *storageCaptionLabel;
 @property(nonatomic, strong) NSTextField *storageValueLabel;
+@property(nonatomic, strong) NSProgressIndicator *progressIndicator;
+@property(nonatomic, strong) NSTextField *progressSummaryLabel;
+@property(nonatomic, strong) NSTextField *progressPhaseLabel;
+@property(nonatomic, strong) NSTextField *progressPercentLabel;
+@property(nonatomic, strong) NSTextField *progressDetailLabel;
 @property(nonatomic, strong) NSButton *backupButton;
 @property(nonatomic, strong) NSButton *settingsButton;
 @property(nonatomic, strong) NSButton *restoreButton;
@@ -1215,6 +1225,27 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
                                                        font:valueFont color:muted];
     [self addSubview:self.lastRunDetailLabel];
 
+    self.progressSummaryLabel = [self overviewLabelWithFrame:NSMakeRect(116, 174, 440, 18)
+                                                         font:captionFont color:ink];
+    [self addSubview:self.progressSummaryLabel];
+    self.progressPhaseLabel = [self overviewLabelWithFrame:NSMakeRect(116, 194, 110, 18)
+                                                       font:valueFont color:muted];
+    [self addSubview:self.progressPhaseLabel];
+    self.progressIndicator = [[NSProgressIndicator alloc]
+        initWithFrame:NSMakeRect(232, 196, 200, 14)];
+    self.progressIndicator.style = NSProgressIndicatorStyleBar;
+    self.progressIndicator.minValue = 0;
+    self.progressIndicator.maxValue = 100;
+    self.progressIndicator.accessibilityRole = NSAccessibilityProgressIndicatorRole;
+    [self addSubview:self.progressIndicator];
+    self.progressPercentLabel = [self overviewLabelWithFrame:NSMakeRect(440, 193, 52, 18)
+                                                         font:valueFont color:ink];
+    [self addSubview:self.progressPercentLabel];
+    self.progressDetailLabel = [self overviewLabelWithFrame:NSMakeRect(116, 216, 440, 18)
+                                                        font:valueFont color:muted];
+    self.progressDetailLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    [self addSubview:self.progressDetailLabel];
+
     self.nextRunCaptionLabel = [self overviewLabelWithFrame:NSMakeRect(48, 232, 132, 19)
                                                         font:captionFont color:muted];
     [self addSubview:self.nextRunCaptionLabel];
@@ -1262,6 +1293,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.backupButton.nextKeyView = self.settingsButton;
 
     self.language = @"en";
+    self.progressVisible = NO;
+    self.progressPercent = -1.0;
+    self.progressSummary = @"";
+    self.progressDetail = @"";
     self.status = @"unknown";
     return self;
 }
@@ -1280,8 +1315,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.settingsButton.accessibilityLabel = self.settingsButton.title;
     self.restoreButton.accessibilityLabel = self.restoreButton.title;
     self.backupButton.accessibilityLabel = self.backupButton.title;
+    self.progressIndicator.accessibilityLabel = T(_language, @"backupProgressCurrentPhase");
     [self layoutActionButtons];
     [self updateValueAccessibilityLabels];
+    [self updateProgressPresentation];
     [self setStatus:self.status ?: @"unknown"];
 }
 
@@ -1315,6 +1352,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.statusSymbolLabel.stringValue = presentation[0];
     self.statusSymbolLabel.textColor = presentation[1];
     self.statusSymbolLabel.accessibilityLabel = T(self.language ?: @"en", presentation[2]);
+    [self updateProgressPresentation];
 }
 
 - (void)setLastRunText:(NSString *)lastRunText {
@@ -1345,6 +1383,53 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     _storageText = [storageText copy] ?: @"";
     self.storageValueLabel.stringValue = _storageText;
     [self updateValueAccessibilityLabels];
+}
+
+- (void)setProgressVisible:(BOOL)progressVisible {
+    _progressVisible = progressVisible;
+    [self updateProgressPresentation];
+}
+
+- (void)setProgressPercent:(CGFloat)progressPercent {
+    _progressPercent = progressPercent;
+    [self updateProgressPresentation];
+}
+
+- (void)setProgressSummary:(NSString *)progressSummary {
+    _progressSummary = [progressSummary copy] ?: @"";
+    self.progressSummaryLabel.stringValue = _progressSummary;
+    self.progressSummaryLabel.accessibilityLabel = _progressSummary;
+}
+
+- (void)setProgressDetail:(NSString *)progressDetail {
+    _progressDetail = [progressDetail copy] ?: @"";
+    self.progressDetailLabel.stringValue = _progressDetail;
+    self.progressDetailLabel.accessibilityLabel = _progressDetail;
+}
+
+- (void)updateProgressPresentation {
+    BOOL visible = self.progressVisible && [self.status isEqualToString:@"running"];
+    for (NSView *progressView in @[
+        self.progressSummaryLabel, self.progressPhaseLabel, self.progressIndicator,
+        self.progressPercentLabel, self.progressDetailLabel
+    ]) {
+        progressView.hidden = !visible;
+    }
+    if (!visible) {
+        [self.progressIndicator stopAnimation:nil];
+        return;
+    }
+    BOOL indeterminate = self.progressPercent < 0.0;
+    self.progressIndicator.indeterminate = indeterminate;
+    if (indeterminate) {
+        self.progressPercentLabel.stringValue = @"";
+        [self.progressIndicator startAnimation:nil];
+    } else {
+        [self.progressIndicator stopAnimation:nil];
+        CGFloat percent = MAX(0.0, MIN(100.0, self.progressPercent));
+        self.progressIndicator.doubleValue = percent;
+        self.progressPercentLabel.stringValue = [NSString stringWithFormat:@"%.0f %%", percent];
+    }
 }
 
 - (void)updateValueAccessibilityLabels {
@@ -1582,6 +1667,15 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     }
 
     return parts.count ? [parts componentsJoinedByString:@" · "] : T(language, @"overviewUnavailable");
+}
+
+static NSString *GDTLocalizedProgressPhase(NSString *phase, NSString *language) {
+    NSArray<NSString *> *parts = [phase componentsSeparatedByString:@"/"];
+    if (parts.count != 2 || ![parts[0] length] || ![parts[1] length]) {
+        return @"";
+    }
+    return [NSString stringWithFormat:T(language, @"progressAreaFormat"),
+        parts[0], parts[1]];
 }
 
 @implementation AppDelegate
@@ -2759,6 +2853,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     return [self overviewSnapshotForConfig:config
                                    summary:summary
                                     status:status
+                                  progress:nil
                                        now:now
                                   calendar:calendar];
 }
@@ -2768,7 +2863,24 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                                                                status:(NSString *)status
                                                                   now:(NSDate *)now
                                                              calendar:(NSCalendar *)calendar {
+    return [self overviewSnapshotForConfig:config
+                                   summary:summary
+                                    status:status
+                                  progress:nil
+                                       now:now
+                                  calendar:calendar];
+}
+
+- (NSDictionary<NSString *, NSString *> *)overviewSnapshotForConfig:(NSDictionary<NSString *, NSString *> *)config
+                                                              summary:(NSDictionary<NSString *, NSString *> *)summary
+                                                               status:(NSString *)status
+                                                             progress:(NSDictionary<NSString *, NSString *> *)progress
+                                                                  now:(NSDate *)now
+                                                             calendar:(NSCalendar *)calendar {
     NSString *language = self.language ?: @"en";
+    NSString *trigger = summary[@"trigger"] ?: @"";
+    BOOL retryRunning = [status isEqualToString:@"running"] &&
+        [trigger isEqualToString:@"schedule-retry"];
     NSDictionary<NSString *, NSString *> *statusKeys = @{
         @"success": @"completed",
         @"failure": @"failed",
@@ -2781,6 +2893,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         lastRun = summary.count ? T(language, @"overviewStatusUnknown") : T(language, @"overviewNeverRun");
     } else {
         lastRun = T(language, statusKeys[status] ?: @"overviewStatusUnknown");
+    }
+    if (retryRunning) {
+        lastRun = T(language, @"automaticRetryRunning");
     }
 
     NSString *timestamp = [status isEqualToString:@"running"] || [status isEqualToString:@"interrupted"]
@@ -2824,6 +2939,15 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 
     return @{
         @"status": status,
+        @"trigger": trigger,
+        @"retryRunning": retryRunning ? @"1" : @"0",
+        @"progressVisible": retryRunning ? @"1" : @"0",
+        @"progressLabel": retryRunning ? T(language, @"automaticRetryRunning") : @"",
+        @"progressPhase": retryRunning
+            ? GDTLocalizedProgressPhase(progress[@"phase"], language) : @"",
+        @"progressPercent": retryRunning ? (progress[@"percent"] ?: @"") : @"",
+        @"progressDetail": retryRunning
+            ? (progress[@"detail"] ?: T(language, @"progressPreparing")) : @"",
         @"lastRun": lastRun ?: @"",
         @"lastRunDetail": lastRunDetail,
         @"nextRun": nextRun ?: T(language, @"overviewUnavailable"),
@@ -2846,6 +2970,13 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     view.targetText = snapshot[@"target"] ?: @"";
     view.storageText = snapshot[@"storage"] ?: @"";
     view.status = status;
+    view.progressSummary = snapshot[@"progressLabel"] ?: @"";
+    view.progressPhaseLabel.stringValue = snapshot[@"progressPhase"] ?: @"";
+    view.progressPhaseLabel.accessibilityLabel = view.progressPhaseLabel.stringValue;
+    view.progressDetail = snapshot[@"progressDetail"] ?: @"";
+    NSString *progressPercent = snapshot[@"progressPercent"] ?: @"";
+    view.progressPercent = progressPercent.length ? progressPercent.doubleValue : -1.0;
+    view.progressVisible = [snapshot[@"progressVisible"] isEqualToString:@"1"];
     view.backupButton.enabled = !self.overviewLaunchPending && ![status isEqualToString:@"running"];
 }
 
@@ -2873,6 +3004,23 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         lastRun = [NSString stringWithFormat:@"%@ · %@", lastRun, detail];
     }
     [menu addItem:[self statusValueItemWithTitle:T(language, @"overviewLastRun") value:lastRun]];
+    if ([snapshot[@"retryRunning"] isEqualToString:@"1"]) {
+        NSMutableArray<NSString *> *progressParts = [NSMutableArray arrayWithObject:
+            T(language, @"automaticRetryRunningShort")];
+        if ([snapshot[@"progressPhase"] length]) {
+            [progressParts addObject:snapshot[@"progressPhase"]];
+        }
+        if ([snapshot[@"progressPercent"] length]) {
+            [progressParts addObject:[NSString stringWithFormat:@"%@ %%",
+                snapshot[@"progressPercent"]]];
+        }
+        NSMenuItem *retryProgressItem = [[NSMenuItem alloc]
+            initWithTitle:[progressParts componentsJoinedByString:@" · "]
+                   action:nil
+            keyEquivalent:@""];
+        retryProgressItem.enabled = NO;
+        [menu addItem:retryProgressItem];
+    }
     [menu addItem:[self statusValueItemWithTitle:T(language, @"overviewNextRun") value:snapshot[@"nextRun"]]];
     [menu addItem:[self statusValueItemWithTitle:T(language, @"overviewTarget") value:snapshot[@"target"]]];
     [menu addItem:[self statusValueItemWithTitle:T(language, @"overviewStorage") value:snapshot[@"storage"]]];
@@ -3015,9 +3163,17 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         }
         NSDictionary<NSString *, NSString *> *summary = GDTReadBackupSummaryAtPath(summaryPath);
         NSString *status = GDTBackupSummaryStatusForValues(summary);
+        NSString *progressPath = GDTBackupProgressPathForSummaryPath(summaryPath);
+        NSDictionary<NSString *, NSString *> *rawProgress =
+            GDTReadBackupProgressAtPath(progressPath);
+        NSString *profileID = config[@"GDRIVE_BACKUP_PROFILE_ID"] ?: @"legacy";
+        NSDictionary<NSString *, NSString *> *progress = rawProgress
+            ? GDTValidatedBackupProgressForValues(rawProgress, summary, status,
+                profileID, now.timeIntervalSince1970)
+            : nil;
         NSDictionary<NSString *, NSString *> *snapshot =
             [strongSelf overviewSnapshotForConfig:config summary:summary status:status
-                                               now:now calendar:calendar];
+                                          progress:progress now:now calendar:calendar];
         NSDictionary<NSString *, NSString *> *notificationDecision =
             [GDTBackupNotificationPolicy decisionForConfig:config summary:summary
                                                     status:status now:now calendar:calendar];
