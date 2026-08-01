@@ -359,8 +359,18 @@ assert_contains "$INSTALL_BLOCK" "\"GDRIVE_BACKUP_PROFILE_ID='\$profile_id'\"" \
   'profile selection accepts the exact single-quoted generated form'
 assert_contains "$INSTALL_BLOCK" '"GDRIVE_BACKUP_PROFILE_ID=\"$profile_id\""' \
   'profile selection accepts the exact double-quoted generated form'
-assert_contains "$INSTALL_BLOCK" '(^|[[:space:]/])rclone([[:space:]]|$)' \
+assert_contains "$INSTALL_BLOCK" '(^|[[:space:]\/])rclone([[:space:]]|$)' \
   'process gate detects bare and path-qualified rclone commands'
+if printf '%s\n' '123 1 rclone copy' '124 1 /usr/local/bin/rclone copy' |
+    /usr/bin/awk '
+      /backup-google-drive|(^|[[:space:]\/])rclone([[:space:]]|$)/ {matches++}
+      END {exit matches == 2 ? 0 : 1}
+    '; then
+  printf '%s\n' 'ok - process gate regex compiles under the system awk'
+else
+  printf '%s\n' 'not ok - process gate regex compiles under the system awk' >&2
+  exit 1
+fi
 assert_contains "$INSTALL_BLOCK" 'codesign -d --entitlements :-' \
   'entitlements are extracted explicitly'
 assert_contains "$INSTALL_BLOCK" 'plutil -lint "$ENTITLEMENTS_PLIST"' \
