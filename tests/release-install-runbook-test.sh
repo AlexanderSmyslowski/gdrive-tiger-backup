@@ -148,8 +148,19 @@ assert_contains "$PUBLISH_BLOCK" \
   'publication proves v2.4.3 is in the reviewed branch history'
 assert_contains "$PUBLISH_BLOCK" 'readonly REVIEWED_HEAD' \
   'publication captures an immutable reviewed head'
-assert_contains "$PUBLISH_BLOCK" '"$REVIEWED_HEAD:refs/heads/$BRANCH"' \
+assert_contains "$PUBLISH_BLOCK" '"${REVIEWED_HEAD}:refs/heads/${BRANCH}"' \
   'publication pushes the reviewed object explicitly'
+assert_contains "$PUBLISH_BLOCK" \
+  'git fetch --no-tags origin "refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"' \
+  'publication materializes the exact remote-tracking ref after an object push'
+assert_before "$PUBLISH_BLOCK" 'git push origin' 'git fetch --no-tags origin' \
+  'publication fetches tracking state only after the immutable object push'
+assert_before "$PUBLISH_BLOCK" 'git fetch --no-tags origin' \
+  'git branch --set-upstream-to=' \
+  'publication creates tracking state before setting the upstream'
+assert_contains "$PUBLISH_BLOCK" \
+  'git rev-parse "refs/remotes/origin/${BRANCH}^{commit}"' \
+  'publication verifies the fetched remote-tracking object'
 assert_contains "$PUBLISH_BLOCK" 'headRefOid' \
   'publication verifies the pull-request head object'
 assert_contains "$PUBLISH_BLOCK" 'baseRefOid' \

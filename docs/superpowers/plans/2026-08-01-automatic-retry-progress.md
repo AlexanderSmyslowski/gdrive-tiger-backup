@@ -1535,9 +1535,14 @@ done
 
 # Push the reviewed object, not whatever the branch name might resolve to
 # after review.
-git push origin "$REVIEWED_HEAD:refs/heads/$BRANCH"
-git branch --set-upstream-to="origin/$BRANCH" "$BRANCH"
-test "$(git ls-remote origin "refs/heads/$BRANCH" | /usr/bin/awk '{print $1}')" = \
+git push origin "${REVIEWED_HEAD}:refs/heads/${BRANCH}"
+# An object-to-ref push does not materialize a local remote-tracking ref. Fetch
+# that exact ref explicitly before setting the upstream, then pin both views.
+git fetch --no-tags origin "refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
+git branch --set-upstream-to="origin/${BRANCH}" "${BRANCH}"
+test "$(git rev-parse "refs/remotes/origin/${BRANCH}^{commit}")" = \
+  "$REVIEWED_HEAD"
+test "$(git ls-remote origin "refs/heads/${BRANCH}" | /usr/bin/awk '{print $1}')" = \
   "$REVIEWED_HEAD"
 PR_URL="$(gh pr create --base main --head "$BRANCH" \
   --title "Show passive progress for automatic backup retries" \
