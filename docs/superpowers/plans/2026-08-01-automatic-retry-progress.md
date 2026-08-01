@@ -1974,7 +1974,7 @@ backup_process_snapshot() {
   done
   /bin/ps -axo pid=,ppid=,command= | /usr/bin/awk -v excluded="$excluded" '
     index(excluded, "," $1 ",") == 0 &&
-    /backup-google-drive|(^|[[:space:]/])rclone([[:space:]]|$)/ &&
+    /backup-google-drive|(^|[[:space:]\/])rclone([[:space:]]|$)/ &&
       $0 !~ /awk/ {print}'
 }
 
