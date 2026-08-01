@@ -1722,8 +1722,7 @@ static BOOL GDTBackupNotificationDecisionCanReplaceQueued(
 
 static BOOL GDTBackupNotificationAcceptedState(
     NSUserDefaults *defaults, NSString *stateKey, NSString *originKey,
-    NSString *stageKey, NSTimeInterval *acceptedOrigin,
-    NSUInteger *acceptedStage) {
+    NSTimeInterval *acceptedOrigin, NSUInteger *acceptedStage) {
     NSDictionary *state = [defaults dictionaryForKey:stateKey];
     NSNumber *originValue = [state[@"origin"] isKindOfClass:NSNumber.class]
         ? state[@"origin"] : nil;
@@ -1733,12 +1732,63 @@ static BOOL GDTBackupNotificationAcceptedState(
     NSUInteger stage = stageValue.unsignedIntegerValue;
     BOOL hasAuthoritativeState = origin > 0 && stage >= 1 && stage <= 3;
     if (!hasAuthoritativeState) {
-        origin = [defaults doubleForKey:originKey];
-        stage = (NSUInteger)[defaults integerForKey:stageKey];
+        NSTimeInterval legacyOrigin = [defaults doubleForKey:originKey];
+        origin = MAX(origin > 0 ? origin : 0, legacyOrigin);
+        // Without an atomic pair, a stage can belong to an older origin.
+        // Its identifier and revision must establish the stage instead.
+        stage = 0;
     }
     *acceptedOrigin = origin;
     *acceptedStage = stage;
     return hasAuthoritativeState;
+}
+
+static void GDTPersistBackupNotificationAcceptedState(
+    NSUserDefaults *defaults, NSString *stateKey, NSString *originKey,
+    NSString *stageKey, NSTimeInterval origin, NSUInteger stage) {
+    [defaults setObject:@{
+        @"origin": @(origin),
+        @"stage": @(stage)
+    } forKey:stateKey];
+    [defaults setDouble:origin forKey:originKey];
+    [defaults setInteger:(NSInteger)stage forKey:stageKey];
+}
+
+static NSUInteger GDTBackupNotificationLegacyAcceptedStage(
+    NSUserDefaults *defaults, NSString *profileID, NSString *identifierKey,
+    NSString *revisionKey, NSTimeInterval acceptedOrigin) {
+    NSString *identifier = [defaults stringForKey:identifierKey];
+    NSArray<NSString *> *safeIdentifiers = [GDTBackupNotificationPolicy
+        failureNotificationIdentifiersForProfileID:profileID
+                              candidateIdentifiers:identifier.length
+                                  ? @[identifier] : @[]];
+    if (safeIdentifiers.count != 1 || acceptedOrigin <= 0) return 3;
+
+    NSString *failureSuffix = [NSString stringWithFormat:
+        @".failure.%.0f", acceptedOrigin];
+    if ([identifier hasSuffix:failureSuffix]) {
+        NSString *revision = [defaults stringForKey:revisionKey];
+        if (!revision.length) return 1;
+        NSString *runningPrefix = @"retry-running.";
+        NSTimeInterval runningTimestamp = [revision hasPrefix:runningPrefix]
+            ? GDTBackupNotificationTimestamp(
+                [revision substringFromIndex:runningPrefix.length]) : 0;
+        NSString *canonicalRevision = [NSString stringWithFormat:
+            @"retry-running.%.0f", runningTimestamp];
+        if (runningTimestamp > acceptedOrigin &&
+            [revision isEqualToString:canonicalRevision]) {
+            return 2;
+        }
+        return 3;
+    }
+
+    NSString *missedSuffix = [NSString stringWithFormat:
+        @".missed.%.0f", acceptedOrigin];
+    if ([identifier hasSuffix:missedSuffix] &&
+        ![defaults stringForKey:revisionKey].length) {
+        return 1;
+    }
+    return 3;
 }
 
 static void GDTAdvanceBackupNotificationAcceptedState(
@@ -1747,9 +1797,8 @@ static void GDTAdvanceBackupNotificationAcceptedState(
     NSUInteger candidateStage) {
     NSTimeInterval acceptedOrigin = 0;
     NSUInteger acceptedStage = 0;
-    BOOL hasAuthoritativeState = GDTBackupNotificationAcceptedState(
-        defaults, stateKey, originKey, stageKey,
-        &acceptedOrigin, &acceptedStage);
+    GDTBackupNotificationAcceptedState(
+        defaults, stateKey, originKey, &acceptedOrigin, &acceptedStage);
     BOOL advances = candidateOrigin > acceptedOrigin ||
         (candidateOrigin == acceptedOrigin && candidateStage > acceptedStage);
     BOOL matches = candidateOrigin == acceptedOrigin &&
@@ -1758,17 +1807,8 @@ static void GDTAdvanceBackupNotificationAcceptedState(
 
     NSTimeInterval nextOrigin = advances ? candidateOrigin : acceptedOrigin;
     NSUInteger nextStage = advances ? candidateStage : acceptedStage;
-    if (advances || !hasAuthoritativeState) {
-        // One defaults value is the authoritative crash-safe ordering pair.
-        [defaults setObject:@{
-            @"origin": @(nextOrigin),
-            @"stage": @(nextStage)
-        } forKey:stateKey];
-    }
-    // Keep the established origin key and readable stage mirror for cleanup,
-    // diagnostics, and migration from builds that predate the paired record.
-    [defaults setDouble:nextOrigin forKey:originKey];
-    [defaults setInteger:(NSInteger)nextStage forKey:stageKey];
+    GDTPersistBackupNotificationAcceptedState(
+        defaults, stateKey, originKey, stageKey, nextOrigin, nextStage);
 }
 
 @implementation AppDelegate
@@ -2217,9 +2257,20 @@ static void GDTAdvanceBackupNotificationAcceptedState(
         GDTBackupNotificationDecisionStage(deliveryDecision);
     NSTimeInterval acceptedOriginTimestamp = 0;
     NSUInteger acceptedStage = 0;
-    GDTBackupNotificationAcceptedState(
-        defaults, acceptedStateKey, acceptedOriginKey, acceptedStageKey,
+    BOOL hasAuthoritativeAcceptedState = GDTBackupNotificationAcceptedState(
+        defaults, acceptedStateKey, acceptedOriginKey,
         &acceptedOriginTimestamp, &acceptedStage);
+    if (!hasAuthoritativeAcceptedState && acceptedOriginTimestamp > 0) {
+        // Legacy fields distinguish an in-place preliminary/running update
+        // from a terminal replacement. Ambiguous partial state stays terminal.
+        NSUInteger legacyStage = GDTBackupNotificationLegacyAcceptedStage(
+            defaults, profileID, identifierKey, revisionKey,
+            acceptedOriginTimestamp);
+        acceptedStage = legacyStage;
+        GDTPersistBackupNotificationAcceptedState(
+            defaults, acceptedStateKey, acceptedOriginKey, acceptedStageKey,
+            acceptedOriginTimestamp, acceptedStage);
+    }
     if (acceptedOriginTimestamp > 0 &&
         (issueOriginTimestamp < acceptedOriginTimestamp ||
          (issueOriginTimestamp == acceptedOriginTimestamp &&
@@ -2489,7 +2540,7 @@ static void GDTAdvanceBackupNotificationAcceptedState(
     NSTimeInterval latestAcceptedIssueAt = 0;
     NSUInteger latestAcceptedIssueStage = 0;
     GDTBackupNotificationAcceptedState(
-        defaults, latestIssueStateKey, latestIssueKey, latestIssueStageKey,
+        defaults, latestIssueStateKey, latestIssueKey,
         &latestAcceptedIssueAt, &latestAcceptedIssueStage);
     NSTimeInterval latestIssueAt = MAX(
         latestAcceptedIssueAt,

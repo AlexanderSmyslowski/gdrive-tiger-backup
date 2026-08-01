@@ -835,6 +835,266 @@ int main(void) {
                        isEqualToString:finalRetryFailure[@"identifier"]],
                @"a restart preserves terminal retry ordering against a stale running observation");
 
+        NSString *missingTerminalStateSuite =
+            [suiteName stringByAppendingString:@".missing-terminal-state"];
+        NotificationTestDelegate *missingTerminalStateSource =
+            [[NotificationTestDelegate alloc] init];
+        missingTerminalStateSource.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:missingTerminalStateSuite];
+        missingTerminalStateSource.deliverySucceeds = YES;
+        Process(missingTerminalStateSource, preliminary);
+        Process(missingTerminalStateSource, finalRetryFailure);
+        [missingTerminalStateSource.testDefaults removeObjectForKey:
+            acceptedStateKey];
+        [missingTerminalStateSource.testDefaults removeObjectForKey:
+            acceptedStageKey];
+        NotificationTestDelegate *missingTerminalStateAfterRestart =
+            [[NotificationTestDelegate alloc] init];
+        missingTerminalStateAfterRestart.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:missingTerminalStateSuite];
+        missingTerminalStateAfterRestart.deliverySucceeds = YES;
+        missingTerminalStateAfterRestart.acceptedBackupDecisionsByIdentifier =
+            missingTerminalStateSource.acceptedBackupDecisionsByIdentifier;
+        Process(missingTerminalStateAfterRestart, retryRunningDecision);
+        NSDictionary *migratedMissingTerminalState =
+            [missingTerminalStateAfterRestart.testDefaults dictionaryForKey:
+                acceptedStateKey];
+        Assert(missingTerminalStateAfterRestart.deliveryCalls == 0 &&
+               missingTerminalStateAfterRestart.acceptedBackupDecisionsByIdentifier[
+                   preliminary[@"identifier"]] == nil &&
+               [missingTerminalStateAfterRestart.acceptedBackupDecisionsByIdentifier[
+                   finalRetryFailure[@"identifier"]][@"bodyKey"]
+                       isEqualToString:@"backupNotificationRetryFailureBody"] &&
+               [[missingTerminalStateAfterRestart.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredIdentifier"]
+                       isEqualToString:finalRetryFailure[@"identifier"]] &&
+               [missingTerminalStateAfterRestart.testDefaults objectForKey:
+                   @"GDTBackupNotification.office.lastDeliveredRevision"] == nil &&
+               [migratedMissingTerminalState[@"origin"] doubleValue] == 400 &&
+               [migratedMissingTerminalState[@"stage"] integerValue] == 3,
+               @"a restart infers an accepted terminal stage before any stale running replay");
+
+        NSString *incompleteTerminalStateSuite =
+            [suiteName stringByAppendingString:@".incomplete-terminal-state"];
+        NotificationTestDelegate *incompleteTerminalStateSource =
+            [[NotificationTestDelegate alloc] init];
+        incompleteTerminalStateSource.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:incompleteTerminalStateSuite];
+        incompleteTerminalStateSource.deliverySucceeds = YES;
+        incompleteTerminalStateSource.acceptedBackupDecisionsByIdentifier =
+            [@{finalRetryFailure[@"identifier"]: finalRetryFailure} mutableCopy];
+        [incompleteTerminalStateSource.testDefaults setDouble:400
+            forKey:acceptedOriginKey];
+        [incompleteTerminalStateSource.testDefaults setObject:@{@"origin": @400}
+            forKey:acceptedStateKey];
+        [incompleteTerminalStateSource.testDefaults
+            setObject:finalRetryFailure[@"identifier"]
+               forKey:@"GDTBackupNotification.office.lastDeliveredIdentifier"];
+        NotificationTestDelegate *incompleteTerminalStateAfterRestart =
+            [[NotificationTestDelegate alloc] init];
+        incompleteTerminalStateAfterRestart.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:incompleteTerminalStateSuite];
+        incompleteTerminalStateAfterRestart.deliverySucceeds = YES;
+        incompleteTerminalStateAfterRestart.acceptedBackupDecisionsByIdentifier =
+            incompleteTerminalStateSource.acceptedBackupDecisionsByIdentifier;
+        Process(incompleteTerminalStateAfterRestart, retryRunningDecision);
+        NSDictionary *migratedIncompleteTerminalState =
+            [incompleteTerminalStateAfterRestart.testDefaults dictionaryForKey:
+                acceptedStateKey];
+        Assert(incompleteTerminalStateAfterRestart.deliveryCalls == 0 &&
+               incompleteTerminalStateAfterRestart.acceptedBackupDecisionsByIdentifier[
+                   preliminary[@"identifier"]] == nil &&
+               [incompleteTerminalStateAfterRestart.acceptedBackupDecisionsByIdentifier[
+                   finalRetryFailure[@"identifier"]][@"bodyKey"]
+                       isEqualToString:@"backupNotificationRetryFailureBody"] &&
+               [[incompleteTerminalStateAfterRestart.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredIdentifier"]
+                       isEqualToString:finalRetryFailure[@"identifier"]] &&
+               [incompleteTerminalStateAfterRestart.testDefaults objectForKey:
+                   @"GDTBackupNotification.office.lastDeliveredRevision"] == nil &&
+               [migratedIncompleteTerminalState[@"origin"] doubleValue] == 400 &&
+               [migratedIncompleteTerminalState[@"stage"] integerValue] == 3,
+               @"an incomplete accepted terminal state fails closed before stale running delivery");
+
+        NSString *legacyPreliminarySuite =
+            [suiteName stringByAppendingString:@".legacy-preliminary-state"];
+        NotificationTestDelegate *legacyPreliminarySource =
+            [[NotificationTestDelegate alloc] init];
+        legacyPreliminarySource.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:legacyPreliminarySuite];
+        legacyPreliminarySource.deliverySucceeds = YES;
+        Process(legacyPreliminarySource, preliminary);
+        [legacyPreliminarySource.testDefaults removeObjectForKey:acceptedStateKey];
+        [legacyPreliminarySource.testDefaults removeObjectForKey:acceptedStageKey];
+        NotificationTestDelegate *legacyPreliminaryAfterRestart =
+            [[NotificationTestDelegate alloc] init];
+        legacyPreliminaryAfterRestart.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:legacyPreliminarySuite];
+        legacyPreliminaryAfterRestart.deliverySucceeds = YES;
+        legacyPreliminaryAfterRestart.acceptedBackupDecisionsByIdentifier =
+            legacyPreliminarySource.acceptedBackupDecisionsByIdentifier;
+        Process(legacyPreliminaryAfterRestart, retryRunningDecision);
+        NSDictionary *migratedLegacyPreliminaryState =
+            [legacyPreliminaryAfterRestart.testDefaults dictionaryForKey:
+                acceptedStateKey];
+        Assert(legacyPreliminaryAfterRestart.deliveryCalls == 1 &&
+               [legacyPreliminaryAfterRestart.acceptedBackupDecisionsByIdentifier[
+                   preliminary[@"identifier"]][@"kind"]
+                       isEqualToString:@"retry-running"] &&
+               [[legacyPreliminaryAfterRestart.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredIdentifier"]
+                       isEqualToString:preliminary[@"identifier"]] &&
+               [[legacyPreliminaryAfterRestart.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredRevision"]
+                       isEqualToString:@"retry-running.430"] &&
+               [migratedLegacyPreliminaryState[@"origin"] doubleValue] == 400 &&
+               [migratedLegacyPreliminaryState[@"stage"] integerValue] == 2,
+               @"a legacy preliminary warning still accepts its running update during migration");
+
+        NSString *tornLegacyOriginSuite =
+            [suiteName stringByAppendingString:@".torn-legacy-origin-stage"];
+        NotificationTestDelegate *tornLegacyOriginSource =
+            [[NotificationTestDelegate alloc] init];
+        tornLegacyOriginSource.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:tornLegacyOriginSuite];
+        tornLegacyOriginSource.deliverySucceeds = YES;
+        tornLegacyOriginSource.acceptedBackupDecisionsByIdentifier =
+            [@{newerIndependentFailure[@"identifier"]: newerIndependentFailure}
+                mutableCopy];
+        [tornLegacyOriginSource.testDefaults setObject:@{@"origin": @500}
+            forKey:acceptedStateKey];
+        [tornLegacyOriginSource.testDefaults setDouble:400
+            forKey:acceptedOriginKey];
+        [tornLegacyOriginSource.testDefaults setInteger:3
+            forKey:acceptedStageKey];
+        [tornLegacyOriginSource.testDefaults
+            setObject:newerIndependentFailure[@"identifier"]
+               forKey:@"GDTBackupNotification.office.lastDeliveredIdentifier"];
+        NSMutableDictionary<NSString *, NSString *> *newerLegacyRetryRunning =
+            [newerIndependentFailure mutableCopy];
+        newerLegacyRetryRunning[@"kind"] = @"retry-running";
+        newerLegacyRetryRunning[@"revision"] = @"retry-running.510";
+        newerLegacyRetryRunning[@"titleKey"] =
+            @"backupNotificationRetryRunningTitle";
+        newerLegacyRetryRunning[@"bodyKey"] =
+            @"backupNotificationRetryRunningBody";
+        NotificationTestDelegate *tornLegacyOriginAfterRestart =
+            [[NotificationTestDelegate alloc] init];
+        tornLegacyOriginAfterRestart.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:tornLegacyOriginSuite];
+        tornLegacyOriginAfterRestart.deliverySucceeds = YES;
+        tornLegacyOriginAfterRestart.acceptedBackupDecisionsByIdentifier =
+            tornLegacyOriginSource.acceptedBackupDecisionsByIdentifier;
+        Process(tornLegacyOriginAfterRestart, newerLegacyRetryRunning);
+        NSDictionary *migratedTornLegacyOriginState =
+            [tornLegacyOriginAfterRestart.testDefaults dictionaryForKey:
+                acceptedStateKey];
+        Assert(tornLegacyOriginAfterRestart.deliveryCalls == 1 &&
+               [tornLegacyOriginAfterRestart.acceptedBackupDecisionsByIdentifier[
+                   newerIndependentFailure[@"identifier"]][@"kind"]
+                       isEqualToString:@"retry-running"] &&
+               [[tornLegacyOriginAfterRestart.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredIdentifier"]
+                       isEqualToString:newerIndependentFailure[@"identifier"]] &&
+               [[tornLegacyOriginAfterRestart.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredRevision"]
+                       isEqualToString:@"retry-running.510"] &&
+               [migratedTornLegacyOriginState[@"origin"] doubleValue] == 500 &&
+               [migratedTornLegacyOriginState[@"stage"] integerValue] == 2,
+               @"an incomplete newer origin discards an unpaired older terminal stage during migration");
+
+        NSString *legacyRunningSuite =
+            [suiteName stringByAppendingString:@".legacy-running-state"];
+        NotificationTestDelegate *legacyRunningSource =
+            [[NotificationTestDelegate alloc] init];
+        legacyRunningSource.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:legacyRunningSuite];
+        legacyRunningSource.deliverySucceeds = YES;
+        Process(legacyRunningSource, preliminary);
+        Process(legacyRunningSource, retryRunningDecision);
+        [legacyRunningSource.testDefaults removeObjectForKey:acceptedStateKey];
+        [legacyRunningSource.testDefaults removeObjectForKey:acceptedStageKey];
+        NSMutableDictionary<NSString *, NSString *> *laterRetryRunning =
+            [retryRunningDecision mutableCopy];
+        laterRetryRunning[@"revision"] = @"retry-running.440";
+        NotificationTestDelegate *legacyRunningAfterRestart =
+            [[NotificationTestDelegate alloc] init];
+        legacyRunningAfterRestart.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:legacyRunningSuite];
+        legacyRunningAfterRestart.deliverySucceeds = YES;
+        legacyRunningAfterRestart.acceptedBackupDecisionsByIdentifier =
+            legacyRunningSource.acceptedBackupDecisionsByIdentifier;
+        Process(legacyRunningAfterRestart, preliminary);
+        NSDictionary *migratedLegacyRunningState =
+            [legacyRunningAfterRestart.testDefaults dictionaryForKey:
+                acceptedStateKey];
+        Assert(legacyRunningAfterRestart.deliveryCalls == 0 &&
+               [legacyRunningAfterRestart.acceptedBackupDecisionsByIdentifier[
+                   preliminary[@"identifier"]][@"kind"]
+                       isEqualToString:@"retry-running"] &&
+               [[legacyRunningAfterRestart.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredRevision"]
+                       isEqualToString:@"retry-running.430"] &&
+               [migratedLegacyRunningState[@"origin"] doubleValue] == 400 &&
+               [migratedLegacyRunningState[@"stage"] integerValue] == 2,
+               @"a legacy running warning migrates to stage two before rejecting preliminary rollback");
+        Process(legacyRunningAfterRestart, laterRetryRunning);
+        NSDictionary *advancedLegacyRunningState =
+            [legacyRunningAfterRestart.testDefaults dictionaryForKey:
+                acceptedStateKey];
+        Assert(legacyRunningAfterRestart.deliveryCalls == 1 &&
+               [legacyRunningAfterRestart.acceptedBackupDecisionsByIdentifier[
+                   preliminary[@"identifier"]][@"kind"]
+                       isEqualToString:@"retry-running"] &&
+               [[legacyRunningAfterRestart.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredRevision"]
+                       isEqualToString:@"retry-running.440"] &&
+               [advancedLegacyRunningState[@"origin"] doubleValue] == 400 &&
+               [advancedLegacyRunningState[@"stage"] integerValue] == 2,
+               @"a legacy running warning rejects preliminary rollback but accepts a later running revision");
+
+        NSString *malformedLegacyRevisionSuite =
+            [suiteName stringByAppendingString:@".malformed-legacy-revision"];
+        NotificationTestDelegate *malformedLegacyRevisionSource =
+            [[NotificationTestDelegate alloc] init];
+        malformedLegacyRevisionSource.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:malformedLegacyRevisionSuite];
+        malformedLegacyRevisionSource.deliverySucceeds = YES;
+        malformedLegacyRevisionSource.acceptedBackupDecisionsByIdentifier =
+            [@{preliminary[@"identifier"]: preliminary} mutableCopy];
+        [malformedLegacyRevisionSource.testDefaults setDouble:400
+            forKey:acceptedOriginKey];
+        [malformedLegacyRevisionSource.testDefaults
+            setObject:preliminary[@"identifier"]
+               forKey:@"GDTBackupNotification.office.lastDeliveredIdentifier"];
+        [malformedLegacyRevisionSource.testDefaults
+            setObject:@"retry-running.+430"
+               forKey:@"GDTBackupNotification.office.lastDeliveredRevision"];
+        NotificationTestDelegate *malformedLegacyRevisionAfterRestart =
+            [[NotificationTestDelegate alloc] init];
+        malformedLegacyRevisionAfterRestart.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:malformedLegacyRevisionSuite];
+        malformedLegacyRevisionAfterRestart.deliverySucceeds = YES;
+        malformedLegacyRevisionAfterRestart.acceptedBackupDecisionsByIdentifier =
+            malformedLegacyRevisionSource.acceptedBackupDecisionsByIdentifier;
+        Process(malformedLegacyRevisionAfterRestart, laterRetryRunning);
+        NSDictionary *migratedMalformedLegacyState =
+            [malformedLegacyRevisionAfterRestart.testDefaults dictionaryForKey:
+                acceptedStateKey];
+        Assert(malformedLegacyRevisionAfterRestart.deliveryCalls == 0 &&
+               [malformedLegacyRevisionAfterRestart.acceptedBackupDecisionsByIdentifier[
+                   preliminary[@"identifier"]][@"kind"]
+                       isEqualToString:@"failure"] &&
+               [[malformedLegacyRevisionAfterRestart.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredIdentifier"]
+                       isEqualToString:preliminary[@"identifier"]] &&
+               [[malformedLegacyRevisionAfterRestart.testDefaults stringForKey:
+                   @"GDTBackupNotification.office.lastDeliveredRevision"]
+                       isEqualToString:@"retry-running.+430"] &&
+               [migratedMalformedLegacyState[@"origin"] doubleValue] == 400 &&
+               [migratedMalformedLegacyState[@"stage"] integerValue] == 3,
+               @"a malformed legacy running revision fails closed instead of authorizing an update");
+
         NotificationTestDelegate *interruptedTerminalPersistence =
             [[NotificationTestDelegate alloc] init];
         interruptedTerminalPersistence.testDefaults = [[NSUserDefaults alloc]
