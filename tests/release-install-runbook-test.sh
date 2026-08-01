@@ -209,6 +209,10 @@ assert_contains "$INSTALL_BLOCK" 'unexpected symbolic link' \
   'canonical configuration manifests reject symbolic links'
 assert_contains "$INSTALL_BLOCK" 'type=%s|path=%s|uid=%s|gid=%s|mode=%s|size=%s|sha256=%s' \
   'canonical manifest records type, path, ownership, mode, size, and content hash'
+assert_contains "$INSTALL_BLOCK" '/usr/bin/find "$root" -print0' \
+  'canonical manifest includes the configuration root itself'
+assert_not_contains "$INSTALL_BLOCK" 'find "$root" -mindepth 1' \
+  'canonical manifest does not omit configuration-root metadata'
 assert_contains "$INSTALL_BLOCK" 'test ! -e "$APP_INCOMING" && test ! -L "$APP_INCOMING"' \
   'incoming app path rejects existing and dangling links'
 assert_contains "$INSTALL_BLOCK" 'test ! -e "$SCRIPT_INCOMING" && test ! -L "$SCRIPT_INCOMING"' \
@@ -221,6 +225,15 @@ assert_contains "$INSTALL_BLOCK" 'stat -f '\''%d'\'' "$APP_TXN"' \
   'the app transaction is proven to share the destination filesystem'
 assert_contains "$INSTALL_BLOCK" 'stat -f '\''%d'\'' "$SCRIPT_TXN"' \
   'the script transaction is proven to share the destination filesystem'
+assert_contains "$INSTALL_BLOCK" \
+  '/usr/bin/sudo /usr/bin/install -o 0 -g 0 -m 755 "$STAGED_SCRIPT" "$SCRIPT_INCOMING"' \
+  'the incoming privileged script is installed root-owned'
+assert_contains "$INSTALL_BLOCK" 'stat -f '\''%u:%g:%Lp'\'' "$SCRIPT_INCOMING"' \
+  'incoming script ownership and mode are verified'
+assert_contains "$INSTALL_BLOCK" 'stat -f '\''%u:%g:%Lp'\'' "$SCRIPT_FINAL"' \
+  'final script ownership and mode are verified'
+assert_contains "$INSTALL_BLOCK" 'stat -f '\''%u:%g:%Lp'\'' "$ROLLBACK/backup-google-drive.sh"' \
+  'rollback script ownership and mode are verified'
 assert_contains "$INSTALL_BLOCK" 'RECOVERY_ARMED=1' \
   'recovery is armed before service mutation'
 assert_before "$INSTALL_BLOCK" 'RECOVERY_ARMED=1' '# FIRST_SERVICE_MUTATION' \
@@ -254,6 +267,90 @@ assert_next_line "$INSTALL_BLOCK" '# POST_QUIESCE_GATE' \
   'the terminal/process gate repeats after both services quiesce'
 assert_before "$INSTALL_BLOCK" '# FIRST_SERVICE_MUTATION' '# POST_QUIESCE_GATE' \
   'post-quiesce verification follows the service bootouts'
+assert_contains "$INSTALL_BLOCK" 'derive_effective_state' \
+  'effective scheduled configuration is derived by one reusable contract'
+derive_count="$(/usr/bin/grep -Fc -- 'derive_effective_state' "$INSTALL_BLOCK")"
+if (( derive_count >= 4 )); then
+  printf '%s\n' 'ok - effective state is derived before build, under lock, and after reload'
+else
+  printf '%s\n' 'not ok - effective state is derived before build, under lock, and after reload' >&2
+  exit 1
+fi
+assert_contains "$INSTALL_BLOCK" '# PREBUILD_SNAPSHOT' \
+  'configuration and plists are bound before the long build'
+assert_before "$INSTALL_BLOCK" '# PREBUILD_SNAPSHOT' 'git archive --format=tar' \
+  'the immutable pre-build snapshot precedes archive tests and build'
+assert_contains "$INSTALL_BLOCK" '# LOCKED_SNAPSHOT_REVALIDATION' \
+  'configuration, plists, loaded jobs, and effective paths are rebound under lock'
+assert_before "$INSTALL_BLOCK" '# LOCKED_SNAPSHOT_REVALIDATION' '# FIRST_SERVICE_MUTATION' \
+  'locked snapshot validation completes before service mutation'
+assert_next_line "$INSTALL_BLOCK" '# LOCKED_SNAPSHOT_REVALIDATION' \
+  'assert_runtime_snapshot_matches_prebuild "$STAGE/config-locked.manifest" "$STAGE/locked-effective-state.sh"' \
+  'the complete runtime binding runs at the final pre-mutation snapshot'
+locked_snapshot_line="$(line_number "$INSTALL_BLOCK" '# LOCKED_SNAPSHOT_REVALIDATION')"
+recovery_armed_line="$(line_number "$INSTALL_BLOCK" 'RECOVERY_ARMED=1')"
+first_mutation_line="$(line_number "$INSTALL_BLOCK" '# FIRST_SERVICE_MUTATION')"
+if (( recovery_armed_line == locked_snapshot_line + 4 &&
+      first_mutation_line == locked_snapshot_line + 5 )); then
+  printf '%s\n' 'ok - only the terminal gate and recovery arm separate binding from bootout'
+else
+  printf '%s\n' 'not ok - only the terminal gate and recovery arm separate binding from bootout' >&2
+  exit 1
+fi
+assert_contains "$INSTALL_BLOCK" 'assert_loaded_service_contract' \
+  'loaded launchd definitions are checked without trusting disk plists alone'
+loaded_contract_count="$(/usr/bin/grep -Fc -- 'assert_loaded_service_contract' "$INSTALL_BLOCK")"
+if (( loaded_contract_count >= 7 )); then
+  printf '%s\n' 'ok - both loaded jobs are checked before build, under lock, and after reload'
+else
+  printf '%s\n' 'not ok - both loaded jobs are checked before build, under lock, and after reload' >&2
+  exit 1
+fi
+assert_contains "$INSTALL_BLOCK" 'assert_manager_environment_clean' \
+  'launchd manager environment overrides are checked without reading values'
+assert_not_contains "$INSTALL_BLOCK" 'launchctl getenv' \
+  'manager environment validation does not trust launchctl getenv exit status'
+manager_environment_count="$(/usr/bin/grep -Fc -- \
+  'assert_manager_environment_clean' "$INSTALL_BLOCK")"
+if (( manager_environment_count >= 4 )); then
+  printf '%s\n' 'ok - manager environment is checked before build, under lock, and after reload'
+else
+  printf '%s\n' 'not ok - manager environment is checked before build, under lock, and after reload' >&2
+  exit 1
+fi
+assert_contains "$INSTALL_BLOCK" '# FINAL_RUNTIME_REVALIDATION' \
+  'reloaded services and effective state are rebound during final verification'
+assert_before "$INSTALL_BLOCK" '# FINAL_RUNTIME_REVALIDATION' \
+  '# FINAL_STATUS_PROCESS_GATE' \
+  'final runtime rebinding precedes the final status and process gate'
+assert_next_line "$INSTALL_BLOCK" '# FINAL_STATUS_PROCESS_GATE' \
+  '  assert_successful_terminal_backup_and_no_processes' \
+  'the final process gate uses the refreshed effective status path'
+assert_contains "$INSTALL_BLOCK" 'GDRIVE_BACKUP_TRIGGER="$SCHEDULE_TRIGGER"' \
+  'sanitized evaluation receives the verified schedule trigger'
+assert_contains "$INSTALL_BLOCK" 'BACKUP_ASSUME_YES="$SCHEDULE_ASSUME_YES"' \
+  'sanitized evaluation receives the verified assume-yes value'
+assert_not_contains "$INSTALL_BLOCK" \
+  "/usr/bin/grep -Fxq 'GDRIVE_BACKUP_PROFILE_ID=default'" \
+  'valid shell-quoted default profile ids are not rejected textually'
+assert_contains "$INSTALL_BLOCK" 'assert_default_profile_selection' \
+  'the runbook mirrors the backup script profile-selection contract'
+profile_selection_count="$(/usr/bin/grep -Fc -- \
+  'assert_default_profile_selection' "$INSTALL_BLOCK")"
+if (( profile_selection_count >= 4 )); then
+  printf '%s\n' 'ok - profile selection is rechecked before build, under lock, and after reload'
+else
+  printf '%s\n' 'not ok - profile selection is rechecked before build, under lock, and after reload' >&2
+  exit 1
+fi
+assert_contains "$INSTALL_BLOCK" '"GDRIVE_BACKUP_PROFILE_ID=$profile_id"' \
+  'profile selection accepts the exact unquoted generated form'
+assert_contains "$INSTALL_BLOCK" "\"GDRIVE_BACKUP_PROFILE_ID='\$profile_id'\"" \
+  'profile selection accepts the exact single-quoted generated form'
+assert_contains "$INSTALL_BLOCK" '"GDRIVE_BACKUP_PROFILE_ID=\"$profile_id\""' \
+  'profile selection accepts the exact double-quoted generated form'
+assert_contains "$INSTALL_BLOCK" '(^|[[:space:]/])rclone([[:space:]]|$)' \
+  'process gate detects bare and path-qualified rclone commands'
 assert_contains "$INSTALL_BLOCK" 'codesign -d --entitlements :-' \
   'entitlements are extracted explicitly'
 assert_contains "$INSTALL_BLOCK" 'plutil -lint "$ENTITLEMENTS_PLIST"' \
@@ -275,5 +372,12 @@ assert_next_line "$INSTALL_BLOCK" '# FINAL_VERIFICATION_UNDER_LOCK' \
   'the marked under-lock step executes the complete final verifier'
 assert_before "$INSTALL_BLOCK" 'trap '\''handle_install_signal'\'' HUP INT TERM' 'RECOVERY_ARMED=1' \
   'signal recovery is installed before it is armed'
+assert_next_line "$INSTALL_BLOCK" '# RECOVERY_SIGNAL_GUARD' \
+  "  trap '' HUP INT TERM" \
+  'recovery ignores follow-up termination signals until rollback completes'
+
+assert_contains "$PLAN" \
+  'Review: every commit in `e948ec29910210a53d587f0a8b9c309ea6238cef...HEAD`' \
+  'Task 6 states the complete reviewed diff truthfully'
 
 printf '%s\n' 'All release/install runbook checks passed.'

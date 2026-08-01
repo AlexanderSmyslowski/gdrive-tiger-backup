@@ -1469,7 +1469,7 @@ Expected: one release-preparation commit and a clean tracked worktree.
 ### Task 6: Review, publish, and install only after a successful terminal backup
 
 **Files:**
-- Review: every commit since `2074718`
+- Review: every commit in `e948ec29910210a53d587f0a8b9c309ea6238cef...HEAD`
 - Publish: Git branch, pull request, CI, tag `v2.4.4`, installer, and checksum manifest
 - Install after terminal state: a fresh build from the merged `v2.4.4` commit and `bin/backup-google-drive.sh`
 
@@ -1496,8 +1496,10 @@ scripts/validate-release.sh v2.4.4
 ```
 
 Expected: all feature commits are present, tests pass, release metadata is
-consistent, and only `AGENTS.md` plus
-`tests/package-entitlement-safety-test 2.sh` remain intentionally untracked.
+consistent, and the isolated publication worktree is completely clean. The
+untracked `AGENTS.md` and duplicate
+`tests/package-entitlement-safety-test 2.sh` belong only to the original user
+checkout and are not present in this publication worktree.
 
 - [ ] **Step 3: Push, review, merge, tag, and verify the published release**
 
@@ -1730,6 +1732,27 @@ assert_user_regular_file() {
   test "$(/usr/bin/stat -f '%Lp' "$path")" = "$expected_mode"
 }
 
+assert_default_profile_selection() {
+  local profile_id profile_config profile_id_matches=0 profile_line
+  assert_user_regular_file "$ACTIVE_PROFILE_FILE" "600"
+  profile_id="$(<"$ACTIVE_PROFILE_FILE")"
+  [[ "$profile_id" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]]
+  test "$profile_id" = "default"
+  test -d "$PROFILES_DIR" && test ! -L "$PROFILES_DIR"
+  profile_config="$PROFILES_DIR/$profile_id.conf"
+  test "$profile_config" = "$PROFILE_CONFIG"
+  assert_user_regular_file "$profile_config" "600"
+  while IFS= read -r profile_line || [[ -n "$profile_line" ]]; do
+    case "$profile_line" in
+      "GDRIVE_BACKUP_PROFILE_ID=$profile_id"|"GDRIVE_BACKUP_PROFILE_ID='$profile_id'"|"GDRIVE_BACKUP_PROFILE_ID=\"$profile_id\"")
+        profile_id_matches=1
+        break
+        ;;
+    esac
+  done <"$profile_config"
+  test "$profile_id_matches" = "1"
+}
+
 assert_safe_user_plist() {
   local path="$1"
   local mode mode_value
@@ -1760,6 +1783,174 @@ reject_service_path_overrides() {
   done
 }
 
+assert_manager_environment_clean() {
+  # The point-query command reports success even for an unset variable on
+  # supported macOS versions. Parse the domain stream and never retain values.
+  if ! /bin/launchctl print "$DOMAIN" | /usr/bin/awk '
+      /^[[:space:]]*(GDRIVE_BACKUP_CONFIG|GDRIVE_BACKUP_CONFIG_DIR|GDRIVE_BACKUP_LOCK|GDRIVE_BACKUP_SUMMARY_STATE_FILE|GDRIVE_BACKUP_PROGRESS_STATE_FILE)[[:space:]]*=>/ {
+        forbidden = 1
+      }
+      END { exit(forbidden ? 1 : 0) }
+    '; then
+    printf '%s\n' 'Refusing a launchd manager path override.' >&2
+    return 1
+  fi
+}
+
+assert_loaded_service_contract() {
+  local service="$1"
+  local expected_plist="$2"
+  local expected_program="$3"
+  local expected_arg_count="$4"
+  local expected_arg0="$5"
+  local expected_arg1="$6"
+  local expected_arg2="$7"
+  local expected_home="$8"
+  local expected_path="$9"
+  local expected_trigger="${10}"
+  local expected_assume="${11}"
+
+  # Only the parser sees launchctl's complete output. It compares approved
+  # fields in-stream and emits neither environment values nor a persisted copy.
+  /bin/launchctl print "$service" | /usr/bin/awk \
+    -v expected_plist="$expected_plist" \
+    -v expected_program="$expected_program" \
+    -v expected_arg_count="$expected_arg_count" \
+    -v expected_arg0="$expected_arg0" \
+    -v expected_arg1="$expected_arg1" \
+    -v expected_arg2="$expected_arg2" \
+    -v expected_home="$expected_home" \
+    -v expected_path="$expected_path" \
+    -v expected_trigger="$expected_trigger" \
+    -v expected_assume="$expected_assume" '
+      function trim(value) {
+        sub(/^[[:space:]]+/, "", value)
+        sub(/[[:space:]]+$/, "", value)
+        return value
+      }
+      {
+        normalized = trim($0)
+        normalized_separator = index(normalized, " => ")
+        if (normalized_separator) {
+          normalized_key = substr(normalized, 1, normalized_separator - 1)
+          if (normalized_key == "GDRIVE_BACKUP_CONFIG" ||
+              normalized_key == "GDRIVE_BACKUP_CONFIG_DIR" ||
+              normalized_key == "GDRIVE_BACKUP_LOCK" ||
+              normalized_key == "GDRIVE_BACKUP_SUMMARY_STATE_FILE" ||
+              normalized_key == "GDRIVE_BACKUP_PROGRESS_STATE_FILE") forbidden++
+        }
+      }
+      /^[[:space:]]*path = / {
+        path_count++
+        value = $0
+        sub(/^[[:space:]]*path = /, "", value)
+        if (value == expected_plist) path_ok++
+        else bad = 1
+        next
+      }
+      /^[[:space:]]*program = / {
+        program_count++
+        value = $0
+        sub(/^[[:space:]]*program = /, "", value)
+        if (value == expected_program) program_ok++
+        else bad = 1
+        next
+      }
+      /^[[:space:]]*arguments = \{/ {
+        argument_blocks++
+        in_arguments = 1
+        next
+      }
+      in_arguments && /^[[:space:]]*\}/ { in_arguments = 0; next }
+      in_arguments { arguments[argument_count++] = trim($0); next }
+      /^[[:space:]]*environment = \{/ {
+        environment_blocks++
+        in_environment = 1
+        next
+      }
+      in_environment && /^[[:space:]]*\}/ { in_environment = 0; next }
+      in_environment {
+        line = trim($0)
+        separator = index(line, " => ")
+        if (!separator) next
+        key = substr(line, 1, separator - 1)
+        value = substr(line, separator + 4)
+        if (key == "HOME") {
+          home_count++
+          if (value == expected_home) home_ok++
+        }
+        if (key == "PATH") {
+          path_environment_count++
+          if (value == expected_path) path_environment_ok++
+        }
+        if (key == "GDRIVE_BACKUP_TRIGGER") {
+          trigger_count++
+          if (value == expected_trigger) trigger_ok++
+        }
+        if (key == "BACKUP_ASSUME_YES") {
+          assume_count++
+          if (value == expected_assume) assume_ok++
+        }
+      }
+      END {
+        ok = !bad && !in_arguments && !in_environment &&
+          path_count == 1 && path_ok == 1 &&
+          program_count == 1 && program_ok == 1 &&
+          argument_blocks == 1 && environment_blocks == 1 && forbidden == 0 &&
+          argument_count == expected_arg_count &&
+          arguments[0] == expected_arg0 && arguments[1] == expected_arg1 &&
+          home_count == 1 && home_ok == 1 &&
+          path_environment_count == 1 && path_environment_ok == 1
+        if (expected_arg_count == 3) ok = ok && arguments[2] == expected_arg2
+        if (expected_trigger == "") ok = ok && trigger_count == 0
+        else ok = ok && trigger_count == 1 && trigger_ok == 1
+        if (expected_assume == "") ok = ok && assume_count == 0
+        else ok = ok && assume_count == 1 && assume_ok == 1
+        exit(ok ? 0 : 1)
+      }
+    '
+}
+
+derive_effective_state() {
+  local output="$1"
+  test ! -e "$output" && test ! -L "$output"
+  # The quoted program is evaluated by the sanitized child Bash, not this
+  # shell. Scheduler variables match the already verified launchd contract.
+  # shellcheck disable=SC2016
+  /usr/bin/env -i \
+    HOME="$HOME" \
+    PATH="$SAFE_PATH" \
+    GDRIVE_BACKUP_TRIGGER="$SCHEDULE_TRIGGER" \
+    BACKUP_ASSUME_YES="$SCHEDULE_ASSUME_YES" \
+    /bin/bash -c '
+      set -euo pipefail
+      # shellcheck source=/dev/null
+      source "$1" >/dev/null
+      test "$HOME" = "$2"
+      test "${GDRIVE_BACKUP_PROFILE_ID:-}" = "default"
+      test "${GDRIVE_BACKUP_TRIGGER:-}" = "$3"
+      test "${BACKUP_ASSUME_YES:-}" = "$4"
+      effective_lock="${GDRIVE_BACKUP_LOCK:-$HOME/Library/Logs/gdrive-backup.lock}"
+      if [[ -n "${GDRIVE_BACKUP_SUMMARY_STATE_FILE:-}" ]]; then
+        effective_status="$GDRIVE_BACKUP_SUMMARY_STATE_FILE"
+      else
+        effective_status="$HOME/Library/Application Support/GDrive Backup Tiger/profiles/default/last-run.status"
+      fi
+      effective_progress="${GDRIVE_BACKUP_PROGRESS_STATE_FILE:-${effective_status%/*}/current-progress.status}"
+      printf "EFFECTIVE_CONFIG=%q\n" "$1"
+      printf "EFFECTIVE_LOCK=%q\n" "$effective_lock"
+      printf "EFFECTIVE_STATUS=%q\n" "$effective_status"
+      printf "EFFECTIVE_PROGRESS=%q\n" "$effective_progress"
+      printf "PROFILE_TARGET=%q\n" "${GDRIVE_BACKUP_TARGET:-}"
+      printf "PROFILE_SCHEDULE=%q\n" "${GDRIVE_BACKUP_SCHEDULE:-}"
+      printf "PROFILE_NOTIFY_FAILURES=%q\n" "${GDRIVE_BACKUP_NOTIFY_FAILURES:-}"
+      printf "PROFILE_NAS_MOUNT=%q\n" "${GDRIVE_BACKUP_NAS_MOUNT:-}"
+      printf "PROFILE_NAS_URL=%q\n" "${GDRIVE_BACKUP_NAS_URL:-}"
+    ' _ "$PROFILE_CONFIG" "$HOME" "$SCHEDULE_TRIGGER" \
+      "$SCHEDULE_ASSUME_YES" >"$output"
+  /bin/chmod 600 "$output"
+}
+
 status_value_from_file() {
   local key="$1"
   test "$(/usr/bin/awk -F= -v key="$key" \
@@ -1777,7 +1968,8 @@ backup_process_snapshot() {
   done
   /bin/ps -axo pid=,ppid=,command= | /usr/bin/awk -v excluded="$excluded" '
     index(excluded, "," $1 ",") == 0 &&
-    /backup-google-drive|\/rclone( |$)/ && $0 !~ /awk/ {print}'
+    /backup-google-drive|(^|[[:space:]/])rclone([[:space:]]|$)/ &&
+      $0 !~ /awk/ {print}'
 }
 
 assert_successful_terminal_backup_and_no_processes() {
@@ -1805,11 +1997,15 @@ canonical_config_manifest() {
   test -d "$root" && test ! -L "$root"
   test ! -e "$output" && test ! -L "$output"
   test ! -e "$paths" && test ! -L "$paths"
-  /usr/bin/find "$root" -mindepth 1 -print0 >"$paths"
+  /usr/bin/find "$root" -print0 >"$paths"
   : >"$output"
   /bin/chmod 600 "$output" "$paths"
   while IFS= read -r -d '' path; do
-    relative="${path#"$root"/}"
+    if [[ "$path" = "$root" ]]; then
+      relative="."
+    else
+      relative="${path#"$root"/}"
+    fi
     if [[ "$relative" == *'|'* || "$relative" == *$'\n'* ||
           "$relative" == *$'\r'* ]]; then
       printf 'Refusing unsafe manifest path: %s\n' "$relative" >&2
@@ -1837,6 +2033,44 @@ canonical_config_manifest() {
   done < <(LC_ALL=C /usr/bin/sort -z "$paths") >"${output}.unsorted"
   LC_ALL=C /usr/bin/sort "${output}.unsorted" >"$output"
   /bin/chmod 600 "$output"
+}
+
+assert_runtime_snapshot_matches_prebuild() {
+  local manifest="$1"
+  local effective_state="$2"
+  canonical_config_manifest "$CONFIG_DIR" "$manifest"
+  /usr/bin/cmp -s "$PREBUILD_CONFIG_MANIFEST" "$manifest"
+  assert_default_profile_selection
+  assert_safe_user_plist "$CONTROLLER_PLIST"
+  assert_safe_user_plist "$SCHEDULE_PLIST"
+  test "$(/usr/bin/shasum -a 256 "$CONTROLLER_PLIST" |
+    /usr/bin/awk '{print $1}')" = "$CONTROLLER_PLIST_HASH"
+  test "$(/usr/bin/shasum -a 256 "$SCHEDULE_PLIST" |
+    /usr/bin/awk '{print $1}')" = "$SCHEDULE_PLIST_HASH"
+  reject_service_path_overrides
+  assert_loaded_service_contract \
+    "$CONTROLLER_SERVICE" "$CONTROLLER_PLIST" "$CONTROLLER_PROGRAM" 2 \
+    "$CONTROLLER_PROGRAM" "$CONTROLLER_ARGUMENT" "" \
+    "$CONTROLLER_HOME" "$CONTROLLER_PATH" "" ""
+  assert_loaded_service_contract \
+    "$SCHEDULE_SERVICE" "$SCHEDULE_PLIST" "$SCHEDULE_PROGRAM" 3 \
+    "$SCHEDULE_PROGRAM" "$SCHEDULE_SCRIPT" "$SCHEDULE_ARGUMENT" \
+    "$SCHEDULE_HOME" "$SCHEDULE_PATH" "$SCHEDULE_TRIGGER" \
+    "$SCHEDULE_ASSUME_YES"
+  assert_manager_environment_clean
+  derive_effective_state "$effective_state"
+  /usr/bin/cmp -s "$PREBUILD_EFFECTIVE_STATE" "$effective_state"
+  # shellcheck source=/dev/null
+  source "$effective_state"
+  test "$EFFECTIVE_CONFIG" = "$PREBUILD_EFFECTIVE_CONFIG"
+  test "$EFFECTIVE_LOCK" = "$PREBUILD_EFFECTIVE_LOCK"
+  test "$EFFECTIVE_STATUS" = "$PREBUILD_EFFECTIVE_STATUS"
+  test "$EFFECTIVE_PROGRESS" = "$PREBUILD_EFFECTIVE_PROGRESS"
+  test "$PROFILE_TARGET" = "$PREBUILD_PROFILE_TARGET"
+  test "$PROFILE_SCHEDULE" = "$PREBUILD_PROFILE_SCHEDULE"
+  test "$PROFILE_NOTIFY_FAILURES" = "$PREBUILD_PROFILE_NOTIFY_FAILURES"
+  test "$PROFILE_NAS_MOUNT" = "$PREBUILD_PROFILE_NAS_MOUNT"
+  test "$PROFILE_NAS_URL" = "$PREBUILD_PROFILE_NAS_URL"
 }
 
 extract_entitlements() {
@@ -1925,7 +2159,8 @@ recover_previous_install() {
       /usr/bin/sudo /bin/mv "$SCRIPT_PREVIOUS" "$SCRIPT_FINAL" || recovery_status=1
     fi
   elif [[ ! -f "$SCRIPT_FINAL" && $recovery_status -eq 0 ]]; then
-    /usr/bin/sudo /usr/bin/install -m 755 "$ROLLBACK/backup-google-drive.sh" \
+    /usr/bin/sudo /usr/bin/install -o 0 -g 0 -m 755 \
+      "$ROLLBACK/backup-google-drive.sh" \
       "$SCRIPT_FINAL" || recovery_status=1
   fi
 
@@ -1935,6 +2170,8 @@ recover_previous_install() {
       "$OLD_APP_HASH" || recovery_status=1
     test "$(/usr/bin/shasum -a 256 "$SCRIPT_FINAL" | /usr/bin/awk '{print $1}')" = \
       "$OLD_SCRIPT_HASH" || recovery_status=1
+    test "$(/usr/bin/stat -f '%u:%g:%Lp' "$SCRIPT_FINAL")" = \
+      "0:0:755" || recovery_status=1
   fi
   if (( recovery_status == 0 )); then
     reload_services || recovery_status=1
@@ -1955,7 +2192,9 @@ report_install_leftovers() {
 
 on_install_exit() {
   local status=$?
-  trap - EXIT HUP INT TERM
+  trap - EXIT
+  # RECOVERY_SIGNAL_GUARD
+  trap '' HUP INT TERM
   if (( status != 0 && RECOVERY_ARMED == 1 )); then
     if ! recover_previous_install; then
       printf '%s\n' \
@@ -1974,6 +2213,7 @@ handle_install_signal() {
 
 assert_final_install_state() {
   local architectures new_controller_pid final_manifest final_entitlements
+  local final_effective_state
   test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
     "$APP_FINAL/Contents/Info.plist")" = "$EXPECTED_VERSION"
   test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
@@ -1987,18 +2227,51 @@ assert_final_install_state() {
     "$APP_HASH"
   test "$(/usr/bin/shasum -a 256 "$SCRIPT_FINAL" | /usr/bin/awk '{print $1}')" = \
     "$SCRIPT_HASH"
-  test "$(/usr/bin/stat -f '%Lp' "$SCRIPT_FINAL")" = "755"
+  test "$(/usr/bin/stat -f '%u:%g:%Lp' "$SCRIPT_FINAL")" = "0:0:755"
   /bin/bash -n "$SCRIPT_FINAL"
 
   final_entitlements="$STAGE/final-entitlements.plist"
   extract_entitlements "$APP_FINAL" "$final_entitlements"
+
+  # FINAL_RUNTIME_REVALIDATION
   final_manifest="$STAGE/config-after.manifest"
   canonical_config_manifest "$CONFIG_DIR" "$final_manifest"
+  /usr/bin/cmp -s "$PREBUILD_CONFIG_MANIFEST" "$final_manifest"
   /usr/bin/cmp -s "$ROLLBACK/config-before.manifest" "$final_manifest"
+  assert_default_profile_selection
+  assert_safe_user_plist "$CONTROLLER_PLIST"
+  assert_safe_user_plist "$SCHEDULE_PLIST"
   test "$(/usr/bin/shasum -a 256 "$CONTROLLER_PLIST" | /usr/bin/awk '{print $1}')" = \
     "$CONTROLLER_PLIST_HASH"
   test "$(/usr/bin/shasum -a 256 "$SCHEDULE_PLIST" | /usr/bin/awk '{print $1}')" = \
     "$SCHEDULE_PLIST_HASH"
+  reject_service_path_overrides
+  assert_loaded_service_contract \
+    "$CONTROLLER_SERVICE" "$CONTROLLER_PLIST" "$CONTROLLER_PROGRAM" 2 \
+    "$CONTROLLER_PROGRAM" "$CONTROLLER_ARGUMENT" "" \
+    "$CONTROLLER_HOME" "$CONTROLLER_PATH" "" ""
+  assert_loaded_service_contract \
+    "$SCHEDULE_SERVICE" "$SCHEDULE_PLIST" "$SCHEDULE_PROGRAM" 3 \
+    "$SCHEDULE_PROGRAM" "$SCHEDULE_SCRIPT" "$SCHEDULE_ARGUMENT" \
+    "$SCHEDULE_HOME" "$SCHEDULE_PATH" "$SCHEDULE_TRIGGER" \
+    "$SCHEDULE_ASSUME_YES"
+  assert_manager_environment_clean
+  final_effective_state="$STAGE/final-effective-state.sh"
+  derive_effective_state "$final_effective_state"
+  /usr/bin/cmp -s "$PREBUILD_EFFECTIVE_STATE" "$final_effective_state"
+  # This refresh makes every remaining assertion use post-reload state rather
+  # than values retained from before the build.
+  # shellcheck source=/dev/null
+  source "$final_effective_state"
+  test "$EFFECTIVE_CONFIG" = "$PREBUILD_EFFECTIVE_CONFIG"
+  test "$EFFECTIVE_LOCK" = "$PREBUILD_EFFECTIVE_LOCK"
+  test "$EFFECTIVE_STATUS" = "$PREBUILD_EFFECTIVE_STATUS"
+  test "$EFFECTIVE_PROGRESS" = "$PREBUILD_EFFECTIVE_PROGRESS"
+  test "$PROFILE_TARGET" = "$PREBUILD_PROFILE_TARGET"
+  test "$PROFILE_SCHEDULE" = "$PREBUILD_PROFILE_SCHEDULE"
+  test "$PROFILE_NOTIFY_FAILURES" = "$PREBUILD_PROFILE_NOTIFY_FAILURES"
+  test "$PROFILE_NAS_MOUNT" = "$PREBUILD_PROFILE_NAS_MOUNT"
+  test "$PROFILE_NAS_URL" = "$PREBUILD_PROFILE_NAS_URL"
   assert_user_regular_file "$ACTIVE_PROFILE_FILE" "600"
   test "$(/usr/bin/stat -f '%z' "$ACTIVE_PROFILE_FILE")" = "$ACTIVE_PROFILE_SIZE"
   test "$(/usr/bin/od -An -tx1 -v "$ACTIVE_PROFILE_FILE" |
@@ -2015,7 +2288,7 @@ assert_final_install_state() {
     /usr/bin/awk '/pid =/ {print $3; exit}')"
   [[ "$new_controller_pid" =~ ^[0-9]+$ ]]
   test "$new_controller_pid" != "$OLD_CONTROLLER_PID"
-  /bin/launchctl print "$SCHEDULE_SERVICE" >/dev/null
+  # FINAL_STATUS_PROCESS_GATE
   assert_successful_terminal_backup_and_no_processes
 }
 
@@ -2058,76 +2331,93 @@ test "$ACTIVE_PROFILE_HEX" = "64656661756c740a"
 test -d "$PROFILES_DIR" && test ! -L "$PROFILES_DIR"
 test "$(/usr/bin/stat -f '%u' "$PROFILES_DIR")" = "$CURRENT_UID"
 assert_user_regular_file "$PROFILE_CONFIG" "600"
-/usr/bin/grep -Fxq 'GDRIVE_BACKUP_PROFILE_ID=default' "$PROFILE_CONFIG"
+assert_default_profile_selection
 
 assert_safe_user_plist "$CONTROLLER_PLIST"
 assert_safe_user_plist "$SCHEDULE_PLIST"
-test "$(/usr/bin/plutil -extract Label raw -o - "$CONTROLLER_PLIST")" = \
+CONTROLLER_LABEL="$(/usr/bin/plutil -extract Label raw -o - "$CONTROLLER_PLIST")"
+CONTROLLER_PROGRAM="$(/usr/bin/plutil -extract ProgramArguments.0 raw -o - \
+  "$CONTROLLER_PLIST")"
+CONTROLLER_ARGUMENT="$(/usr/bin/plutil -extract ProgramArguments.1 raw -o - \
+  "$CONTROLLER_PLIST")"
+CONTROLLER_HOME="$(/usr/bin/plutil -extract EnvironmentVariables.HOME raw -o - \
+  "$CONTROLLER_PLIST")"
+CONTROLLER_PATH="$(/usr/bin/plutil -extract EnvironmentVariables.PATH raw -o - \
+  "$CONTROLLER_PLIST")"
+SCHEDULE_LABEL="$(/usr/bin/plutil -extract Label raw -o - "$SCHEDULE_PLIST")"
+SCHEDULE_PROGRAM="$(/usr/bin/plutil -extract ProgramArguments.0 raw -o - \
+  "$SCHEDULE_PLIST")"
+SCHEDULE_SCRIPT="$(/usr/bin/plutil -extract ProgramArguments.1 raw -o - \
+  "$SCHEDULE_PLIST")"
+SCHEDULE_ARGUMENT="$(/usr/bin/plutil -extract ProgramArguments.2 raw -o - \
+  "$SCHEDULE_PLIST")"
+SCHEDULE_HOME="$(/usr/bin/plutil -extract EnvironmentVariables.HOME raw -o - \
+  "$SCHEDULE_PLIST")"
+SCHEDULE_PATH="$(/usr/bin/plutil -extract EnvironmentVariables.PATH raw -o - \
+  "$SCHEDULE_PLIST")"
+SCHEDULE_TRIGGER="$(/usr/bin/plutil -extract \
+  EnvironmentVariables.GDRIVE_BACKUP_TRIGGER raw -o - "$SCHEDULE_PLIST")"
+SCHEDULE_ASSUME_YES="$(/usr/bin/plutil -extract \
+  EnvironmentVariables.BACKUP_ASSUME_YES raw -o - "$SCHEDULE_PLIST")"
+test "$CONTROLLER_LABEL" = \
   "com.commcats.gdrivebackup"
-test "$(/usr/bin/plutil -extract ProgramArguments.0 raw -o - "$CONTROLLER_PLIST")" = \
-  "$APP_FINAL/Contents/MacOS/GDriveBackupTiger"
-test "$(/usr/bin/plutil -extract ProgramArguments.1 raw -o - "$CONTROLLER_PLIST")" = \
-  "--menubar"
-test "$(/usr/bin/plutil -extract Label raw -o - "$SCHEDULE_PLIST")" = \
+test "$CONTROLLER_PROGRAM" = "$APP_FINAL/Contents/MacOS/GDriveBackupTiger"
+test "$CONTROLLER_ARGUMENT" = "--menubar"
+test "$CONTROLLER_HOME" = "$HOME"
+test "$CONTROLLER_PATH" = "$SAFE_PATH"
+test "$SCHEDULE_LABEL" = \
   "com.commcats.gdrivebackup.schedule"
-test "$(/usr/bin/plutil -extract ProgramArguments.0 raw -o - "$SCHEDULE_PLIST")" = \
-  "/bin/bash"
-test "$(/usr/bin/plutil -extract ProgramArguments.1 raw -o - "$SCHEDULE_PLIST")" = \
-  "$SCRIPT_FINAL"
-test "$(/usr/bin/plutil -extract ProgramArguments.2 raw -o - "$SCHEDULE_PLIST")" = \
-  "--run"
-test "$(/usr/bin/plutil -extract EnvironmentVariables.HOME raw -o - \
-  "$SCHEDULE_PLIST")" = "$HOME"
-test "$(/usr/bin/plutil -extract EnvironmentVariables.PATH raw -o - \
-  "$SCHEDULE_PLIST")" = "$SAFE_PATH"
-test "$(/usr/bin/plutil -extract EnvironmentVariables.HOME raw -o - \
-  "$CONTROLLER_PLIST")" = "$HOME"
-test "$(/usr/bin/plutil -extract EnvironmentVariables.GDRIVE_BACKUP_TRIGGER raw -o - \
-  "$SCHEDULE_PLIST")" = "schedule"
-test "$(/usr/bin/plutil -extract EnvironmentVariables.BACKUP_ASSUME_YES raw -o - \
-  "$SCHEDULE_PLIST")" = "1"
+test "$SCHEDULE_PROGRAM" = "/bin/bash"
+test "$SCHEDULE_SCRIPT" = "$SCRIPT_FINAL"
+test "$SCHEDULE_ARGUMENT" = "--run"
+test "$SCHEDULE_HOME" = "$HOME"
+test "$SCHEDULE_PATH" = "$SAFE_PATH"
+test "$SCHEDULE_TRIGGER" = "schedule"
+test "$SCHEDULE_ASSUME_YES" = "1"
 reject_service_path_overrides
-/bin/launchctl print "$CONTROLLER_SERVICE" >/dev/null
-/bin/launchctl print "$SCHEDULE_SERVICE" >/dev/null
+assert_loaded_service_contract \
+  "$CONTROLLER_SERVICE" "$CONTROLLER_PLIST" "$CONTROLLER_PROGRAM" 2 \
+  "$CONTROLLER_PROGRAM" "$CONTROLLER_ARGUMENT" "" \
+  "$CONTROLLER_HOME" "$CONTROLLER_PATH" "" ""
+assert_loaded_service_contract \
+  "$SCHEDULE_SERVICE" "$SCHEDULE_PLIST" "$SCHEDULE_PROGRAM" 3 \
+  "$SCHEDULE_PROGRAM" "$SCHEDULE_SCRIPT" "$SCHEDULE_ARGUMENT" \
+  "$SCHEDULE_HOME" "$SCHEDULE_PATH" "$SCHEDULE_TRIGGER" \
+  "$SCHEDULE_ASSUME_YES"
+assert_manager_environment_clean
 OLD_CONTROLLER_PID="$(/bin/launchctl print "$CONTROLLER_SERVICE" |
   /usr/bin/awk '/pid =/ {print $3; exit}')"
 [[ "$OLD_CONTROLLER_PID" =~ ^[0-9]+$ ]]
 
-EFFECTIVE_STATE="$STAGE/effective-state.sh"
-test ! -e "$EFFECTIVE_STATE" && test ! -L "$EFFECTIVE_STATE"
-# The quoted program is evaluated by the sanitized child Bash, not this shell.
-# shellcheck disable=SC2016
-/usr/bin/env -i HOME="$HOME" PATH="$SAFE_PATH" /bin/bash -c '
-  set -euo pipefail
-  # shellcheck source=/dev/null
-  source "$1" >/dev/null
-  test "$HOME" = "$2"
-  test "${GDRIVE_BACKUP_PROFILE_ID:-}" = "default"
-  effective_lock="${GDRIVE_BACKUP_LOCK:-$HOME/Library/Logs/gdrive-backup.lock}"
-  if [[ -n "${GDRIVE_BACKUP_SUMMARY_STATE_FILE:-}" ]]; then
-    effective_status="$GDRIVE_BACKUP_SUMMARY_STATE_FILE"
-  else
-    effective_status="$HOME/Library/Application Support/GDrive Backup Tiger/profiles/default/last-run.status"
-  fi
-  effective_progress="${GDRIVE_BACKUP_PROGRESS_STATE_FILE:-${effective_status%/*}/current-progress.status}"
-  printf "EFFECTIVE_CONFIG=%q\n" "$1"
-  printf "EFFECTIVE_LOCK=%q\n" "$effective_lock"
-  printf "EFFECTIVE_STATUS=%q\n" "$effective_status"
-  printf "EFFECTIVE_PROGRESS=%q\n" "$effective_progress"
-  printf "PROFILE_TARGET=%q\n" "${GDRIVE_BACKUP_TARGET:-}"
-  printf "PROFILE_SCHEDULE=%q\n" "${GDRIVE_BACKUP_SCHEDULE:-}"
-  printf "PROFILE_NOTIFY_FAILURES=%q\n" "${GDRIVE_BACKUP_NOTIFY_FAILURES:-}"
-  printf "PROFILE_NAS_MOUNT=%q\n" "${GDRIVE_BACKUP_NAS_MOUNT:-}"
-  printf "PROFILE_NAS_URL=%q\n" "${GDRIVE_BACKUP_NAS_URL:-}"
-' _ "$PROFILE_CONFIG" "$HOME" >"$EFFECTIVE_STATE"
-/bin/chmod 600 "$EFFECTIVE_STATE"
+# PREBUILD_SNAPSHOT
+PREBUILD_EFFECTIVE_STATE="$STAGE/prebuild-effective-state.sh"
+PREBUILD_CONFIG_MANIFEST="$STAGE/config-prebuild.manifest"
+derive_effective_state "$PREBUILD_EFFECTIVE_STATE"
 # shellcheck source=/dev/null
-source "$EFFECTIVE_STATE"
+source "$PREBUILD_EFFECTIVE_STATE"
 test "$EFFECTIVE_CONFIG" = "$PROFILE_CONFIG"
 for effective_path in \
   "$EFFECTIVE_CONFIG" "$EFFECTIVE_LOCK" "$EFFECTIVE_STATUS" "$EFFECTIVE_PROGRESS"; do
   assert_absolute_single_line_path "$effective_path"
 done
+test "$PROFILE_TARGET" = "nas"
+test "$PROFILE_SCHEDULE" = "daily"
+test "$PROFILE_NOTIFY_FAILURES" = "1"
+test -n "$PROFILE_NAS_MOUNT$PROFILE_NAS_URL"
+PREBUILD_EFFECTIVE_CONFIG="$EFFECTIVE_CONFIG"
+PREBUILD_EFFECTIVE_LOCK="$EFFECTIVE_LOCK"
+PREBUILD_EFFECTIVE_STATUS="$EFFECTIVE_STATUS"
+PREBUILD_EFFECTIVE_PROGRESS="$EFFECTIVE_PROGRESS"
+PREBUILD_PROFILE_TARGET="$PROFILE_TARGET"
+PREBUILD_PROFILE_SCHEDULE="$PROFILE_SCHEDULE"
+PREBUILD_PROFILE_NOTIFY_FAILURES="$PROFILE_NOTIFY_FAILURES"
+PREBUILD_PROFILE_NAS_MOUNT="$PROFILE_NAS_MOUNT"
+PREBUILD_PROFILE_NAS_URL="$PROFILE_NAS_URL"
+canonical_config_manifest "$CONFIG_DIR" "$PREBUILD_CONFIG_MANIFEST"
+CONTROLLER_PLIST_HASH="$(/usr/bin/shasum -a 256 "$CONTROLLER_PLIST" |
+  /usr/bin/awk '{print $1}')"
+SCHEDULE_PLIST_HASH="$(/usr/bin/shasum -a 256 "$SCHEDULE_PLIST" |
+  /usr/bin/awk '{print $1}')"
 
 # A terminal/no-process gate before archive extraction keeps even the build
 # outside an active backup window. The definitive race-free checks follow
@@ -2167,58 +2457,58 @@ SCRIPT_HASH="$(/usr/bin/shasum -a 256 "$STAGED_SCRIPT" | /usr/bin/awk '{print $1
 
 FLOCK_BIN="$(command -v flock)"
 test -x "$FLOCK_BIN"
-LOCK_PARENT="${EFFECTIVE_LOCK%/*}"
+LOCK_PARENT="${PREBUILD_EFFECTIVE_LOCK%/*}"
 test -d "$LOCK_PARENT" && test ! -L "$LOCK_PARENT"
 test "$(/usr/bin/stat -f '%u' "$LOCK_PARENT")" = "$CURRENT_UID"
-if [[ -e "$EFFECTIVE_LOCK" || -L "$EFFECTIVE_LOCK" ]]; then
-  test -f "$EFFECTIVE_LOCK" && test ! -L "$EFFECTIVE_LOCK"
-  test "$(/usr/bin/stat -f '%u' "$EFFECTIVE_LOCK")" = "$CURRENT_UID"
+if [[ -e "$PREBUILD_EFFECTIVE_LOCK" || -L "$PREBUILD_EFFECTIVE_LOCK" ]]; then
+  test -f "$PREBUILD_EFFECTIVE_LOCK" && test ! -L "$PREBUILD_EFFECTIVE_LOCK"
+  test "$(/usr/bin/stat -f '%u' "$PREBUILD_EFFECTIVE_LOCK")" = "$CURRENT_UID"
 fi
-exec 8>"$EFFECTIVE_LOCK"
-test "$(/usr/bin/stat -f '%u' "$EFFECTIVE_LOCK")" = "$CURRENT_UID"
-/bin/chmod 600 "$EFFECTIVE_LOCK"
+exec 8>"$PREBUILD_EFFECTIVE_LOCK"
+test "$(/usr/bin/stat -f '%u' "$PREBUILD_EFFECTIVE_LOCK")" = "$CURRENT_UID"
+/bin/chmod 600 "$PREBUILD_EFFECTIVE_LOCK"
 "$FLOCK_BIN" -n 8
-# LOCKED_PRE_BOOTOUT_GATE
-assert_successful_terminal_backup_and_no_processes
 
 test -d "/Applications" && test ! -L "/Applications"
 test -d "/usr/local/bin" && test ! -L "/usr/local/bin"
 test -d "$APP_FINAL" && test ! -L "$APP_FINAL"
 test -f "$SCRIPT_FINAL" && test ! -L "$SCRIPT_FINAL" && test -x "$SCRIPT_FINAL"
+test "$(/usr/bin/stat -f '%u:%g:%Lp' "$SCRIPT_FINAL")" = "0:0:755"
 OLD_APP_HASH="$(/usr/bin/shasum -a 256 \
   "$APP_FINAL/Contents/MacOS/GDriveBackupTiger" | /usr/bin/awk '{print $1}')"
 OLD_SCRIPT_HASH="$(/usr/bin/shasum -a 256 "$SCRIPT_FINAL" | /usr/bin/awk '{print $1}')"
-CONTROLLER_PLIST_HASH="$(/usr/bin/shasum -a 256 "$CONTROLLER_PLIST" |
-  /usr/bin/awk '{print $1}')"
-SCHEDULE_PLIST_HASH="$(/usr/bin/shasum -a 256 "$SCHEDULE_PLIST" |
-  /usr/bin/awk '{print $1}')"
 
 STAMP="$(/bin/date -u '+%Y%m%dT%H%M%SZ')"
 ROLLBACK="$(/usr/bin/mktemp -d "$ROLLBACK_PARENT/v2.4.4-$STAMP.XXXXXX")"
 test -d "$ROLLBACK" && test ! -L "$ROLLBACK"
 test "$(/usr/bin/stat -f '%u' "$ROLLBACK")" = "$CURRENT_UID"
 canonical_config_manifest "$CONFIG_DIR" "$ROLLBACK/config-before.manifest"
+/usr/bin/cmp -s "$PREBUILD_CONFIG_MANIFEST" \
+  "$ROLLBACK/config-before.manifest"
 /usr/bin/shasum -a 256 "$ROLLBACK/config-before.manifest" > \
   "$ROLLBACK/config-before.manifest.sha256"
 /usr/bin/ditto "$APP_FINAL" "$ROLLBACK/GDrive Backup Tiger.app"
-/usr/bin/sudo /usr/bin/install -m 755 "$SCRIPT_FINAL" \
+/usr/bin/sudo /usr/bin/install -o 0 -g 0 -m 755 "$SCRIPT_FINAL" \
   "$ROLLBACK/backup-google-drive.sh"
 test "$(/usr/bin/shasum -a 256 \
   "$ROLLBACK/GDrive Backup Tiger.app/Contents/MacOS/GDriveBackupTiger" |
   /usr/bin/awk '{print $1}')" = "$OLD_APP_HASH"
 test "$(/usr/bin/shasum -a 256 "$ROLLBACK/backup-google-drive.sh" |
   /usr/bin/awk '{print $1}')" = "$OLD_SCRIPT_HASH"
+test "$(/usr/bin/stat -f '%u:%g:%Lp' "$ROLLBACK/backup-google-drive.sh")" = \
+  "0:0:755"
 
 APP_TXN="$(/usr/bin/sudo /usr/bin/mktemp -d "/Applications/.gdrive-v2.4.4-txn.XXXXXX")"
 SCRIPT_TXN="$(/usr/bin/sudo /usr/bin/mktemp -d "/usr/local/bin/.gdrive-v2.4.4-txn.XXXXXX")"
-/usr/bin/sudo /usr/sbin/chown "$CURRENT_UID:$CURRENT_GID" "$APP_TXN" "$SCRIPT_TXN"
-/bin/chmod 700 "$APP_TXN" "$SCRIPT_TXN"
+/usr/bin/sudo /usr/sbin/chown "$CURRENT_UID:$CURRENT_GID" "$APP_TXN"
+/bin/chmod 700 "$APP_TXN"
+/usr/bin/sudo /usr/sbin/chown 0:0 "$SCRIPT_TXN"
+/usr/bin/sudo /bin/chmod 755 "$SCRIPT_TXN"
 test -d "$APP_TXN" && test ! -L "$APP_TXN"
 test -d "$SCRIPT_TXN" && test ! -L "$SCRIPT_TXN"
 test "$(/usr/bin/stat -f '%u' "$APP_TXN")" = "$CURRENT_UID"
-test "$(/usr/bin/stat -f '%u' "$SCRIPT_TXN")" = "$CURRENT_UID"
 test "$(/usr/bin/stat -f '%Lp' "$APP_TXN")" = "700"
-test "$(/usr/bin/stat -f '%Lp' "$SCRIPT_TXN")" = "700"
+test "$(/usr/bin/stat -f '%u:%g:%Lp' "$SCRIPT_TXN")" = "0:0:755"
 test "$(/usr/bin/stat -f '%d' "$APP_TXN")" = "$(/usr/bin/stat -f '%d' /Applications)"
 test "$(/usr/bin/stat -f '%d' "$SCRIPT_TXN")" = "$(/usr/bin/stat -f '%d' /usr/local/bin)"
 APP_INCOMING="$APP_TXN/incoming.app"
@@ -2234,7 +2524,7 @@ test ! -e "$SCRIPT_PREVIOUS" && test ! -L "$SCRIPT_PREVIOUS"
 test ! -e "$APP_QUARANTINE" && test ! -L "$APP_QUARANTINE"
 test ! -e "$SCRIPT_QUARANTINE" && test ! -L "$SCRIPT_QUARANTINE"
 /usr/bin/ditto "$STAGED_APP" "$APP_INCOMING"
-/usr/bin/install -m 755 "$STAGED_SCRIPT" "$SCRIPT_INCOMING"
+/usr/bin/sudo /usr/bin/install -o 0 -g 0 -m 755 "$STAGED_SCRIPT" "$SCRIPT_INCOMING"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_INCOMING"
 /bin/bash -n "$SCRIPT_INCOMING"
 test "$(/usr/bin/shasum -a 256 \
@@ -2242,10 +2532,14 @@ test "$(/usr/bin/shasum -a 256 \
   "$APP_HASH"
 test "$(/usr/bin/shasum -a 256 "$SCRIPT_INCOMING" | /usr/bin/awk '{print $1}')" = \
   "$SCRIPT_HASH"
-test "$(/usr/bin/stat -f '%Lp' "$SCRIPT_INCOMING")" = "755"
+test "$(/usr/bin/stat -f '%u:%g:%Lp' "$SCRIPT_INCOMING")" = "0:0:755"
 
 # The EXIT and signal traps already see RECOVERY_ARMED before the first
 # service mutation. Any signal from here enters hash-aware recovery.
+# LOCKED_SNAPSHOT_REVALIDATION
+assert_runtime_snapshot_matches_prebuild "$STAGE/config-locked.manifest" "$STAGE/locked-effective-state.sh"
+# LOCKED_PRE_BOOTOUT_GATE
+assert_successful_terminal_backup_and_no_processes
 RECOVERY_ARMED=1
 # FIRST_SERVICE_MUTATION
 /bin/launchctl bootout "$DOMAIN" "$SCHEDULE_PLIST"
