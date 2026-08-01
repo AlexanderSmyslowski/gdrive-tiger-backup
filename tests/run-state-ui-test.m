@@ -41,6 +41,17 @@ static NSString *RunReason(AppDelegate *delegate, NSString *path) {
     return method(delegate, selector, path);
 }
 
+static void ReadProgressFile(AppDelegate *delegate) {
+    SEL selector = NSSelectorFromString(@"readProgressFile");
+    if (![delegate respondsToSelector:selector]) {
+        failures++;
+        return;
+    }
+    typedef void (*ReadProgressMethod)(id, SEL);
+    ReadProgressMethod method = (ReadProgressMethod)[delegate methodForSelector:selector];
+    method(delegate, selector);
+}
+
 static NSData *RenderedTerminalState(TigerBackupView *view, NSString *status) {
     SEL selector = NSSelectorFromString(@"setTerminalStatus:");
     if (![view respondsToSelector:selector]) {
@@ -325,6 +336,42 @@ int main(void) {
         [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:sentinelPath]
                                    resultingItemURL:nil
                                               error:nil];
+
+        NSString *progressPath = [NSTemporaryDirectory()
+            stringByAppendingPathComponent:[NSString stringWithFormat:
+                @"gdrive-foreground-progress-%@", NSUUID.UUID.UUIDString]];
+        AppDelegate *progressDelegate = [[AppDelegate alloc] init];
+        TigerBackupView *progressView = [[TigerBackupView alloc]
+            initWithFrame:NSMakeRect(0, 0, 392, 162)];
+        progressDelegate.window = [[NSWindow alloc]
+            initWithContentRect:NSMakeRect(0, 0, 392, 162)
+                      styleMask:NSWindowStyleMaskBorderless
+                        backing:NSBackingStoreBuffered
+                          defer:NO];
+        progressDelegate.window.contentView = progressView;
+        progressDelegate.progressPath = progressPath;
+        [@"label=Shared Drive\nphase=3/5\npercent=63\ndetail=630.000 MiB / 1.000 GiB, 10.000 MiB/s, ETA 37s\n"
+            writeToFile:progressPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        ReadProgressFile(progressDelegate);
+        BOOL richSnapshotApplied = progressView.progressPercent == 63.0 &&
+            [progressView.progressTitle isEqualToString:@"3/5 · Shared Drive"] &&
+            [progressView.progressDetail isEqualToString:
+                @"630.000 MiB / 1.000 GiB, 10.000 MiB/s, ETA 37s"];
+
+        [@"label=My Drive\nphase=1/5\n"
+            writeToFile:progressPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        ReadProgressFile(progressDelegate);
+        if (richSnapshotApplied && progressView.progressPercent < 0.0 &&
+            [progressView.progressTitle isEqualToString:@"1/5 · My Drive"] &&
+            progressView.progressDetail.length == 0 &&
+            progressView.progressIndicator.indeterminate) {
+            printf("ok - phase-only foreground snapshot clears stale rich progress\n");
+        } else {
+            printf("not ok - phase-only foreground snapshot retained stale rich progress\n");
+            failures++;
+        }
+        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:progressPath]
+                                   resultingItemURL:nil error:nil];
 
         TigerBackupView *view = [[TigerBackupView alloc] initWithFrame:NSMakeRect(0, 0, 392, 162)];
         NSData *successImage = RenderedTerminalState(view, @"success");

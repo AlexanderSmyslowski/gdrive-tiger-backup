@@ -155,6 +155,16 @@ int main(void) {
                    preparing, summary, @"running", @"default", now) != nil,
                @"a valid preparation record remains indeterminate");
 
+        NSMutableDictionary *phaseOnly = [progress mutableCopy];
+        [phaseOnly removeObjectForKey:@"percent"];
+        [phaseOnly removeObjectForKey:@"detail"];
+        NSDictionary *acceptedPhaseOnly = GDTValidatedBackupProgressForValues(
+            phaseOnly, summary, @"running", @"default", now);
+        Assert([acceptedPhaseOnly[@"phase"] isEqualToString:@"3/5"] &&
+               acceptedPhaseOnly[@"percent"] == nil &&
+               acceptedPhaseOnly[@"detail"] == nil,
+               @"a fresh copy-phase heartbeat remains valid and indeterminate");
+
         NSString *fixtureRoot = NSProcessInfo.processInfo.environment[
             @"GDRIVE_PROGRESS_TEST_DIR"];
         NSString *validPath = [fixtureRoot

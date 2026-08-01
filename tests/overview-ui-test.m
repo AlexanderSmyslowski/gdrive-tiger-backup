@@ -659,6 +659,19 @@ int main(void) {
                ![preparingRetrySnapshot[@"progressDetail"] containsString:@"MiB/s"],
                @"retry without telemetry stays visibly indeterminate without invented detail");
 
+        NSDictionary *phaseOnlyRetrySnapshot = [delegate overviewSnapshotForConfig:dailyNAS
+            summary:retrySummary status:@"running" progress:@{
+                @"label": @"Shared Drive", @"phase": @"4/5"
+            } now:now calendar:calendar];
+        Assert([phaseOnlyRetrySnapshot[@"progressVisible"] isEqualToString:@"1"] &&
+               [phaseOnlyRetrySnapshot[@"progressPhase"]
+                   isEqualToString:[NSString stringWithFormat:T(@"en", @"progressAreaFormat"),
+                       @"4", @"5"]] &&
+               [phaseOnlyRetrySnapshot[@"progressPercent"] isEqualToString:@""] &&
+               [phaseOnlyRetrySnapshot[@"progressDetail"]
+                   isEqualToString:T(@"en", @"progressPreparing")],
+               @"fresh phase-only retry telemetry renders indeterminate");
+
         NSDictionary<NSString *, NSString *> *snapshot =
             [delegate overviewSnapshotForConfig:config summaryPath:summaryPath now:now calendar:calendar];
         Assert([snapshot[@"status"] isEqualToString:@"success"] &&

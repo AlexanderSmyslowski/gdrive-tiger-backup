@@ -6824,17 +6824,15 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         contentView.progressTitle = [NSString stringWithFormat:@"%@ · %@", phase, label];
     } else if (label.length) {
         contentView.progressTitle = label;
+    } else {
+        contentView.progressTitle = nil;
     }
 
-    NSString *detail = values[@"detail"];
-    if (detail.length) {
-        contentView.progressDetail = detail;
-    }
+    contentView.progressDetail = values[@"detail"];
 
     NSString *percent = values[@"percent"];
-    if (percent.length) {
-        contentView.progressPercent = MAX(0.0, MIN(100.0, percent.doubleValue));
-    }
+    contentView.progressPercent = percent.length
+        ? MAX(0.0, MIN(100.0, percent.doubleValue)) : -1.0;
 
     contentView.needsDisplay = YES;
 }

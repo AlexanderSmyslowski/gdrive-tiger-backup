@@ -115,6 +115,10 @@ case "${1:-}" in
       fi
       previous="$argument"
     done
+    if [[ -n "${FAKE_RCLONE_ADVANCE_EPOCH_TO:-}" &&
+          -n "${FAKE_DATE_EPOCH_FILE:-}" ]]; then
+      printf '%s\n' "$FAKE_RCLONE_ADVANCE_EPOCH_TO" >"$FAKE_DATE_EPOCH_FILE"
+    fi
     if [[ -n "${FAKE_RCLONE_COPY_OUTPUT:-}" &&
           " $* " != *" --drive-root-folder-id "* ]]; then
       if [[ "${FAKE_RCLONE_COPY_OUTPUT_SHARED_ONLY:-0}" != "1" ||
@@ -142,6 +146,15 @@ case "${1:-}" in
     ;;
 esac
 exit 64
+SH
+
+  cat >"$FAKE_BIN/date" <<'SH'
+#!/bin/bash
+if [[ "${1:-}" == "+%s" && -n "${FAKE_DATE_EPOCH_FILE:-}" ]]; then
+  /bin/cat "$FAKE_DATE_EPOCH_FILE"
+  exit 0
+fi
+exec /bin/date "$@"
 SH
 
   cat >"$FAKE_BIN/jq" <<'SH'
@@ -250,7 +263,7 @@ SH
   done
   chmod +x "$FAKE_BIN/rclone" "$FAKE_BIN/jq" "$FAKE_BIN/open" "$FAKE_BIN/flock" \
     "$FAKE_BIN/mount" "$FAKE_BIN/osascript" "$FAKE_BIN/mount-helper" \
-    "$FAKE_BIN/cmp" "$FAKE_BIN/trash" \
+    "$FAKE_BIN/cmp" "$FAKE_BIN/trash" "$FAKE_BIN/date" \
     "$FAKE_BIN/diskutil" "$FAKE_BIN/plutil"
 }
 
@@ -259,6 +272,7 @@ enable_state_publish_order_spy() {
 #!/bin/bash
 destination=""
 for argument in "$@"; do destination="$argument"; done
+source_path="${@: -2:1}"
 case "$destination" in
   */last-run.status|*/current-progress.status)
     if [[ -n "${GDRIVE_BACKUP_STATE_PUBLISH_TEST_LOG:-}" ]]; then
@@ -266,6 +280,29 @@ case "$destination" in
     fi
     ;;
 esac
+if [[ "$destination" == */last-run.status &&
+      "${GDRIVE_BACKUP_FAIL_TERMINAL_SUMMARY:-0}" == "1" ]] &&
+   /usr/bin/grep -Eq '^status=(success|failure|cancelled)$' "$source_path"; then
+  exit 91
+fi
+if [[ "$destination" == */current-progress.status &&
+      "${GDRIVE_BACKUP_FAIL_RICH_PROGRESS_AT:-0}" =~ ^[1-9][0-9]*$ ]] &&
+   /usr/bin/grep -q '^percent=' "$source_path"; then
+  count_file="${GDRIVE_BACKUP_RICH_PROGRESS_COUNT_FILE:?}"
+  count="$(/bin/cat "$count_file" 2>/dev/null || printf '0')"
+  count=$((count + 1))
+  printf '%s\n' "$count" >"$count_file"
+  if [[ "$count" == "$GDRIVE_BACKUP_FAIL_RICH_PROGRESS_AT" ]]; then
+    exit 92
+  fi
+fi
+if [[ -n "${GDRIVE_BACKUP_FOREGROUND_PROGRESS_SNAPSHOT_FILE:-}" &&
+      ! -e "$GDRIVE_BACKUP_FOREGROUND_PROGRESS_SNAPSHOT_FILE" &&
+      "$destination" == */gdrive-backup-progress.* ]] &&
+   /usr/bin/grep -Fxq 'label=My Drive' "$source_path" &&
+   /usr/bin/grep -Fxq 'phase=1/2' "$source_path"; then
+  /bin/cat "$source_path" >"$GDRIVE_BACKUP_FOREGROUND_PROGRESS_SNAPSHOT_FILE"
+fi
 exec /bin/mv "$@"
 SH
   chmod +x "$FAKE_BIN/mv"
@@ -321,6 +358,8 @@ run_backup_with_mode() {
     FAKE_RCLONE_REJECT_SHARED_FOR_ID="${FAKE_RCLONE_REJECT_SHARED_FOR_ID:-0}" \
     FAKE_RCLONE_COPY_OUTPUT_SHARED_ONLY="${FAKE_RCLONE_COPY_OUTPUT_SHARED_ONLY:-0}" \
     FAKE_RCLONE_COPY_OUTPUT_TEAM_DRIVE_ONLY="${FAKE_RCLONE_COPY_OUTPUT_TEAM_DRIVE_ONLY:-0}" \
+    FAKE_RCLONE_ADVANCE_EPOCH_TO="${FAKE_RCLONE_ADVANCE_EPOCH_TO:-}" \
+    FAKE_DATE_EPOCH_FILE="${FAKE_DATE_EPOCH_FILE:-}" \
     FAKE_JQ_USE_SYSTEM="${FAKE_JQ_USE_SYSTEM:-0}" \
     FAKE_RCLONE_ARGS_FILE="${FAKE_RCLONE_ARGS_FILE:-}" \
     FAKE_RCLONE_SLEEP_SECONDS="${FAKE_RCLONE_SLEEP_SECONDS:-0}" \
@@ -342,6 +381,10 @@ run_backup_with_mode() {
     FAKE_OPEN_LOG="$OPEN_LOG" \
     FAKE_OPEN_STATUS="${FAKE_OPEN_STATUS:-0}" \
     FAKE_CONFIRM_DECISION="${FAKE_CONFIRM_DECISION:-}" \
+    GDRIVE_BACKUP_FAIL_TERMINAL_SUMMARY="${GDRIVE_BACKUP_FAIL_TERMINAL_SUMMARY:-0}" \
+    GDRIVE_BACKUP_FAIL_RICH_PROGRESS_AT="${GDRIVE_BACKUP_FAIL_RICH_PROGRESS_AT:-0}" \
+    GDRIVE_BACKUP_RICH_PROGRESS_COUNT_FILE="${GDRIVE_BACKUP_RICH_PROGRESS_COUNT_FILE:-}" \
+    GDRIVE_BACKUP_FOREGROUND_PROGRESS_SNAPSHOT_FILE="${GDRIVE_BACKUP_FOREGROUND_PROGRESS_SNAPSHOT_FILE:-}" \
     RCLONE_REMOTE=tdd-remote \
     "$@" \
     "$BACKUP_SCRIPT" "$mode"
@@ -1843,6 +1886,187 @@ test_lock_loser_preserves_owner_progress() {
   fi
 }
 
+test_terminal_summary_publish_failure_keeps_progress_live() {
+  local name="failed terminal summary publication cannot finish durable progress"
+  local progress summary status warning_count log_file
+  prepare_test_environment
+  enable_state_publish_order_spy
+  progress="$TEST_HOME/profiles/default/current-progress.status"
+  mkdir -p "${progress%/*}"
+
+  GDRIVE_BACKUP_FAIL_TERMINAL_SUMMARY=1 run_backup \
+    "GDRIVE_BACKUP_PROFILE_ID=default" \
+    "GDRIVE_BACKUP_PROGRESS_STATE_FILE=$progress"
+  status=$?
+  summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+  progress="$(cat "$progress" 2>/dev/null || true)"
+  log_file="$TEST_HOME/Library/Logs/gdrive-backup.log"
+  warning_count="$(grep -Fc 'Backup-Status konnte nicht sicher aktualisiert werden.' \
+    "$log_file" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" && "$summary" == *$'status=running\n'* &&
+        "$summary" != *$'finished_at='* &&
+        "$progress" != *$'status=finished\n'* &&
+        "$warning_count" == "1" ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status warning_count=$warning_count summary=${summary//$'\n'/,} progress=${progress//$'\n'/,})"
+  fi
+}
+
+test_unknown_total_refreshes_indeterminate_progress() {
+  local name="unknown-total aggregate refreshes private phase-only progress"
+  local progress epoch_file content status backup_pid attempt
+  prepare_test_environment
+  progress="$TEST_HOME/profiles/default/current-progress.status"
+  epoch_file="$TEST_HOME/epoch"
+  mkdir -p "${progress%/*}"
+  printf '1783790000\n' >"$epoch_file"
+
+  FAKE_RCLONE_COPY_OUTPUT='Transferred: 12.000 MiB / 0 B, -, 1.500 MiB/s, ETA -' \
+  FAKE_RCLONE_ADVANCE_EPOCH_TO=1783790121 \
+  FAKE_RCLONE_SLEEP_SECONDS=2 \
+    run_backup \
+      "GDRIVE_BACKUP_PROFILE_ID=default" \
+      "GDRIVE_BACKUP_PROGRESS_STATE_FILE=$progress" \
+      "FAKE_DATE_EPOCH_FILE=$epoch_file" &
+  backup_pid=$!
+
+  content=""
+  for attempt in {1..200}; do
+    : "$attempt"
+    content="$(cat "$progress" 2>/dev/null || true)"
+    [[ "$content" == *'updated_at=1783790121'* ]] && break
+    /bin/sleep 0.02
+  done
+  kill -TERM "$backup_pid" 2>/dev/null || true
+  wait "$backup_pid" 2>/dev/null
+  status=$?
+
+  if [[ "$status" == "143" &&
+        "$content" == *$'label=My Drive\n'* &&
+        "$content" == *$'phase=1/2\n'* &&
+        "$content" == *'updated_at=1783790121'* &&
+        "$content" != *$'percent='* &&
+        "$content" != *$'detail='* &&
+        "$content" != *'secret'* ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status progress=${content//$'\n'/,})"
+  fi
+}
+
+test_off_total_refreshes_indeterminate_progress() {
+  local name="canonical off-total aggregate refreshes phase-only progress"
+  local progress epoch_file content status backup_pid attempt
+  prepare_test_environment
+  progress="$TEST_HOME/profiles/default/current-progress.status"
+  epoch_file="$TEST_HOME/epoch"
+  mkdir -p "${progress%/*}"
+  printf '1783790200\n' >"$epoch_file"
+
+  FAKE_RCLONE_COPY_OUTPUT='Transferred: 12.000 MiB / off, -, 1.500 MiB/s, ETA -' \
+  FAKE_RCLONE_ADVANCE_EPOCH_TO=1783790321 \
+  FAKE_RCLONE_SLEEP_SECONDS=2 \
+    run_backup \
+      "GDRIVE_BACKUP_PROFILE_ID=default" \
+      "GDRIVE_BACKUP_PROGRESS_STATE_FILE=$progress" \
+      "FAKE_DATE_EPOCH_FILE=$epoch_file" &
+  backup_pid=$!
+
+  content=""
+  for attempt in {1..200}; do
+    : "$attempt"
+    content="$(cat "$progress" 2>/dev/null || true)"
+    [[ "$content" == *'updated_at=1783790321'* ]] && break
+    /bin/sleep 0.02
+  done
+  kill -TERM "$backup_pid" 2>/dev/null || true
+  wait "$backup_pid" 2>/dev/null
+  status=$?
+
+  if [[ "$status" == "143" &&
+        "$content" == *$'label=My Drive\n'* &&
+        "$content" == *$'phase=1/2\n'* &&
+        "$content" == *'updated_at=1783790321'* &&
+        "$content" != *$'percent='* &&
+        "$content" != *$'detail='* ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status progress=${content//$'\n'/,})"
+  fi
+}
+
+test_rich_progress_failure_falls_back_to_phase_only() {
+  local name="failed rich publication replaces prior percent with phase-only progress"
+  local progress count_file content status backup_pid attempt count
+  prepare_test_environment
+  enable_state_publish_order_spy
+  progress="$TEST_HOME/profiles/default/current-progress.status"
+  count_file="$TEST_HOME/rich-progress-count"
+  mkdir -p "${progress%/*}"
+
+  GDRIVE_BACKUP_FAIL_RICH_PROGRESS_AT=2 \
+  GDRIVE_BACKUP_RICH_PROGRESS_COUNT_FILE="$count_file" \
+  FAKE_RCLONE_COPY_OUTPUT=$'Transferred: 250.000 MiB / 1.000 GiB, 25%, 10.000 MiB/s, ETA 1m\nTransferred: 630.000 MiB / 1.000 GiB, 63%, 10.000 MiB/s, ETA 37s' \
+  FAKE_RCLONE_SLEEP_SECONDS=5 \
+    run_backup \
+      "GDRIVE_BACKUP_PROFILE_ID=default" \
+      "GDRIVE_BACKUP_PROGRESS_STATE_FILE=$progress" &
+  backup_pid=$!
+
+  content=""
+  count="0"
+  for attempt in {1..200}; do
+    : "$attempt"
+    count="$(cat "$count_file" 2>/dev/null || printf '0')"
+    content="$(cat "$progress" 2>/dev/null || true)"
+    if [[ "$count" == "2" && "$content" != *$'percent='* &&
+          "$content" != *$'detail='* ]]; then
+      break
+    fi
+    /bin/sleep 0.02
+  done
+  kill -TERM "$backup_pid" 2>/dev/null || true
+  wait "$backup_pid" 2>/dev/null
+  status=$?
+
+  if [[ "$status" == "143" && "$count" == "2" &&
+        "$content" == *$'label=My Drive\n'* &&
+        "$content" == *$'phase=1/2\n'* &&
+        "$content" != *$'percent='* &&
+        "$content" != *$'detail='* ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status rich_attempts=$count progress=${content//$'\n'/,})"
+  fi
+}
+
+test_foreground_copy_starts_indeterminate() {
+  local name="foreground copy phase starts indeterminate without invented zero"
+  local content snapshot_file status
+  prepare_test_environment
+  enable_state_publish_order_spy
+  mkdir -p "$TEST_HOME/GDrive Backup Tiger.app"
+  snapshot_file="$TEST_HOME/copy-start-progress.status"
+
+  BACKUP_DISABLE_ANIMATION=0 \
+  GDRIVE_BACKUP_FOREGROUND_PROGRESS_SNAPSHOT_FILE="$snapshot_file" \
+    run_backup \
+      "GDRIVE_BACKUP_ANIMATION_APP=$TEST_HOME/GDrive Backup Tiger.app" \
+      "GDRIVE_BACKUP_OPEN_BIN=$FAKE_BIN/open" \
+      "BACKUP_PROGRESS_FOREGROUND=1"
+  status=$?
+  content="$(cat "$snapshot_file" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" &&
+        "$content" == $'label=My Drive\nphase=1/2' ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status progress=${content//$'\n'/,})"
+  fi
+}
+
 test_headless_retry_publishes_private_progress() {
   local name="headless retry publishes private aggregate progress"
   local progress content summary mode status backup_pid attempt
@@ -2043,6 +2267,11 @@ test_failure_persists_failed_summary
 test_later_failure_preserves_last_success_marker
 test_concurrent_start_preserves_previous_summary
 test_lock_loser_preserves_owner_progress
+test_terminal_summary_publish_failure_keeps_progress_live
+test_unknown_total_refreshes_indeterminate_progress
+test_off_total_refreshes_indeterminate_progress
+test_rich_progress_failure_falls_back_to_phase_only
+test_foreground_copy_starts_indeterminate
 test_paused_automatic_run_is_silent_and_preserves_history
 test_headless_retry_publishes_private_progress
 test_headless_retry_never_opens_progress_window

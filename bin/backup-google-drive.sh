@@ -1766,6 +1766,7 @@ write_progress() {
     [[ -n "$phase" ]] && printf 'phase=%s\n' "$(progress_escape "$phase")"
     [[ -n "$percent" ]] && printf 'percent=%s\n' "$(progress_escape "$percent")"
     [[ -n "$detail" ]] && printf 'detail=%s\n' "$(progress_escape "$detail")"
+    :
   } >"$tmp" && mv -f "$tmp" "$PROGRESS_FILE"
 }
 
@@ -1780,17 +1781,40 @@ public_progress_label() {
 parse_rclone_progress_fields() {
   local line="$1"
   local pattern='^Transferred:[[:space:]]*([0-9][0-9.]*[[:space:]]+([KMGTPE]i)?B)[[:space:]]+/[[:space:]]+([0-9][0-9.]*[[:space:]]+([KMGTPE]i)?B),[[:space:]]+([0-9]{1,3})%,[[:space:]]+([0-9][0-9.]*[[:space:]]+([KMGTPE]i)?B/s),[[:space:]]+ETA[[:space:]]+(-|([0-9]+[dhms])+)$'
+  local transferred total percent speed eta
+  RCLONE_PROGRESS_TRANSFERRED=""
+  RCLONE_PROGRESS_TOTAL=""
+  RCLONE_PROGRESS_PERCENT=""
+  RCLONE_PROGRESS_SPEED=""
+  RCLONE_PROGRESS_ETA=""
+  RCLONE_PROGRESS_DETAIL=""
   [[ "$line" =~ $pattern ]] || return 1
-  RCLONE_PROGRESS_TRANSFERRED="${BASH_REMATCH[1]}"
-  RCLONE_PROGRESS_TOTAL="${BASH_REMATCH[3]}"
-  RCLONE_PROGRESS_PERCENT="${BASH_REMATCH[5]}"
-  RCLONE_PROGRESS_SPEED="${BASH_REMATCH[6]}"
-  RCLONE_PROGRESS_ETA="${BASH_REMATCH[8]}"
-  [[ "${RCLONE_PROGRESS_TRANSFERRED%% *}" =~ ^[0-9]+([.][0-9]+)?$ &&
-     "${RCLONE_PROGRESS_TOTAL%% *}" =~ ^[0-9]+([.][0-9]+)?$ &&
-     "${RCLONE_PROGRESS_SPEED%% *}" =~ ^[0-9]+([.][0-9]+)?$ &&
-     "$RCLONE_PROGRESS_PERCENT" -le 100 ]] || return 1
+  transferred="${BASH_REMATCH[1]}"
+  total="${BASH_REMATCH[3]}"
+  percent="${BASH_REMATCH[5]}"
+  speed="${BASH_REMATCH[6]}"
+  eta="${BASH_REMATCH[8]}"
+  [[ "${transferred%% *}" =~ ^[0-9]+([.][0-9]+)?$ &&
+     "${total%% *}" =~ ^[0-9]+([.][0-9]+)?$ &&
+     "${speed%% *}" =~ ^[0-9]+([.][0-9]+)?$ &&
+     "$percent" -le 100 ]] || return 1
+  RCLONE_PROGRESS_TRANSFERRED="$transferred"
+  RCLONE_PROGRESS_TOTAL="$total"
+  RCLONE_PROGRESS_PERCENT="$percent"
+  RCLONE_PROGRESS_SPEED="$speed"
+  RCLONE_PROGRESS_ETA="$eta"
   RCLONE_PROGRESS_DETAIL="$RCLONE_PROGRESS_TRANSFERRED / $RCLONE_PROGRESS_TOTAL, $RCLONE_PROGRESS_SPEED, ETA $RCLONE_PROGRESS_ETA"
+}
+
+parse_rclone_unknown_total_progress() {
+  local line="$1"
+  local pattern='^Transferred:[[:space:]]*([0-9][0-9.]*[[:space:]]+([KMGTPE]i)?B)[[:space:]]+/[[:space:]]+(0[[:space:]]+B|off),[[:space:]]+-,[[:space:]]+([0-9][0-9.]*[[:space:]]+([KMGTPE]i)?B/s),[[:space:]]+ETA[[:space:]]+-$'
+  local transferred speed
+  [[ "$line" =~ $pattern ]] || return 1
+  transferred="${BASH_REMATCH[1]}"
+  speed="${BASH_REMATCH[4]}"
+  [[ "${transferred%% *}" =~ ^[0-9]+([.][0-9]+)?$ &&
+     "${speed%% *}" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
 }
 
 write_durable_progress() {
@@ -1873,6 +1897,13 @@ warn_progress_unavailable() {
   fi
 }
 
+warn_state_publication_unavailable() {
+  if [[ "${RUN_STATE_WARNING_LOGGED:-0}" != "1" ]]; then
+    log "WARNUNG: Backup-Status konnte nicht sicher aktualisiert werden."
+    RUN_STATE_WARNING_LOGGED=1
+  fi
+}
+
 write_run_state() {
   [[ -n "$RUN_STATE_FILE" ]] || return 0
 
@@ -1897,15 +1928,15 @@ write_last_run_summary() {
   local exit_code="${2:-}"
   local summary_dir tmp finished_at last_success_at=""
 
-  [[ "$DRY_RUN" == "0" && "$SETUP_UI" == "0" ]] || return 0
+  [[ "$DRY_RUN" == "0" && "$SETUP_UI" == "0" ]] || return 2
   # A lock-contended process did not perform a backup and must not replace the
   # status of the process that actually owns the destination.
-  [[ "$status" != "skipped" ]] || return 0
-  [[ -n "$SUMMARY_STATE_FILE" ]] || return 0
+  [[ "$status" != "skipped" ]] || return 2
+  [[ -n "$SUMMARY_STATE_FILE" ]] || return 2
 
   summary_dir="${SUMMARY_STATE_FILE%/*}"
   [[ "$summary_dir" != "$SUMMARY_STATE_FILE" ]] || summary_dir="."
-  (umask 077 && mkdir -p "$summary_dir") || return 0
+  (umask 077 && mkdir -p "$summary_dir") || return 1
   tmp="${SUMMARY_STATE_FILE}.$$"
   finished_at="$(date +%s 2>/dev/null || printf '0')"
   if [[ -f "$SUMMARY_STATE_FILE" ]]; then
@@ -1941,7 +1972,7 @@ write_last_run_summary() {
   fi
 
   cleanup_temp_file "$tmp"
-  return 0
+  return 1
 }
 
 finish_run_state() {
@@ -1965,6 +1996,12 @@ update_progress_from_rclone_line() {
         "$RCLONE_PROGRESS_PERCENT" "$RCLONE_PROGRESS_DETAIL" "$phase"; then
       warn_progress_unavailable
       write_progress "$label" "" "" "$phase"
+      write_durable_progress "$(public_progress_label "$label")" "" "" "$phase" || true
+    fi
+  elif parse_rclone_unknown_total_progress "$line"; then
+    write_progress "$label" "" "" "$phase"
+    if ! write_durable_progress "$(public_progress_label "$label")" "" "" "$phase"; then
+      warn_progress_unavailable
     fi
   fi
 }
@@ -2138,13 +2175,19 @@ stop_animation() {
 
 cleanup() {
   local exit_status="$1"
+  local summary_publish_status=0
   # Publish the terminal result before the sentinel disappears, so the UI can
   # never infer success merely from process cleanup.
   finish_run_state "$exit_status"
-  if [[ "$DURABLE_PROGRESS_OWNED" == "1" ]]; then
+  summary_publish_status=$?
+  if [[ "$summary_publish_status" == "0" && "$DURABLE_PROGRESS_OWNED" == "1" ]]; then
     if ! finish_durable_progress; then
       warn_progress_unavailable
     fi
+  elif [[ "$summary_publish_status" == "1" ]]; then
+    # Keep the last live record intact. Its PID check makes it invalid as soon
+    # as this process exits, without ever claiming a terminal backup result.
+    warn_state_publication_unavailable
   fi
   stop_animation
 }
@@ -4117,7 +4160,7 @@ copy_one() {
   if ! write_durable_progress "$(public_progress_label "$label")" "" "" "$phase"; then
     warn_progress_unavailable
   fi
-  write_progress "$label" "0" "$(t progress_preparing)" "$phase"
+  write_progress "$label" "" "" "$phase"
   if [[ "$VERSIONING" == "1" ]]; then
     run_rclone_with_progress "$label" "$phase" rclone copy "$source" "$dest" \
       --backup-dir "$backup_dir" "$@" "${RCLONE_OPTS[@]}" || copy_status=$?
