@@ -176,6 +176,8 @@ elif [[ -n "$ACTIVE_PROFILE_ID" ]]; then
 else
   SUMMARY_STATE_FILE="$HOME/Library/Application Support/GDrive Backup Tiger/last-run.status"
 fi
+DURABLE_PROGRESS_FILE="${GDRIVE_BACKUP_PROGRESS_STATE_FILE:-}"
+PROGRESS_PROFILE_ID="${GDRIVE_BACKUP_PROFILE_ID:-${ACTIVE_PROFILE_ID:-legacy}}"
 RUN_STARTED_AT=0
 OPEN_BIN="${GDRIVE_BACKUP_OPEN_BIN:-/usr/bin/open}"
 CONFIRM_BACKUP="${GDRIVE_BACKUP_CONFIRM:-1}"
@@ -1766,6 +1768,110 @@ write_progress() {
   } >"$tmp" && mv -f "$tmp" "$PROGRESS_FILE"
 }
 
+public_progress_label() {
+  case "$1" in
+    "My Drive") printf 'My Drive' ;;
+    "Shared with me") printf 'Shared with me' ;;
+    *) printf 'Shared Drive' ;;
+  esac
+}
+
+parse_rclone_progress_fields() {
+  local line="$1"
+  local pattern='^Transferred:[[:space:]]*([0-9][0-9.]*[[:space:]]+([KMGTPE]i)?B)[[:space:]]+/[[:space:]]+([0-9][0-9.]*[[:space:]]+([KMGTPE]i)?B),[[:space:]]+([0-9]{1,3})%,[[:space:]]+([0-9][0-9.]*[[:space:]]+([KMGTPE]i)?B/s),[[:space:]]+ETA[[:space:]]+(-|([0-9]+[dhms])+)$'
+  [[ "$line" =~ $pattern ]] || return 1
+  RCLONE_PROGRESS_TRANSFERRED="${BASH_REMATCH[1]}"
+  RCLONE_PROGRESS_TOTAL="${BASH_REMATCH[3]}"
+  RCLONE_PROGRESS_PERCENT="${BASH_REMATCH[5]}"
+  RCLONE_PROGRESS_SPEED="${BASH_REMATCH[6]}"
+  RCLONE_PROGRESS_ETA="${BASH_REMATCH[8]}"
+  [[ "${RCLONE_PROGRESS_TRANSFERRED%% *}" =~ ^[0-9]+([.][0-9]+)?$ &&
+     "${RCLONE_PROGRESS_TOTAL%% *}" =~ ^[0-9]+([.][0-9]+)?$ &&
+     "${RCLONE_PROGRESS_SPEED%% *}" =~ ^[0-9]+([.][0-9]+)?$ &&
+     "$RCLONE_PROGRESS_PERCENT" -le 100 ]] || return 1
+  RCLONE_PROGRESS_DETAIL="$RCLONE_PROGRESS_TRANSFERRED / $RCLONE_PROGRESS_TOTAL, $RCLONE_PROGRESS_SPEED, ETA $RCLONE_PROGRESS_ETA"
+}
+
+write_durable_progress() {
+  local label="${1:-preparing}" percent="${2:-}" detail="${3:-}" phase="${4:-}"
+  local directory temporary existing_owner phase_current phase_total
+  [[ -n "$DURABLE_PROGRESS_FILE" ]] || return 0
+  case "$label" in preparing|"My Drive"|"Shared with me"|"Shared Drive") ;; *) return 1 ;; esac
+  [[ -z "$phase" || "$phase" =~ ^[1-9][0-9]*/[1-9][0-9]*$ ]] || return 1
+  if [[ -n "$phase" ]]; then
+    phase_current="${phase%/*}"
+    phase_total="${phase#*/}"
+    [[ "$phase_current" -le "$phase_total" && "$phase_total" -le 9999 ]] || return 1
+  fi
+  [[ -z "$percent" || ( "$percent" =~ ^[0-9]+$ && "$percent" -le 100 ) ]] || return 1
+  if [[ -n "$detail" && "$detail" != "${RCLONE_PROGRESS_DETAIL:-}" ]]; then return 1; fi
+  [[ ! -L "$DURABLE_PROGRESS_FILE" ]] || return 1
+  [[ ! -e "$DURABLE_PROGRESS_FILE" || -f "$DURABLE_PROGRESS_FILE" ]] || return 1
+  if [[ -e "$DURABLE_PROGRESS_FILE" ]]; then
+    existing_owner="$(stat -f '%u' "$DURABLE_PROGRESS_FILE")" || return 1
+    [[ "$existing_owner" == "$(id -u)" ]] || return 1
+  fi
+  directory="${DURABLE_PROGRESS_FILE%/*}"
+  (umask 077 && mkdir -p "$directory") || return 1
+  temporary="$(umask 077; mktemp "${DURABLE_PROGRESS_FILE}.tmp.XXXXXX")" || return 1
+  if ! (umask 077; {
+      printf 'protocol=1\nprofile_id=%s\npid=%s\nstarted_at=%s\ntrigger=%s\n' \
+        "$PROGRESS_PROFILE_ID" "$$" "$RUN_STARTED_AT" "$BACKUP_TRIGGER"
+      [[ -n "$RETRY_ATTEMPT" ]] && printf 'retry_attempt=%s\n' "$RETRY_ATTEMPT"
+      printf 'label=%s\n' "$label"
+      [[ -n "$phase" ]] && printf 'phase=%s\n' "$phase"
+      [[ -n "$percent" ]] && printf 'percent=%s\n' "$percent"
+      [[ -n "$detail" ]] && printf 'detail=%s\n' "$detail"
+      printf 'updated_at=%s\n' "$(date +%s)"
+    } >"$temporary" && chmod 600 "$temporary"); then
+    cleanup_temp_file "$temporary"
+    return 1
+  fi
+  mv -f "$temporary" "$DURABLE_PROGRESS_FILE"
+}
+
+initialize_durable_progress() {
+  [[ "$DRY_RUN" == "0" && "$SETUP_UI" == "0" ]] || return 0
+  [[ "$PROGRESS_PROFILE_ID" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || return 0
+  if [[ -z "$DURABLE_PROGRESS_FILE" ]]; then
+    DURABLE_PROGRESS_FILE="${SUMMARY_STATE_FILE%/*}/current-progress.status"
+  fi
+  write_durable_progress "preparing" "" "" ""
+}
+
+finish_durable_progress() {
+  local directory temporary existing_owner
+  [[ "$DRY_RUN" == "0" && "$SETUP_UI" == "0" ]] || return 0
+  [[ -n "$DURABLE_PROGRESS_FILE" ]] || return 0
+  [[ "$PROGRESS_PROFILE_ID" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || return 0
+  [[ ! -L "$DURABLE_PROGRESS_FILE" ]] || return 1
+  [[ ! -e "$DURABLE_PROGRESS_FILE" || -f "$DURABLE_PROGRESS_FILE" ]] || return 1
+  if [[ -e "$DURABLE_PROGRESS_FILE" ]]; then
+    existing_owner="$(stat -f '%u' "$DURABLE_PROGRESS_FILE")" || return 1
+    [[ "$existing_owner" == "$(id -u)" ]] || return 1
+  fi
+  directory="${DURABLE_PROGRESS_FILE%/*}"
+  (umask 077 && mkdir -p "$directory") || return 1
+  temporary="$(umask 077; mktemp "${DURABLE_PROGRESS_FILE}.tmp.XXXXXX")" || return 1
+  if ! (umask 077; {
+      printf 'protocol=1\nprofile_id=%s\npid=%s\nstarted_at=%s\ntrigger=%s\n' \
+        "$PROGRESS_PROFILE_ID" "$$" "$RUN_STARTED_AT" "$BACKUP_TRIGGER"
+      [[ -n "$RETRY_ATTEMPT" ]] && printf 'retry_attempt=%s\n' "$RETRY_ATTEMPT"
+      printf 'status=finished\nupdated_at=%s\n' "$(date +%s)"
+    } >"$temporary" && chmod 600 "$temporary"); then
+    cleanup_temp_file "$temporary"
+    return 1
+  fi
+  mv -f "$temporary" "$DURABLE_PROGRESS_FILE"
+}
+
+warn_progress_unavailable() {
+  if [[ "${DURABLE_PROGRESS_WARNING_LOGGED:-0}" != "1" ]]; then
+    log "WARNUNG: Backup-Fortschritt konnte nicht sicher aktualisiert werden."
+    DURABLE_PROGRESS_WARNING_LOGGED=1
+  fi
+}
+
 write_run_state() {
   [[ -n "$RUN_STATE_FILE" ]] || return 0
 
@@ -1852,15 +1958,12 @@ update_progress_from_rclone_line() {
   local phase="$2"
   local line="$3"
 
-  if [[ "$line" =~ Transferred:[[:space:]]*(.*) ]]; then
-    [[ "$line" == *"B /"* ]] || return 0
-    local detail="${BASH_REMATCH[1]}"
-    local percent=""
-    if [[ "$detail" =~ ([0-9]+)% ]]; then
-      percent="${BASH_REMATCH[1]}"
-    fi
-    if [[ -n "$percent" ]]; then
-      write_progress "$label" "$percent" "$detail" "$phase"
+  if parse_rclone_progress_fields "$line"; then
+    write_progress "$label" "$RCLONE_PROGRESS_PERCENT" "$RCLONE_PROGRESS_DETAIL" "$phase"
+    if ! write_durable_progress "$(public_progress_label "$label")" \
+        "$RCLONE_PROGRESS_PERCENT" "$RCLONE_PROGRESS_DETAIL" "$phase"; then
+      warn_progress_unavailable
+      write_progress "$label" "" "" "$phase"
     fi
   fi
 }
@@ -2037,6 +2140,9 @@ cleanup() {
   # Publish the terminal result before the sentinel disappears, so the UI can
   # never infer success merely from process cleanup.
   finish_run_state "$exit_status"
+  if ! finish_durable_progress; then
+    warn_progress_unavailable
+  fi
   stop_animation
 }
 
@@ -2693,6 +2799,10 @@ if ! flock -n 9; then
   RUN_OUTCOME="skipped"
   RUN_STATE_REASON="already_running"
   exit 0
+fi
+
+if ! initialize_durable_progress; then
+  warn_progress_unavailable
 fi
 
 # Owning the lock is the first reliable point at which this process is the
@@ -4000,6 +4110,9 @@ copy_one() {
   fi
 
   log "Kopiere $label -> $dest"
+  if ! write_durable_progress "$(public_progress_label "$label")" "" "" "$phase"; then
+    warn_progress_unavailable
+  fi
   write_progress "$label" "0" "$(t progress_preparing)" "$phase"
   if [[ "$VERSIONING" == "1" ]]; then
     run_rclone_with_progress "$label" "$phase" rclone copy "$source" "$dest" \

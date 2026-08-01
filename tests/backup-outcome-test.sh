@@ -254,6 +254,27 @@ SH
     "$FAKE_BIN/diskutil" "$FAKE_BIN/plutil"
 }
 
+enable_state_publish_order_spy() {
+  cat >"$FAKE_BIN/mv" <<'SH'
+#!/bin/bash
+destination=""
+for argument in "$@"; do destination="$argument"; done
+case "$destination" in
+  */last-run.status|*/current-progress.status)
+    if [[ -n "${GDRIVE_BACKUP_STATE_PUBLISH_TEST_LOG:-}" ]]; then
+      printf '%s\n' "${destination##*/}" >>"$GDRIVE_BACKUP_STATE_PUBLISH_TEST_LOG"
+    fi
+    ;;
+esac
+exec /bin/mv "$@"
+SH
+  chmod +x "$FAKE_BIN/mv"
+}
+
+last_terminal_publish_order() {
+  tail -n 2 "$1" 2>/dev/null | paste -sd, -
+}
+
 run_backup_with_mode() {
   local mode="$1"
   shift
@@ -373,6 +394,9 @@ start_backup_async() {
     GDRIVE_BACKUP_RETENTION=0 \
     GDRIVE_BACKUP_RUN_STATE_FILE="$RUN_STATE_FILE" \
     GDRIVE_BACKUP_SUMMARY_STATE_FILE="$SUMMARY_STATE_FILE" \
+    GDRIVE_BACKUP_PROFILE_ID="${GDRIVE_BACKUP_PROFILE_ID:-default}" \
+    GDRIVE_BACKUP_PROGRESS_STATE_FILE="${GDRIVE_BACKUP_PROGRESS_STATE_FILE:-}" \
+    GDRIVE_BACKUP_STATE_PUBLISH_TEST_LOG="${GDRIVE_BACKUP_STATE_PUBLISH_TEST_LOG:-}" \
     GDRIVE_BACKUP_TEMP_TRASH_BIN="$FAKE_BIN/trash" \
     BACKUP_DISABLE_ANIMATION="${BACKUP_DISABLE_ANIMATION:-1}" \
     GDRIVE_BACKUP_ANIMATION_APP="${GDRIVE_BACKUP_ANIMATION_APP:-/Applications/GDrive Backup Tiger.app}" \
@@ -562,12 +586,19 @@ test_state_is_versioned_and_identifies_the_process() {
 }
 
 test_term_signal_publishes_cancellation() {
-  local name="TERM publishes cancellation instead of failure"
-  local backup_pid status state started_file
+  local name="TERM publishes cancellation and invalidates live progress"
+  local backup_pid status state summary terminal started_file progress
+  local order_log terminal_order
   prepare_test_environment
+  enable_state_publish_order_spy
   started_file="$TEST_HOME/rclone-started"
+  progress="$TEST_HOME/profiles/default/current-progress.status"
+  order_log="$TEST_HOME/state-publish-order.log"
+  mkdir -p "${progress%/*}"
 
-  start_backup_async "$started_file"
+  GDRIVE_BACKUP_PROGRESS_STATE_FILE="$progress" \
+  GDRIVE_BACKUP_STATE_PUBLISH_TEST_LOG="$order_log" \
+    start_backup_async "$started_file"
   backup_pid="$ASYNC_BACKUP_PID"
   for _ in {1..60}; do
     [[ -e "$started_file" ]] && break
@@ -577,12 +608,19 @@ test_term_signal_publishes_cancellation() {
   wait "$backup_pid"
   status=$?
   state="$(cat "$RUN_STATE_FILE" 2>/dev/null || true)"
+  summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+  terminal="$(cat "$progress" 2>/dev/null || true)"
+  terminal_order="$(last_terminal_publish_order "$order_log")"
 
   if [[ "$status" == "143" && "$state" == *$'status=cancelled\n'* &&
-        "$state" == *$'signal=TERM\n'* && "$state" == *'exit_code=143'* ]]; then
+        "$state" == *$'signal=TERM\n'* && "$state" == *'exit_code=143'* &&
+        "$summary" == *$'status=cancelled\n'* &&
+        "$terminal" == *$'status=finished\n'* &&
+        "$terminal" != *$'percent='* &&
+        "$terminal_order" == "last-run.status,current-progress.status" ]]; then
     pass "$name"
   else
-    fail "$name (exit=$status state=${state//$'\n'/,})"
+    fail "$name (exit=$status state=${state//$'\n'/,} summary=${summary//$'\n'/,} progress=${terminal//$'\n'/,})"
   fi
 }
 
@@ -1782,6 +1820,146 @@ test_concurrent_start_preserves_previous_summary() {
   fi
 }
 
+test_headless_retry_publishes_private_progress() {
+  local name="headless retry publishes private aggregate progress"
+  local progress content summary mode status backup_pid attempt
+  local summary_pid summary_started progress_updated
+  prepare_test_environment
+  progress="$TEST_HOME/profiles/default/current-progress.status"
+  mkdir -p "${progress%/*}"
+
+  FAKE_RCLONE_COPY_OUTPUT=$'INFO : secret-file.pdf: Copied\nTransferred: 1.200 GiB / 1.900 GiB, 63%, 12.400 MiB/s, ETA 58s' \
+  FAKE_RCLONE_SLEEP_SECONDS=3 \
+    run_backup \
+      "GDRIVE_BACKUP_TRIGGER=schedule-retry" \
+      "GDRIVE_BACKUP_RETRY_ORIGIN_STARTED_AT=1785520805" \
+      "GDRIVE_BACKUP_RETRY_ATTEMPT=1" \
+      "GDRIVE_BACKUP_PROFILE_ID=default" \
+      "GDRIVE_BACKUP_PROGRESS_STATE_FILE=$progress" \
+      "BACKUP_PROGRESS_FOREGROUND=0" &
+  backup_pid=$!
+
+  for attempt in {1..100}; do
+    : "$attempt"
+    content="$(cat "$progress" 2>/dev/null || true)"
+    [[ "$content" == *$'percent=63\n'* ]] && break
+    sleep 0.05
+  done
+  mode="$(stat -f '%Lp' "$progress" 2>/dev/null || true)"
+  content="$(cat "$progress" 2>/dev/null || true)"
+  summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+  summary_pid="$(awk -F= '$1 == "pid" {print $2}' "$SUMMARY_STATE_FILE")"
+  summary_started="$(awk -F= '$1 == "started_at" {print $2}' "$SUMMARY_STATE_FILE")"
+  progress_updated="$(awk -F= '$1 == "updated_at" {print $2}' "$progress")"
+  wait "$backup_pid"
+  status=$?
+
+  if [[ "$status" == "0" && "$mode" == "600" &&
+        "$content" == *$'protocol=1\n'* &&
+        "$content" == *$'profile_id=default\n'* &&
+        "$summary" == *$'status=running\n'* &&
+        "$summary_pid" =~ ^[0-9]+$ &&
+        "$summary_started" =~ ^[0-9]+$ &&
+        "$content" == *"pid=$summary_pid"* &&
+        "$content" == *"started_at=$summary_started"* &&
+        "$content" == *$'trigger=schedule-retry\n'* &&
+        "$content" == *$'retry_attempt=1\n'* &&
+        "$content" == *$'label=My Drive\n'* &&
+        "$content" == *$'phase=1/2\n'* &&
+        "$content" == *$'percent=63\n'* &&
+        "$content" == *$'detail=1.200 GiB / 1.900 GiB, 12.400 MiB/s, ETA 58s\n'* &&
+        "$progress_updated" =~ ^[0-9]+$ &&
+        "$content" != *'secret-file.pdf'* ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status mode=$mode progress=${content//$'\n'/,})"
+  fi
+}
+
+test_headless_retry_never_opens_progress_window() {
+  local name="headless retry telemetry remains passive"
+  local progress status open_args terminal
+  prepare_test_environment
+  progress="$TEST_HOME/profiles/default/current-progress.status"
+  mkdir -p "${progress%/*}" "$TEST_HOME/GDrive Backup Tiger.app"
+
+  BACKUP_DISABLE_ANIMATION=0 \
+    run_backup \
+      "GDRIVE_BACKUP_TRIGGER=schedule-retry" \
+      "GDRIVE_BACKUP_RETRY_ORIGIN_STARTED_AT=1785520805" \
+      "GDRIVE_BACKUP_RETRY_ATTEMPT=1" \
+      "GDRIVE_BACKUP_PROFILE_ID=default" \
+      "GDRIVE_BACKUP_PROGRESS_STATE_FILE=$progress" \
+      "GDRIVE_BACKUP_ANIMATION_APP=$TEST_HOME/GDrive Backup Tiger.app" \
+      "GDRIVE_BACKUP_OPEN_BIN=$FAKE_BIN/open" \
+      "BACKUP_PROGRESS_FOREGROUND=0"
+  status=$?
+  open_args="$(cat "$OPEN_LOG" 2>/dev/null || true)"
+  terminal="$(cat "$progress" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" && -z "$open_args" &&
+        "$terminal" == *$'status=finished\n'* &&
+        "$terminal" != *$'percent='* ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status open=${open_args//$'\n'/,} progress=${terminal//$'\n'/,})"
+  fi
+}
+
+test_terminal_outcomes_invalidate_durable_progress() {
+  local name="terminal summaries invalidate durable progress"
+  local progress status success_summary success_progress
+  local failure_summary failure_progress success_order failure_order
+  local order_log success_ok=0
+
+  prepare_test_environment
+  enable_state_publish_order_spy
+  order_log="$TEST_HOME/state-publish-order.log"
+  progress="$TEST_HOME/profiles/default/current-progress.status"
+  mkdir -p "${progress%/*}"
+  run_backup \
+    "GDRIVE_BACKUP_PROFILE_ID=default" \
+    "GDRIVE_BACKUP_STATE_PUBLISH_TEST_LOG=$order_log" \
+    "GDRIVE_BACKUP_PROGRESS_STATE_FILE=$progress"
+  status=$?
+  success_summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+  success_progress="$(cat "$progress" 2>/dev/null || true)"
+  success_order="$(last_terminal_publish_order "$order_log")"
+  if [[ "$status" == "0" &&
+        "$success_summary" == *$'status=success\n'* &&
+        "$success_summary" == *$'exit_code=0\n'* &&
+        "$success_progress" == *$'status=finished\n'* &&
+        "$success_progress" != *$'percent='* &&
+        "$success_order" == "last-run.status,current-progress.status" ]]; then
+    success_ok=1
+  fi
+
+  prepare_test_environment
+  enable_state_publish_order_spy
+  order_log="$TEST_HOME/state-publish-order.log"
+  progress="$TEST_HOME/profiles/default/current-progress.status"
+  mkdir -p "${progress%/*}"
+  FAKE_RCLONE_COPY_STATUS=23 run_backup \
+    "GDRIVE_BACKUP_PROFILE_ID=default" \
+    "GDRIVE_BACKUP_STATE_PUBLISH_TEST_LOG=$order_log" \
+    "GDRIVE_BACKUP_PROGRESS_STATE_FILE=$progress"
+  status=$?
+  failure_summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+  failure_progress="$(cat "$progress" 2>/dev/null || true)"
+  failure_order="$(last_terminal_publish_order "$order_log")"
+
+  if [[ "$success_ok" == "1" && "$status" == "1" &&
+        "$failure_summary" == *$'status=failure\n'* &&
+        "$failure_summary" == *$'exit_code=1\n'* &&
+        "$failure_progress" == *$'status=finished\n'* &&
+        "$failure_progress" != *$'percent='* &&
+        "$failure_order" == "last-run.status,current-progress.status" ]]; then
+    pass "$name"
+  else
+    fail "$name (success=${success_summary//$'\n'/,}; failure=${failure_summary//$'\n'/,}; progress=${failure_progress//$'\n'/,})"
+  fi
+}
+
 test_failed_backup_publishes_failure
 test_successful_backup_publishes_success
 test_animation_receives_run_state_file
@@ -1842,6 +2020,9 @@ test_failure_persists_failed_summary
 test_later_failure_preserves_last_success_marker
 test_concurrent_start_preserves_previous_summary
 test_paused_automatic_run_is_silent_and_preserves_history
+test_headless_retry_publishes_private_progress
+test_headless_retry_never_opens_progress_window
+test_terminal_outcomes_invalidate_durable_progress
 
 if (( failures > 0 )); then
   printf '%s backup outcome test(s) failed.\n' "$failures"

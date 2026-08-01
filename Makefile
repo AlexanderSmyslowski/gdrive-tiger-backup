@@ -115,6 +115,19 @@ test:
 			-o "$$AUTOMATIC_RETRY_TEST_BIN"; \
 		"$$AUTOMATIC_RETRY_TEST_BIN"; \
 		./scripts/trash-path.sh "$$AUTOMATIC_RETRY_TEST_BIN"
+	@set -e; PROGRESS_SUPPORT_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-progress-support-test.XXXXXX")"; \
+		PROGRESS_SUPPORT_TEST_DIR="$$(/usr/bin/mktemp -d "$${TMPDIR:-/tmp}/gdrive-progress-support-fixtures.XXXXXX")"; \
+		COMPILE_STATUS=0; clang $(OBJC_FLAGS) -framework Foundation -I macos/GDriveBackupTiger \
+			tests/progress-support-test.m macos/GDriveBackupTiger/BackupProgressSupport.m \
+			-o "$$PROGRESS_SUPPORT_TEST_BIN" || COMPILE_STATUS=$$?; \
+		TEST_STATUS="$$COMPILE_STATUS"; \
+		if [ "$$COMPILE_STATUS" -eq 0 ]; then \
+			GDRIVE_PROGRESS_TEST_DIR="$$PROGRESS_SUPPORT_TEST_DIR" \
+				"$$PROGRESS_SUPPORT_TEST_BIN" || TEST_STATUS=$$?; \
+		fi; \
+		./scripts/trash-path.sh "$$PROGRESS_SUPPORT_TEST_BIN" \
+			"$$PROGRESS_SUPPORT_TEST_DIR"; \
+		exit "$$TEST_STATUS"
 	@set -e; NOTIFICATION_INTEGRATION_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-notification-integration-test.XXXXXX")"; \
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
 			tests/notification-integration-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
