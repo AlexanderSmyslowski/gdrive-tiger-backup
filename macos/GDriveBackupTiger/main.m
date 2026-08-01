@@ -16,6 +16,7 @@
 #import "DiagnosticsView.h"
 #import "UpdateSupport.h"
 #import "Localization.h"
+#import "NetworkMountSupport.h"
 
 static NSImage *CreateApplicationIcon(void) {
     NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(128, 128)];
@@ -155,19 +156,14 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *MountedNetworkVolumes(vo
         NSString *source = [line substringToIndex:onRange.location];
         NSString *path = [line substringWithRange:NSMakeRange(onRange.location + 4, typeRange.location - (onRange.location + 4))];
         NSString *name = path.lastPathComponent;
-        NSString *url = @"";
-        if ([source hasPrefix:@"//"]) {
-            NSString *withoutSlashes = [source substringFromIndex:2];
-            NSRange atRange = [withoutSlashes rangeOfString:@"@" options:NSBackwardsSearch];
-            if (atRange.location != NSNotFound) {
-                withoutSlashes = [withoutSlashes substringFromIndex:atRange.location + 1];
-            }
-            url = [@"smb://" stringByAppendingString:withoutSlashes];
-        }
-
         NSMutableDictionary<NSString *, NSString *> *volume = byPath[path];
+        NSString *url = GDTPreferredNASRemountURL(
+            volume[@"url"] ?: @"",
+            source,
+            [line containsString:@" (smbfs,"]);
+
         if (volume) {
-            if (url.length && !volume[@"url"].length) {
+            if (url.length) {
                 volume[@"url"] = url;
             }
             continue;
@@ -1502,6 +1498,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, copy) NSString *terminalFailureReason;
 @property(nonatomic, strong) NSMutableSet<NSString *> *pendingBackupNotificationIdentifiers;
 - (BOOL)launchAutomaticRetryDecision:(NSDictionary<NSString *, NSString *> *)decision;
+- (void)removeExactBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers
+                                      forProfileID:(NSString *)profileID;
+- (void)retireSupersededBackupNotificationForDecision:
+    (NSDictionary<NSString *, NSString *> *)decision;
 - (void)requestCancelBackup:(id)sender;
 - (BOOL)cancelRunningBackup;
 - (void)completeMountedNetworkVolumeDiscovery:
@@ -1999,7 +1999,10 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     NSString *deliveredKey = [self backupNotificationDefaultsKeyForProfileID:profileID
                                                                        suffix:@"deliveredFailureIdentifiers"];
     NSUserDefaults *defaults = [self backupNotificationDefaultsStore];
-    if ([[defaults stringForKey:key] isEqualToString:identifier]) return;
+    if ([[defaults stringForKey:key] isEqualToString:identifier]) {
+        [self retireSupersededBackupNotificationForDecision:decision];
+        return;
+    }
     if (!self.pendingBackupNotificationIdentifiers) {
         self.pendingBackupNotificationIdentifiers = [NSMutableSet set];
     }
@@ -2021,6 +2024,7 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
                     [identifiers addObject:identifier];
                     [store setObject:identifiers forKey:deliveredKey];
                 }
+                [strongSelf retireSupersededBackupNotificationForDecision:decision];
                 NSTimeInterval issueTimestamp = [decision[@"issueTimestamp"] doubleValue];
                 NSString *issueKey = [strongSelf
                     backupNotificationDefaultsKeyForProfileID:profileID
@@ -2036,6 +2040,51 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
             dispatch_async(dispatch_get_main_queue(), finish);
         }
     }];
+}
+
+- (void)removeExactBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers
+                                      forProfileID:(NSString *)profileID {
+    NSArray<NSString *> *safeIdentifiers =
+        [GDTBackupNotificationPolicy
+            failureNotificationIdentifiersForProfileID:profileID
+                                  candidateIdentifiers:identifiers];
+    if (!safeIdentifiers.count) return;
+    UNUserNotificationCenter *center =
+        UNUserNotificationCenter.currentNotificationCenter;
+    [center removeDeliveredNotificationsWithIdentifiers:safeIdentifiers];
+    [center removePendingNotificationRequestsWithIdentifiers:safeIdentifiers];
+}
+
+- (void)retireSupersededBackupNotificationForDecision:
+    (NSDictionary<NSString *, NSString *> *)decision {
+    NSString *profileID = decision[@"profileID"];
+    NSString *identifier = decision[@"identifier"];
+    NSString *supersededIdentifier = decision[@"supersedesIdentifier"];
+    if (!profileID.length || !identifier.length ||
+        !supersededIdentifier.length ||
+        [identifier isEqualToString:supersededIdentifier]) {
+        return;
+    }
+    NSArray<NSString *> *safeSuperseded =
+        [GDTBackupNotificationPolicy
+            failureNotificationIdentifiersForProfileID:profileID
+                                  candidateIdentifiers:@[supersededIdentifier]];
+    if (safeSuperseded.count != 1) return;
+
+    NSUserDefaults *defaults = [self backupNotificationDefaultsStore];
+    NSString *deliveredKey =
+        [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                 suffix:@"deliveredFailureIdentifiers"];
+    NSMutableArray<NSString *> *identifiers =
+        [[defaults stringArrayForKey:deliveredKey] mutableCopy] ?:
+        [NSMutableArray array];
+    [identifiers removeObject:supersededIdentifier];
+    if (![identifiers containsObject:identifier]) {
+        [identifiers addObject:identifier];
+    }
+    [defaults setObject:identifiers forKey:deliveredKey];
+    [self removeExactBackupNotificationIdentifiers:safeSuperseded
+                                       forProfileID:profileID];
 }
 
 - (void)removeBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers
@@ -6223,6 +6272,23 @@ int main(int argc, const char *argv[]) {
     @autoreleasepool {
         if (argc > 1 && [[NSString stringWithUTF8String:argv[1]] isEqualToString:@"--trash"]) {
             return TrashPathsFromArguments(argc, argv);
+        }
+
+        BOOL handledNetworkMountCommand = NO;
+        int networkMountResult = GDTHandleNetworkMountCLIArguments(
+            NSProcessInfo.processInfo.arguments,
+            ^int(NSString *urlString, BOOL authorizeCredential) {
+                return authorizeCredential
+                    ? GDTAuthorizeSMBCredentialForURL(urlString)
+                    : GDTMountSMBURLFromKeychain(urlString);
+            },
+            &handledNetworkMountCommand);
+        if (handledNetworkMountCommand) {
+            if (networkMountResult != 0) {
+                fprintf(stderr, "Network mount command failed (%d).\n",
+                        networkMountResult);
+            }
+            return networkMountResult;
         }
 
         NSApplication *app = NSApplication.sharedApplication;

@@ -114,7 +114,7 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
         }
         NSTimeInterval runTimestamp = GDTTimestamp(summary[@"started_at"]);
         if (runTimestamp <= 0) runTimestamp = eventTimestamp;
-        return @{
+        NSMutableDictionary<NSString *, NSString *> *decision = [@{
             @"identifier": [NSString stringWithFormat:
                 @"com.commcats.gdrivebackup.%@.failure.%.0f", profileID, runTimestamp],
             @"kind": @"failure",
@@ -122,7 +122,16 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
             @"issueTimestamp": [NSString stringWithFormat:@"%.0f", eventTimestamp],
             @"titleKey": @"backupNotificationFailureTitle",
             @"bodyKey": bodyKey
-        };
+        } mutableCopy];
+        NSTimeInterval retryOriginTimestamp =
+            GDTTimestamp(summary[@"retry_origin_started_at"]);
+        if (retryFailure && retryOriginTimestamp > 0 &&
+            retryOriginTimestamp < runTimestamp) {
+            decision[@"supersedesIdentifier"] = [NSString stringWithFormat:
+                @"com.commcats.gdrivebackup.%@.failure.%.0f",
+                profileID, retryOriginTimestamp];
+        }
+        return decision;
     }
 
     if (![schedule isEqualToString:@"daily"]) return nil;

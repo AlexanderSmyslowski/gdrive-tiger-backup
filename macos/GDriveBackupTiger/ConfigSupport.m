@@ -1,5 +1,73 @@
 #import "ConfigSupport.h"
 
+NSString *GDTNASRemountURLForMountedSMBSource(NSString *source) {
+    if (![source hasPrefix:@"//"] || source.length <= 2) {
+        return @"";
+    }
+
+    NSString *authorityAndPath = [source substringFromIndex:2];
+    NSRange accountSeparator = [authorityAndPath rangeOfString:@"@"
+                                                       options:NSBackwardsSearch];
+    if (accountSeparator.location == NSNotFound) {
+        return [@"smb://" stringByAppendingString:authorityAndPath];
+    }
+
+    NSString *account = [authorityAndPath substringToIndex:accountSeparator.location];
+    NSString *hostAndPath = [authorityAndPath substringFromIndex:NSMaxRange(accountSeparator)];
+    NSRange passwordSeparator = [account rangeOfString:@":"];
+    if (passwordSeparator.location != NSNotFound) {
+        account = [account substringToIndex:passwordSeparator.location];
+    }
+
+    NSCharacterSet *unsafeAccountCharacters = [NSCharacterSet
+        characterSetWithCharactersInString:@"/@\r\n"];
+    if (!account.length ||
+        [account rangeOfCharacterFromSet:unsafeAccountCharacters].location != NSNotFound) {
+        return [@"smb://" stringByAppendingString:hostAndPath];
+    }
+
+    // The account lets Finder choose the matching Keychain item silently.
+    // Passwords are deliberately discarded even if an unusual mount source
+    // happens to expose userinfo beyond the account name.
+    return [NSString stringWithFormat:@"smb://%@@%@", account, hostAndPath];
+}
+
+static NSString *GDTRemountURLWithoutPassword(NSString *urlString) {
+    if (!urlString.length) {
+        return @"";
+    }
+    NSURLComponents *components =
+        [NSURLComponents componentsWithString:urlString];
+    if (!components.scheme.length || !components.host.length) {
+        return @"";
+    }
+    components.password = nil;
+    return components.string ?: @"";
+}
+
+NSString *GDTPreferredNASRemountURL(
+    NSString *resourceURLString,
+    NSString *mountedSource,
+    BOOL isSMBMount) {
+    NSString *safeResourceURL =
+        GDTRemountURLWithoutPassword(resourceURLString);
+    if (!isSMBMount) {
+        return safeResourceURL;
+    }
+    NSString *sourceURL =
+        GDTNASRemountURLForMountedSMBSource(mountedSource);
+    NSURLComponents *sourceComponents =
+        [NSURLComponents componentsWithString:sourceURL];
+
+    // NSURLVolumeURLForRemountingKey can omit the SMB account even though
+    // /sbin/mount still identifies it. Prefer that account-qualified source
+    // because the unattended helper needs it to select the exact Keychain item.
+    if (sourceComponents.user.length) {
+        return sourceURL;
+    }
+    return safeResourceURL.length ? safeResourceURL : sourceURL;
+}
+
 typedef NS_ENUM(NSUInteger, GDTConfigQuoteState) {
     GDTConfigQuoteStateUnquoted,
     GDTConfigQuoteStateSingleQuoted,

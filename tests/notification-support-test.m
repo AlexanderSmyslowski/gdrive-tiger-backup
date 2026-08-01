@@ -106,6 +106,7 @@ int main(void) {
 
         NSMutableDictionary<NSString *, NSString *> *retryFailed = [nasNotReady mutableCopy];
         retryFailed[@"trigger"] = @"schedule-retry";
+        retryFailed[@"retry_origin_started_at"] = failedSummary[@"started_at"];
         retryFailed[@"started_at"] = [NSString stringWithFormat:@"%.0f",
             Date(calendar, 21, 20, 56).timeIntervalSince1970];
         retryFailed[@"finished_at"] = [NSString stringWithFormat:@"%.0f",
@@ -114,8 +115,10 @@ int main(void) {
             policyClass, daily, retryFailed, @"failure", Date(calendar, 21, 21, 2), calendar);
         Assert([finalFailure[@"kind"] isEqualToString:@"failure"] &&
                [finalFailure[@"identifier"] containsString:retryFailed[@"started_at"]] &&
+               [finalFailure[@"supersedesIdentifier"]
+                   isEqualToString:retryPlanned[@"identifier"]] &&
                [finalFailure[@"bodyKey"] isEqualToString:@"backupNotificationRetryFailureBody"],
-               @"a failed automatic retry creates one distinct final failure alert");
+               @"a failed automatic retry replaces the preliminary retry alert");
 
         NSMutableDictionary<NSString *, NSString *> *cancelledSummary = [failedSummary mutableCopy];
         cancelledSummary[@"status"] = @"cancelled";

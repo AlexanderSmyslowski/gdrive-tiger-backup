@@ -7,6 +7,11 @@ FOUNDATION_EXPORT NSString *GDTConfigPathForConfigDirectory(NSString *configDire
 FOUNDATION_EXPORT NSString *GDTDecodeConfigValue(NSString *value);
 FOUNDATION_EXPORT NSMutableDictionary<NSString *, NSString *> *GDTReadConfigDictionary(void);
 FOUNDATION_EXPORT NSMutableDictionary<NSString *, NSString *> *GDTReadConfigDictionaryAtPath(NSString *path);
+FOUNDATION_EXPORT NSString *GDTNASRemountURLForMountedSMBSource(NSString *source);
+FOUNDATION_EXPORT NSString *GDTPreferredNASRemountURL(
+    NSString *resourceURLString,
+    NSString *mountedSource,
+    BOOL isSMBMount);
 FOUNDATION_EXPORT NSString *GDTShellQuote(NSString * _Nullable value);
 FOUNDATION_EXPORT BOOL GDTWriteConfigUpdates(NSDictionary<NSString *, NSString *> *updates,
                                              NSError * _Nullable * _Nullable error);

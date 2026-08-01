@@ -154,6 +154,7 @@ ANIMATION_APP="${GDRIVE_BACKUP_ANIMATION_APP:-/Applications/GDrive Backup Tiger.
 if [[ ! -d "$ANIMATION_APP" && -d "$HOME/Applications/GDrive Backup Tiger.app" ]]; then
   ANIMATION_APP="$HOME/Applications/GDrive Backup Tiger.app"
 fi
+NAS_MOUNT_HELPER="${GDRIVE_BACKUP_NAS_MOUNT_HELPER:-$ANIMATION_APP/Contents/MacOS/GDriveBackupTiger}"
 ANIMATION_SENTINEL=""
 PROGRESS_FILE=""
 RUN_STATE_FILE="${GDRIVE_BACKUP_RUN_STATE_FILE:-}"
@@ -2473,20 +2474,33 @@ ensure_backup_volume() {
   return 1
 }
 
+nas_url_has_embedded_password() {
+  local authority userinfo
+  [[ "$NAS_URL" == smb://* ]] || return 1
+  authority="${NAS_URL#smb://}"
+  authority="${authority%%/*}"
+  [[ "$authority" == *"@"* ]] || return 1
+  userinfo="${authority%@*}"
+  [[ "$userinfo" == *":"* ]]
+}
+
 mount_nas_url() {
   [[ -n "$NAS_URL" ]] || return 1
 
-  log "NAS-Freigabe ist noch nicht gemountet; versuche zu mounten: $NAS_URL"
-  if [[ -x "$OSASCRIPT_BIN" ]]; then
-    run_with_timeout "$NAS_MOUNT_TIMEOUT_SECONDS" "$OSASCRIPT_BIN" - "$NAS_URL" <<'OSA'
-on run argv
-  mount volume (item 1 of argv)
-end run
-OSA
+  if nas_url_has_embedded_password; then
+    log "FEHLER: Die NAS-URL darf kein eingebettetes Passwort enthalten."
+    return 64
+  fi
+
+  log "NAS-Freigabe ist noch nicht gemountet; versuche stillen System-Mount."
+  if [[ -x "$NAS_MOUNT_HELPER" ]]; then
+    run_with_timeout "$NAS_MOUNT_TIMEOUT_SECONDS" \
+      "$NAS_MOUNT_HELPER" --mount-network-url "$NAS_URL"
     return $?
   fi
 
-  /usr/bin/open "$NAS_URL"
+  log "WARNUNG: Der nichtinteraktive NAS-Mount-Helfer ist nicht verfügbar."
+  return 1
 }
 
 ensure_nas_destination() {
@@ -2505,7 +2519,7 @@ ensure_nas_destination() {
   if ! nas_mount_is_verified && [[ -n "$NAS_URL" ]]; then
     if [[ "$DRY_RUN" == "1" ]]; then
       RUN_STATE_REASON="nas_mount_unavailable"
-      log "DRY-RUN: NAS-Freigabe wuerde bei Bedarf gemountet: $NAS_URL"
+      log "DRY-RUN: NAS-Freigabe wuerde bei Bedarf still gemountet."
       return 1
     else
       mount_requested=1

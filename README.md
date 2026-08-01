@@ -4,7 +4,7 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window. “Tiger” describes the visual style; the app requires macOS 13 Ventura or later and does not run on Mac OS X 10.4 Tiger.
 
-Current release: `v2.4.2` with launch-safe, audible persistent automatic-failure alerts and a safe retry for transient NAS read failures, passive handling of unknown external disks, verified APFS and NAS identity, one coherent Dock presence, optional end-to-end `rclone crypt` backups, retained versions, verified recovery, named profiles, diagnostics, and a persistent menu bar overview.
+Current release: `v2.4.3` with silent automatic SMB mounting, one current persistent automatic-failure alert, a safe retry for transient NAS read failures, passive handling of unknown external disks, verified APFS and NAS identity, one coherent Dock presence, optional end-to-end `rclone crypt` backups, retained versions, verified recovery, named profiles, diagnostics, and a persistent menu bar overview.
 
 It backs up:
 
@@ -26,7 +26,7 @@ the backup does not preserve Google Drive's native document revision history.
 - The controller observes macOS mount events. When an APFS volume UUID is saved, a changed `/Volumes/… 2` suffix is resolved automatically and a merely same-name disk cannot trigger a backup. Older path-only profiles remain available for manual and scheduled use, but a mount event is treated as unknown until a human explicitly binds the disk's UUID.
 - A previously unknown directly attached physical disk produces at most one passive notification per attachment. Mounting it never opens a window, takes focus, formats or writes to the disk, or starts a backup. **Set up as backup destination** revalidates the same disk and only stages it in setup; **Save** registers the disk while leaving the currently selected primary target and schedule as shown, so a NAS target is never replaced silently. **Ignore** makes no change. A dismissal remains remembered if the controller restarts during the same attachment, while fully unplugging the disk clears the notice and makes a later attachment eligible again. UUIDs retained by any named profile suppress the unknown-disk notice for that whole physical disk.
 - The overview shows the last verified run, configured schedule, exact local destination, and available destination capacity.
-- With notifications enabled, macOS reports a failed automatic run immediately and a daily 20:00 run that is still missing at 21:00. A transient NAS mount/readiness or fail-closed destination-read failure gets exactly one controller-managed retry after 30 minutes; after sleep it remains eligible until the next wake within 24 hours, and a failed retry creates a separate alert. The controller restarts after a crash, alerts are deduplicated per profile and run, and only a newer successful automatic backup removes still-delivered failure alerts for that profile.
+- With notifications enabled, macOS reports a failed automatic run immediately and a daily 20:00 run that is still missing at 21:00. A transient NAS mount/readiness or fail-closed destination-read failure gets exactly one controller-managed retry after 30 minutes; after sleep it remains eligible until the next wake within 24 hours. If that retry fails, its final alert replaces the preliminary “retry in 30 minutes” alert. The controller restarts after a crash, alerts are deduplicated per profile and run, and only a newer successful automatic backup removes the current delivered failure alert for that profile.
 - Scheduled, mount-triggered, and menu-bar-only runs stay headless. Their live and final state remains available through the menu bar, with a macOS notification for automatic failures.
 - Named profiles keep distinct destinations, schedules, encryption policies, and last-run histories while making the one active profile explicit in setup, the overview, and the menu bar.
 - On first use, if the backup volume does not exist yet, the helper can ask to create a dedicated APFS volume on the newly attached external APFS disk.
@@ -87,7 +87,7 @@ rclone lsd gdrive:
 For most users, download the latest installer from the GitHub releases page:
 
 1. Open <https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/latest>
-2. Download `GDrive-Backup-Tiger-2.4.2.pkg` from `Assets`.
+2. Download `GDrive-Backup-Tiger-2.4.3.pkg` from `Assets`.
 3. Double-click the package and follow the macOS Installer.
 4. Open `/Applications/GDrive Backup Tiger.app` to choose language, external disk, NAS, and schedule settings.
 
@@ -104,13 +104,13 @@ The package is currently unsigned because the project does not yet have an Apple
 
 1. Click `Done`, not `Move to Trash`.
 2. Open `System Settings > Privacy & Security`.
-3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-2.4.2.pkg`.
+3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-2.4.3.pkg`.
 4. Confirm with `Open Anyway`, then install the package.
 
 Advanced users can also remove the download quarantine flag before opening:
 
 ```bash
-xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-2.4.2.pkg"
+xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-2.4.3.pkg"
 ```
 
 ### Install from source
@@ -168,17 +168,24 @@ NAS_SUBDIR="GoogleDrive-Backup" \
 ./install.sh
 ```
 
-You can also let the script ask macOS to mount the share when it is not already mounted:
+You can also let the native helper mount the share silently when it is not already mounted. Include the SMB account, but never a password:
 
 ```bash
 BACKUP_TARGET=nas \
-NAS_URL="smb://nas.local/Backups" \
+NAS_URL="smb://backup-user@nas.local/Backups" \
 NAS_MOUNT="/Volumes/Backups" \
 NAS_SUBDIR="GoogleDrive-Backup" \
 ./install.sh
 ```
 
-The tool does not ask for or store NAS usernames or passwords; use Finder or Keychain for credentials and do not embed them in `NAS_URL`. The config file is kept at owner-only mode `0600` because mount URLs and paths may still be private.
+The account name is stored in `NAS_URL`; the password remains only in the macOS login Keychain and is never put in configuration, arguments, environment, or logs. After Finder has saved the SMB password, authorize the installed helper once:
+
+```bash
+"/Applications/GDrive Backup Tiger.app/Contents/MacOS/GDriveBackupTiger" \
+  --authorize-network-url "smb://backup-user@nas.local/Backups"
+```
+
+Enter the login-Keychain password and choose **Always Allow**. The next no-UI check must succeed before the schedule is considered unattended. Because unsigned release builds have no stable Developer ID identity, macOS may require this one-time authorization again after an app update. Automatic runs themselves disable all Keychain and mount UI and fail safely instead of opening a dialog.
 
 After installation, open the setup UI from `/Applications/GDrive Backup Tiger.app` or run:
 
@@ -226,7 +233,7 @@ For NAS backups, the config looks like this:
 ```bash
 GDRIVE_BACKUP_TARGET=nas
 GDRIVE_BACKUP_NAS_MOUNT=/Volumes/Backups
-GDRIVE_BACKUP_NAS_URL=smb://nas.local/Backups
+GDRIVE_BACKUP_NAS_URL=smb://backup-user@nas.local/Backups
 GDRIVE_BACKUP_NAS_SUBDIR=GoogleDrive-Backup
 GDRIVE_BACKUP_SCHEDULE=manual
 ```

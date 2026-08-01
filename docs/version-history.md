@@ -33,7 +33,8 @@ records are restored transparently as historical source milestones.
 | v2.3.2 | 23 | `7ecda45` | Historical source milestone published retrospectively |
 | v2.4.0 | 24 | tag `v2.4.0` | Published tested release |
 | v2.4.1 | 25 | tag `v2.4.1` | Superseded; its protected entitlement caused macOS to reject the unsigned app at launch |
-| v2.4.2 | 26 | tag `v2.4.2` | Current tested release |
+| v2.4.2 | 26 | tag `v2.4.2` | Superseded tested release |
+| v2.4.3 | 27 | tag `v2.4.3` | Current tested release |
 
 No historical binary installer is reconstructed and presented as an original
 artifact. Retrospective release pages expose GitHub's source archives and state

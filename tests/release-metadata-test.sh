@@ -57,6 +57,8 @@ check_contains "$ROOT/install.sh" "MOUNTED_WRITABLE_MEDIA\" != \"true\"" \
   "source installer rejects a read-only APFS target"
 check_contains "$ROOT/install.sh" "-framework UserNotifications" \
   "source installer links the macOS notification framework"
+check_contains "$ROOT/install.sh" "-framework NetFS" \
+  "source installer links the native network mount framework"
 
 GDRIVE_BACKUP_VOLUME_UUID=not-a-uuid \
   BACKUP_TARGET=apfs \
@@ -86,7 +88,8 @@ for source in \
   RestoreBrowserView.m \
   DiagnosticsSupport.m \
   DiagnosticsView.m \
-  UpdateSupport.m; do
+  UpdateSupport.m \
+  NetworkMountSupport.m; do
   check_contains "$ROOT/install.sh" "macos/GDriveBackupTiger/$source" \
     "source installer links $source"
 done

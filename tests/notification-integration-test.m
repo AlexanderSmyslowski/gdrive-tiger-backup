@@ -13,6 +13,8 @@
 - (UNMutableNotificationContent *)backupNotificationContentForDecision:
     (NSDictionary<NSString *, NSString *> *)decision;
 - (BOOL)timeSensitiveBackupNotificationsEnabled;
+- (void)removeExactBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers
+                                      forProfileID:(NSString *)profileID;
 - (void)clearBackupFailureNotificationsForConfig:
     (NSDictionary<NSString *, NSString *> *)config
     summary:(NSDictionary<NSString *, NSString *> *)summary
@@ -231,6 +233,12 @@
     self.removedNotificationIdentifiers = all;
 }
 
+- (void)removeExactBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers
+                                      forProfileID:(NSString *)profileID {
+    (void)profileID;
+    self.removedNotificationIdentifiers = identifiers;
+}
+
 @end
 
 @interface RetryTestDelegate : NotificationTestDelegate
@@ -395,6 +403,64 @@ int main(void) {
         Process(delegate, @{});
         Assert(delegate.deliveryCalls == 5,
                @"incomplete policy output cannot create a notification");
+
+        NotificationTestDelegate *replacement =
+            [[NotificationTestDelegate alloc] init];
+        replacement.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+            [suiteName stringByAppendingString:@".replacement"]];
+        replacement.deliverySucceeds = YES;
+        NSDictionary<NSString *, NSString *> *preliminary = @{
+            @"identifier": @"com.commcats.gdrivebackup.office.failure.400",
+            @"profileID": @"office",
+            @"kind": @"failure",
+            @"issueTimestamp": @"400",
+            @"titleKey": @"backupNotificationFailureTitle",
+            @"bodyKey": @"backupNotificationNASRetryBody"
+        };
+        NSDictionary<NSString *, NSString *> *finalRetryFailure = @{
+            @"identifier": @"com.commcats.gdrivebackup.office.failure.430",
+            @"supersedesIdentifier":
+                @"com.commcats.gdrivebackup.office.failure.400",
+            @"profileID": @"office",
+            @"kind": @"failure",
+            @"issueTimestamp": @"430",
+            @"titleKey": @"backupNotificationFailureTitle",
+            @"bodyKey": @"backupNotificationRetryFailureBody"
+        };
+        Process(replacement, preliminary);
+        Process(replacement, finalRetryFailure);
+        NSArray<NSString *> *remainingFailureIdentifiers =
+            [replacement.testDefaults stringArrayForKey:
+                @"GDTBackupNotification.office.deliveredFailureIdentifiers"];
+        Assert(replacement.deliveryCalls == 2 &&
+               [replacement.removedNotificationIdentifiers isEqualToArray:
+                   @[@"com.commcats.gdrivebackup.office.failure.400"]] &&
+               [remainingFailureIdentifiers isEqualToArray:
+                   @[@"com.commcats.gdrivebackup.office.failure.430"]],
+               @"an accepted final retry failure replaces its preliminary alert");
+
+        replacement.removedNotificationIdentifiers = nil;
+        Process(replacement, finalRetryFailure);
+        Assert(replacement.deliveryCalls == 2 &&
+               [replacement.removedNotificationIdentifiers isEqualToArray:
+                   @[@"com.commcats.gdrivebackup.office.failure.400"]],
+               @"a restart safely finishes an interrupted preliminary-alert cleanup");
+
+        NotificationTestDelegate *refusedReplacement =
+            [[NotificationTestDelegate alloc] init];
+        refusedReplacement.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+            [suiteName stringByAppendingString:@".refused-replacement"]];
+        refusedReplacement.deliverySucceeds = YES;
+        Process(refusedReplacement, preliminary);
+        refusedReplacement.deliverySucceeds = NO;
+        Process(refusedReplacement, finalRetryFailure);
+        NSArray<NSString *> *refusedIdentifiers =
+            [refusedReplacement.testDefaults stringArrayForKey:
+                @"GDTBackupNotification.office.deliveredFailureIdentifiers"];
+        Assert(refusedReplacement.removedNotificationIdentifiers == nil &&
+               [refusedIdentifiers isEqualToArray:
+                   @[@"com.commcats.gdrivebackup.office.failure.400"]],
+               @"a rejected replacement leaves the existing visible warning intact");
 
         RetryTestDelegate *retryDelegate = [[RetryTestDelegate alloc] init];
         retryDelegate.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:

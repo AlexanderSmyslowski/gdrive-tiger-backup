@@ -365,7 +365,7 @@ fi
 install -m 644 "$ROOT/macos/GDriveBackupTiger/Info.plist" "$APP_CONTENTS/Info.plist"
 clang -fobjc-arc -Wall -Wextra -mmacosx-version-min=13.0 \
   -arch arm64 -arch x86_64 -framework Cocoa -framework UserNotifications \
-  -framework Security \
+  -framework Security -framework NetFS \
   "$ROOT/macos/GDriveBackupTiger/main.m" \
   "$ROOT/macos/GDriveBackupTiger/ConfigSupport.m" \
   "$ROOT/macos/GDriveBackupTiger/ProfileSupport.m" \
@@ -377,6 +377,7 @@ clang -fobjc-arc -Wall -Wextra -mmacosx-version-min=13.0 \
   "$ROOT/macos/GDriveBackupTiger/DiagnosticsSupport.m" \
   "$ROOT/macos/GDriveBackupTiger/DiagnosticsView.m" \
   "$ROOT/macos/GDriveBackupTiger/UpdateSupport.m" \
+  "$ROOT/macos/GDriveBackupTiger/NetworkMountSupport.m" \
   "$ROOT/macos/GDriveBackupTiger/Localization.m" \
   -o "$APP_CONTENTS/MacOS/GDriveBackupTiger"
 

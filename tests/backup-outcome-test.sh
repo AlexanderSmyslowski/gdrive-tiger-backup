@@ -190,22 +190,24 @@ SH
 
   cat >"$FAKE_BIN/osascript" <<'SH'
 #!/bin/bash
-if [[ "${FAKE_OSASCRIPT_REQUIRE_MOUNT_SCRIPT:-0}" == "1" ]]; then
-  script="$(/bin/cat)"
-  if [[ "$script" != *"mount volume (item 1 of argv)"* ]]; then
-    exit 91
-  fi
+exit 90
+SH
+
+  cat >"$FAKE_BIN/mount-helper" <<'SH'
+#!/bin/bash
+if [[ "${1:-}" != "--mount-network-url" || -z "${2:-}" ]]; then
+  exit 64
 fi
-if [[ "${FAKE_OSASCRIPT_SLEEP_SECONDS:-0}" != "0" ]]; then
-  /bin/sleep "$FAKE_OSASCRIPT_SLEEP_SECONDS"
+if [[ "${FAKE_MOUNT_HELPER_SLEEP_SECONDS:-0}" != "0" ]]; then
+  /bin/sleep "$FAKE_MOUNT_HELPER_SLEEP_SECONDS"
 fi
-if [[ -n "${FAKE_OSASCRIPT_MOUNT_VISIBLE_FILE:-}" ]]; then
-  : >"$FAKE_OSASCRIPT_MOUNT_VISIBLE_FILE"
+if [[ -n "${FAKE_MOUNT_HELPER_VISIBLE_FILE:-}" ]]; then
+  : >"$FAKE_MOUNT_HELPER_VISIBLE_FILE"
 fi
-if [[ "${FAKE_OSASCRIPT_MAKE_WRITABLE:-0}" == "1" ]]; then
+if [[ "${FAKE_MOUNT_HELPER_MAKE_WRITABLE:-0}" == "1" ]]; then
   chmod 700 "${FAKE_NAS_MOUNT:?}"
 fi
-exit "${FAKE_OSASCRIPT_STATUS:-0}"
+exit "${FAKE_MOUNT_HELPER_STATUS:-0}"
 SH
 
   cat >"$FAKE_BIN/cmp" <<'SH'
@@ -247,7 +249,8 @@ exit 0
 SH
   done
   chmod +x "$FAKE_BIN/rclone" "$FAKE_BIN/jq" "$FAKE_BIN/open" "$FAKE_BIN/flock" \
-    "$FAKE_BIN/mount" "$FAKE_BIN/osascript" "$FAKE_BIN/cmp" "$FAKE_BIN/trash" \
+    "$FAKE_BIN/mount" "$FAKE_BIN/osascript" "$FAKE_BIN/mount-helper" \
+    "$FAKE_BIN/cmp" "$FAKE_BIN/trash" \
     "$FAKE_BIN/diskutil" "$FAKE_BIN/plutil"
 }
 
@@ -261,6 +264,8 @@ run_backup_with_mode() {
     GDRIVE_BACKUP_TARGET=nas \
     GDRIVE_BACKUP_NAS_MOUNT="$NAS_MOUNT" \
     GDRIVE_BACKUP_MOUNT_BIN="$FAKE_BIN/mount" \
+    GDRIVE_BACKUP_NAS_MOUNT_HELPER="$FAKE_BIN/mount-helper" \
+    GDRIVE_BACKUP_OPEN_BIN="$FAKE_BIN/open" \
     GDRIVE_BACKUP_OSASCRIPT="${GDRIVE_BACKUP_OSASCRIPT:-$FAKE_BIN/osascript}" \
     GDRIVE_BACKUP_CMP_BIN="$FAKE_BIN/cmp" \
     GDRIVE_BACKUP_DEST_ROOT="$NAS_MOUNT/backup" \
@@ -308,11 +313,10 @@ run_backup_with_mode() {
     FAKE_NAS_MOUNT="$NAS_MOUNT" \
     FAKE_NAS_MOUNT_VISIBLE="${FAKE_NAS_MOUNT_VISIBLE:-1}" \
     FAKE_NAS_MOUNT_VISIBLE_FILE="${FAKE_NAS_MOUNT_VISIBLE_FILE:-}" \
-    FAKE_OSASCRIPT_MOUNT_VISIBLE_FILE="${FAKE_OSASCRIPT_MOUNT_VISIBLE_FILE:-}" \
-    FAKE_OSASCRIPT_MAKE_WRITABLE="${FAKE_OSASCRIPT_MAKE_WRITABLE:-0}" \
-    FAKE_OSASCRIPT_REQUIRE_MOUNT_SCRIPT="${FAKE_OSASCRIPT_REQUIRE_MOUNT_SCRIPT:-0}" \
-    FAKE_OSASCRIPT_SLEEP_SECONDS="${FAKE_OSASCRIPT_SLEEP_SECONDS:-0}" \
-    FAKE_OSASCRIPT_STATUS="${FAKE_OSASCRIPT_STATUS:-0}" \
+    FAKE_MOUNT_HELPER_VISIBLE_FILE="${FAKE_MOUNT_HELPER_VISIBLE_FILE:-}" \
+    FAKE_MOUNT_HELPER_MAKE_WRITABLE="${FAKE_MOUNT_HELPER_MAKE_WRITABLE:-0}" \
+    FAKE_MOUNT_HELPER_SLEEP_SECONDS="${FAKE_MOUNT_HELPER_SLEEP_SECONDS:-0}" \
+    FAKE_MOUNT_HELPER_STATUS="${FAKE_MOUNT_HELPER_STATUS:-0}" \
     FAKE_TEMP_TRASH_DIR="$TEMP_TRASH_DIR" \
     FAKE_OPEN_LOG="$OPEN_LOG" \
     FAKE_OPEN_STATUS="${FAKE_OPEN_STATUS:-0}" \
@@ -1504,9 +1508,8 @@ test_nas_auto_mount_transitions_to_a_writable_share() {
 
   FAKE_NAS_MOUNT_VISIBLE=0 \
     FAKE_NAS_MOUNT_VISIBLE_FILE="$visible_file" \
-    FAKE_OSASCRIPT_MOUNT_VISIBLE_FILE="$visible_file" \
-    FAKE_OSASCRIPT_MAKE_WRITABLE=1 \
-    FAKE_OSASCRIPT_REQUIRE_MOUNT_SCRIPT=1 \
+    FAKE_MOUNT_HELPER_VISIBLE_FILE="$visible_file" \
+    FAKE_MOUNT_HELPER_MAKE_WRITABLE=1 \
     GDRIVE_BACKUP_NAS_URL="smb://backup.test/share" \
     GDRIVE_BACKUP_NAS_READY_TIMEOUT_SECONDS=2 \
     run_backup
@@ -1530,7 +1533,7 @@ test_nas_auto_mount_not_ready_is_retryable() {
 
   FAKE_NAS_MOUNT_VISIBLE=0 \
     FAKE_NAS_MOUNT_VISIBLE_FILE="$visible_file" \
-    FAKE_OSASCRIPT_MOUNT_VISIBLE_FILE="$visible_file" \
+    FAKE_MOUNT_HELPER_VISIBLE_FILE="$visible_file" \
     GDRIVE_BACKUP_NAS_URL="smb://backup.test/share" \
     GDRIVE_BACKUP_NAS_READY_TIMEOUT_SECONDS=1 \
     run_backup
@@ -1553,7 +1556,7 @@ test_hung_nas_mount_command_is_bounded() {
   started="$(date +%s)"
 
   FAKE_NAS_MOUNT_VISIBLE=0 \
-    FAKE_OSASCRIPT_SLEEP_SECONDS=4 \
+    FAKE_MOUNT_HELPER_SLEEP_SECONDS=4 \
     GDRIVE_BACKUP_NAS_URL="smb://backup.test/share" \
     GDRIVE_BACKUP_NAS_MOUNT_TIMEOUT_SECONDS=1 \
     GDRIVE_BACKUP_NAS_READY_TIMEOUT_SECONDS=0 \
