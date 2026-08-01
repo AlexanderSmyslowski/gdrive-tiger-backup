@@ -3,6 +3,8 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INFO_PLIST="$ROOT/macos/GDriveBackupTiger/Info.plist"
+EXPECTED_VERSION="2.4.4"
+EXPECTED_BUILD="28"
 failures=0
 
 check_contains() {
@@ -21,8 +23,18 @@ version="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$INFO_P
 build="$(/usr/bin/plutil -extract CFBundleVersion raw -o - "$INFO_PLIST")"
 minimum_macos="$(/usr/bin/plutil -extract LSMinimumSystemVersion raw -o - "$INFO_PLIST")"
 
+if [[ "$version" != "$EXPECTED_VERSION" || "$build" != "$EXPECTED_BUILD" ]]; then
+  printf 'not ok - expected app version %s build %s, got %s build %s\n' \
+    "$EXPECTED_VERSION" "$EXPECTED_BUILD" "$version" "$build"
+  failures=$((failures + 1))
+else
+  printf 'ok - app version and build match the release plan\n'
+fi
+
 check_contains "$ROOT/README.md" "Current release: \`v${version}\`" \
   "README release matches the app version"
+check_contains "$ROOT/README.md" "GDrive-Backup-Tiger-${EXPECTED_VERSION}.pkg" \
+  "README names the exact release installer"
 check_contains "$ROOT/CHANGELOG.md" "## v${version} " \
   "changelog contains the app version"
 check_contains "$ROOT/docs/version-history.md" "| v${version} | ${build} |" \

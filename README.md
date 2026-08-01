@@ -4,7 +4,7 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window. “Tiger” describes the visual style; the app requires macOS 13 Ventura or later and does not run on Mac OS X 10.4 Tiger.
 
-Current release: `v2.4.3` with silent automatic SMB mounting, one current persistent automatic-failure alert, a safe retry for transient NAS read failures, passive handling of unknown external disks, verified APFS and NAS identity, one coherent Dock presence, optional end-to-end `rclone crypt` backups, retained versions, verified recovery, named profiles, diagnostics, and a persistent menu bar overview.
+Current release: `v2.4.4` with a truthful running state for automatic retries, private current-phase progress in the overview and menu bar, silent automatic SMB mounting, one current persistent automatic-failure alert, a safe retry for transient NAS read failures, passive handling of unknown external disks, verified APFS and NAS identity, one coherent Dock presence, optional end-to-end `rclone crypt` backups, retained versions, verified recovery, named profiles, diagnostics, and a persistent menu bar overview.
 
 It backs up:
 
@@ -26,8 +26,8 @@ the backup does not preserve Google Drive's native document revision history.
 - The controller observes macOS mount events. When an APFS volume UUID is saved, a changed `/Volumes/… 2` suffix is resolved automatically and a merely same-name disk cannot trigger a backup. Older path-only profiles remain available for manual and scheduled use, but a mount event is treated as unknown until a human explicitly binds the disk's UUID.
 - A previously unknown directly attached physical disk produces at most one passive notification per attachment. Mounting it never opens a window, takes focus, formats or writes to the disk, or starts a backup. **Set up as backup destination** revalidates the same disk and only stages it in setup; **Save** registers the disk while leaving the currently selected primary target and schedule as shown, so a NAS target is never replaced silently. **Ignore** makes no change. A dismissal remains remembered if the controller restarts during the same attachment, while fully unplugging the disk clears the notice and makes a later attachment eligible again. UUIDs retained by any named profile suppress the unknown-disk notice for that whole physical disk.
 - The overview shows the last verified run, configured schedule, exact local destination, and available destination capacity.
-- With notifications enabled, macOS reports a failed automatic run immediately and a daily 20:00 run that is still missing at 21:00. A transient NAS mount/readiness or fail-closed destination-read failure gets exactly one controller-managed retry after 30 minutes; after sleep it remains eligible until the next wake within 24 hours. If that retry fails, its final alert replaces the preliminary “retry in 30 minutes” alert. The controller restarts after a crash, alerts are deduplicated per profile and run, and only a newer successful automatic backup removes the current delivered failure alert for that profile.
-- Scheduled, mount-triggered, and menu-bar-only runs stay headless. Their live and final state remains available through the menu bar, with a macOS notification for automatic failures.
+- With notifications enabled, macOS reports a failed automatic run immediately and a daily 20:00 run that is still missing at 21:00. A transient NAS mount/readiness or fail-closed destination-read failure gets exactly one controller-managed retry after 30 minutes; after sleep it remains eligible until the next wake within 24 hours. When that retry starts, its truthful running state replaces the stale “retry in 30 minutes” alert. If the retry fails, its final alert replaces the running alert. The controller restarts after a crash, alerts are deduplicated per profile and run, and only a newer successful automatic backup removes the current delivered failure alert for that profile.
+- Scheduled, mount-triggered, and menu-bar-only runs stay headless and passive, including in full-screen Spaces. The overview and menu bar show private live progress for the current copy phase without opening a foreground window. The percentage describes only that phase, not the whole backup. Final state remains available through the menu bar, with a macOS notification for automatic failures.
 - Named profiles keep distinct destinations, schedules, encryption policies, and last-run histories while making the one active profile explicit in setup, the overview, and the menu bar.
 - On first use, if the backup volume does not exist yet, the helper can ask to create a dedicated APFS volume on the newly attached external APFS disk.
 - In parallel, the setup window can configure a mounted NAS share, for example SMB, AFP, or NFS under `/Volumes`. A writable directory alone never counts as a NAS: the setup check and backup engine both require a verified network file-system mount.
@@ -87,7 +87,7 @@ rclone lsd gdrive:
 For most users, download the latest installer from the GitHub releases page:
 
 1. Open <https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/latest>
-2. Download `GDrive-Backup-Tiger-2.4.3.pkg` from `Assets`.
+2. Download `GDrive-Backup-Tiger-2.4.4.pkg` from `Assets`.
 3. Double-click the package and follow the macOS Installer.
 4. Open `/Applications/GDrive Backup Tiger.app` to choose language, external disk, NAS, and schedule settings.
 
@@ -104,13 +104,13 @@ The package is currently unsigned because the project does not yet have an Apple
 
 1. Click `Done`, not `Move to Trash`.
 2. Open `System Settings > Privacy & Security`.
-3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-2.4.3.pkg`.
+3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-2.4.4.pkg`.
 4. Confirm with `Open Anyway`, then install the package.
 
 Advanced users can also remove the download quarantine flag before opening:
 
 ```bash
-xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-2.4.3.pkg"
+xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-2.4.4.pkg"
 ```
 
 ### Install from source

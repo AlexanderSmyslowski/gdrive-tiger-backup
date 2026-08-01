@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v2.4.4 - 2026-08-01
+
+- Automatic retries now replace the stale waiting alert with a truthful running state.
+- The overview and menu bar show private, per-phase progress without opening a foreground window.
+- Progress is explicitly current-phase progress; scheduled and retry runs remain passive in full-screen Spaces.
+
 ## v2.4.3 - 2026-07-30
 
 - Mount a configured SMB backup target through a bounded native NetFS helper before scheduled work starts, using the Finder-saved password only in memory and explicitly prohibiting Finder, AppleScript, Keychain, or mount authentication UI during automatic runs.
