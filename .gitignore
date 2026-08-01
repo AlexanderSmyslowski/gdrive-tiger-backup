@@ -4,6 +4,7 @@
 *.tmp
 build/
 dist/
+.worktrees/
 *.app/
 .config/
 rclone.conf
