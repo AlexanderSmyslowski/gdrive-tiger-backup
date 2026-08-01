@@ -72,6 +72,7 @@ test:
 	bash tests/launch-agent-safety-test.sh
 	bash tests/release-metadata-test.sh
 	bash tests/release-workflow-test.sh
+	bash tests/release-install-runbook-test.sh
 	bash tests/package-entitlement-safety-test.sh
 	bash tests/app-build-artifacts-test.sh
 	bash tests/update-flow-safety-test.sh

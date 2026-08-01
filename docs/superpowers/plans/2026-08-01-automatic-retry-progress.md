@@ -1447,39 +1447,11 @@ Expected: all commands exit 0 with no warnings treated as errors.
 
 - [ ] **Step 4: Build an isolated Universal 2 app without touching `/Applications`**
 
-Use a temporary staged app path by overriding `APP_DIR`:
-
-```bash
-set -euo pipefail
-STAGE="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/gdrive-v2.4.4-stage.XXXXXX")"
-cleanup_stage() {
-  [[ ! -d "$STAGE" ]] || ./scripts/trash-path.sh "$STAGE"
-}
-trap cleanup_stage EXIT
-make APP_DIR="$STAGE/GDrive Backup Tiger.app" build
-STAGED_APP="$STAGE/GDrive Backup Tiger.app"
-STAGED_BINARY="$STAGED_APP/Contents/MacOS/GDriveBackupTiger"
-test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
-  "$STAGED_APP/Contents/Info.plist")" = "2.4.4"
-test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
-  "$STAGED_APP/Contents/Info.plist")" = "28"
-architectures="$(lipo -archs "$STAGED_BINARY")"
-[[ " $architectures " == *" arm64 "* && " $architectures " == *" x86_64 "* ]]
-codesign --verify --deep --strict --verbose=2 "$STAGED_APP"
-entitlements="$(codesign -d --entitlements :- "$STAGED_APP" 2>&1 || true)"
-[[ "$entitlements" != *'com.apple.developer.usernotifications.time-sensitive'* ]]
-BINARY_HASH="$(shasum -a 256 "$STAGED_BINARY" | awk '{print $1}')"
-[[ "$BINARY_HASH" =~ ^[0-9a-f]{64}$ ]]
-printf 'verified staged binary sha256=%s\n' "$BINARY_HASH"
-cleanup_stage
-trap - EXIT
-```
-
-Expected: version `2.4.4`, build `28`, architectures `x86_64 arm64`, valid
-ad-hoc signature, and no protected notification entitlement in the ad-hoc app.
-Record the printed binary hash in the review notes. The same strict shell block
-removes the verification stage recoverably; Task 6 rebuilds from the merged,
-tagged commit rather than relying on a shell-local `$STAGE` variable.
+This implementation-time check was completed before the release-safety review.
+Do not rerun the obsolete mutable-worktree staging snippet: Task 6 now performs
+the authoritative build from a verified `git archive` of `v2.4.4^{commit}` and
+uses strict, parsed entitlement extraction. Its retained stage and printed hash
+replace any shell-local artifact from this earlier checkpoint.
 
 - [ ] **Step 5: Commit the release metadata**
 
@@ -1529,308 +1501,288 @@ consistent, and only `AGENTS.md` plus
 
 - [ ] **Step 3: Push, review, merge, tag, and verify the published release**
 
+The block deliberately publishes the missing v2.4.3 history first. Its
+installer is a retrospective exact-tag build and is verified before v2.4.4 is
+allowed to become the latest release. Run it once from the reviewed, clean
+feature branch.
+
+<!-- GDT-RUNBOOK-PUBLISH:BEGIN -->
 ```bash
+#!/bin/bash
 set -euo pipefail
+readonly BASE_SHA="e948ec29910210a53d587f0a8b9c309ea6238cef"
+readonly V243_SHA="ddbfe24250149e4da177d23d8d1476dbbc3873eb"
 BRANCH="codex/automatic-retry-progress-v2-4-4"
-git push -u origin "$BRANCH"
+REVIEWED_HEAD="$(git rev-parse 'HEAD^{commit}')"
+readonly REVIEWED_HEAD
+REPOSITORY="$(gh repo view --json nameWithOwner --jq '.nameWithOwner')"
+readonly REPOSITORY
+
+test -z "$(git status --porcelain)"
+test "$(git rev-parse 'origin/main^{commit}')" = "$BASE_SHA"
+git merge-base --is-ancestor "$BASE_SHA" "$REVIEWED_HEAD"
+git merge-base --is-ancestor "$V243_SHA" "$REVIEWED_HEAD"
+test "$REVIEWED_HEAD" != "$BASE_SHA"
+for tag in v2.4.3 v2.4.4; do
+  if git show-ref --verify --quiet "refs/tags/$tag" ||
+     git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+    printf 'Refusing to replace existing tag %s.\n' "$tag" >&2
+    exit 1
+  fi
+done
+
+# Push the reviewed object, not whatever the branch name might resolve to
+# after review.
+git push origin "$REVIEWED_HEAD:refs/heads/$BRANCH"
+git branch --set-upstream-to="origin/$BRANCH" "$BRANCH"
+test "$(git ls-remote origin "refs/heads/$BRANCH" | /usr/bin/awk '{print $1}')" = \
+  "$REVIEWED_HEAD"
 PR_URL="$(gh pr create --base main --head "$BRANCH" \
   --title "Show passive progress for automatic backup retries" \
-  --body $'## Summary\n- persist private per-phase backup progress\n- show passive retry progress in the overview and menu bar\n- update the persistent retry notification without stealing focus\n\n## Validation\n- bash -n bin/backup-google-drive.sh\n- make test\n- scripts/validate-release.sh v2.4.4')"
+  --body $'## Summary\n- persist private per-phase backup progress\n- show passive retry progress in the overview and menu bar\n- preserve guest SMB remounts and newer failure alerts\n- keep progress publication fail closed\n\n## Validation\n- bash -n bin/backup-google-drive.sh\n- make test\n- scripts/validate-release.sh v2.4.4')"
 PR_NUMBER="${PR_URL##*/}"
 [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]
+PR_BASE="$(gh pr view "$PR_NUMBER" --json baseRefOid --jq '.baseRefOid')"
+PR_HEAD="$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid')"
+test "$PR_BASE" = "$BASE_SHA"
+test "$PR_HEAD" = "$REVIEWED_HEAD"
 gh pr checks "$PR_NUMBER" --watch
-gh pr merge "$PR_NUMBER" --merge --delete-branch
+
+# Re-read both immutable PR ends after CI, then make GitHub reject a merge if
+# the reviewed head changed between the check and this command.
+PR_BASE="$(gh pr view "$PR_NUMBER" --json baseRefOid --jq '.baseRefOid')"
+PR_HEAD="$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid')"
+test "$PR_BASE" = "$BASE_SHA"
+test "$PR_HEAD" = "$REVIEWED_HEAD"
+gh pr merge "$PR_NUMBER" --merge --match-head-commit "$REVIEWED_HEAD"
 MERGED_SHA="$(gh pr view "$PR_NUMBER" \
   --json mergeCommit --jq '.mergeCommit.oid')"
 [[ "$MERGED_SHA" =~ ^[0-9a-f]{40}$ ]]
-git switch main
-git pull --ff-only origin main
-test "$(git rev-parse HEAD)" = "$MERGED_SHA"
+git fetch origin main
+test "$(git rev-parse 'origin/main^{commit}')" = "$MERGED_SHA"
+test "$(git rev-parse "$MERGED_SHA^1")" = "$BASE_SHA"
+test "$(git rev-parse "$MERGED_SHA^2")" = "$REVIEWED_HEAD"
+test "$(git rev-list --parents -n 1 "$MERGED_SHA" | /usr/bin/awk '{print NF}')" = "3"
+git merge-base --is-ancestor "$REVIEWED_HEAD" "$MERGED_SHA"
 
 # Wait for the push-triggered main run by immutable commit, not merely PR checks.
 MAIN_CI_RUN=""
-for attempt in {1..30}; do
+for _ in {1..60}; do
   MAIN_CI_RUN="$(gh run list --workflow ci.yml --commit "$MERGED_SHA" --limit 1 \
     --json databaseId --jq '.[0].databaseId // empty')"
   [[ -n "$MAIN_CI_RUN" ]] && break
-  sleep 2
+  /bin/sleep 2
 done
 test -n "$MAIN_CI_RUN"
 gh run watch "$MAIN_CI_RUN" --exit-status
-scripts/validate-release.sh v2.4.4
-if git show-ref --verify --quiet refs/tags/v2.4.4 ||
-   git ls-remote --exit-code --tags origin refs/tags/v2.4.4 >/dev/null 2>&1; then
-  printf '%s\n' 'v2.4.4 already exists; refusing to retag.' >&2
-  exit 1
-fi
-git tag -a v2.4.4 -m "GDrive Backup Tiger v2.4.4"
-git push origin v2.4.4
 
-# Select the tag-triggered workflow by both tag and merged commit.
-RELEASE_RUN=""
-for attempt in {1..30}; do
-  RELEASE_RUN="$(gh run list --workflow release.yml --branch v2.4.4 \
-    --commit "$MERGED_SHA" --limit 1 \
-    --json databaseId --jq '.[0].databaseId // empty')"
-  [[ -n "$RELEASE_RUN" ]] && break
-  sleep 2
-done
-test -n "$RELEASE_RUN"
-gh run watch "$RELEASE_RUN" --exit-status
-test "$(git rev-list -n 1 v2.4.4)" = "$MERGED_SHA"
-RELEASE_CHECK_DIR="$(/usr/bin/mktemp -d \
-  "${TMPDIR:-/tmp}/gdrive-v2.4.4-release.XXXXXX")"
-cleanup_release_check() {
-  [[ ! -d "$RELEASE_CHECK_DIR" ]] || ./scripts/trash-path.sh "$RELEASE_CHECK_DIR"
+RELEASE_EVIDENCE_ROOT="$(/usr/bin/mktemp -d \
+  "${TMPDIR:-/tmp}/gdrive-release-evidence.XXXXXX")"
+test -d "$RELEASE_EVIDENCE_ROOT" && test ! -L "$RELEASE_EVIDENCE_ROOT"
+report_publish_evidence() {
+  local status=$?
+  trap - EXIT
+  printf 'LEFTOVER_RELEASE_EVIDENCE=%s\n' "$RELEASE_EVIDENCE_ROOT" >&2
+  exit "$status"
 }
-trap cleanup_release_check EXIT
-gh release download v2.4.4 --dir "$RELEASE_CHECK_DIR" \
-  --pattern 'GDrive-Backup-Tiger-2.4.4.pkg' \
-  --pattern 'SHA256SUMS.txt'
-(
-  cd "$RELEASE_CHECK_DIR"
-  shasum -a 256 -c SHA256SUMS.txt
-)
-packaging/verify-pkg.sh --expect-unsigned \
-  "$RELEASE_CHECK_DIR/GDrive-Backup-Tiger-2.4.4.pkg"
-gh release view v2.4.4 --json tagName,url,assets
-cleanup_release_check
-trap - EXIT
-```
+trap report_publish_evidence EXIT
 
-Expected: PR checks, merged-main CI, annotated tag, release workflow, installer,
-and `SHA256SUMS.txt` all resolve to the merged v2.4.4 commit.
+publish_release() {
+  local tag="$1"
+  local commit="$2"
+  local version="${tag#v}"
+  local release_dir="$RELEASE_EVIDENCE_ROOT/$tag"
+  local source_dir="$release_dir/source"
+  local archive="$release_dir/source.tar"
+  local release_run=""
+  local assets expected_assets latest_tag="" remote_tag
+
+  test ! -e "$release_dir" && test ! -L "$release_dir"
+  /bin/mkdir "$release_dir"
+  test ! -e "$source_dir" && test ! -L "$source_dir"
+  /bin/mkdir "$source_dir"
+  test ! -e "$archive" && test ! -L "$archive"
+  git archive --format=tar --output="$archive" "$commit"
+  test "$(git get-tar-commit-id <"$archive")" = "$commit"
+  /usr/bin/tar -xf "$archive" -C "$source_dir"
+  make -C "$source_dir" test
+  "$source_dir/scripts/validate-release.sh" "$tag"
+
+  git tag -a "$tag" "$commit" -m "GDrive Backup Tiger $tag"
+  test "$(git cat-file -t "refs/tags/$tag")" = "tag"
+  test "$(git rev-parse "$tag^{commit}")" = "$commit"
+  git push origin "refs/tags/$tag:refs/tags/$tag"
+
+  for _ in {1..60}; do
+    release_run="$(gh run list --workflow release.yml --branch "$tag" \
+      --commit "$commit" --limit 1 \
+      --json databaseId --jq '.[0].databaseId // empty')"
+    [[ -n "$release_run" ]] && break
+    /bin/sleep 2
+  done
+  test -n "$release_run"
+  gh run watch "$release_run" --exit-status
+
+  remote_tag="$(git ls-remote origin "refs/tags/$tag^{}" |
+    /usr/bin/awk '{print $1}')"
+  test "$remote_tag" = "$commit"
+  gh release download "$tag" --dir "$release_dir" \
+    --pattern "GDrive-Backup-Tiger-${version}.pkg" \
+    --pattern 'SHA256SUMS.txt'
+  (
+    cd "$release_dir"
+    /usr/bin/shasum -a 256 -c SHA256SUMS.txt
+  )
+  "$source_dir/packaging/verify-pkg.sh" --expect-unsigned \
+    "$release_dir/GDrive-Backup-Tiger-${version}.pkg"
+  assets="$(gh release view "$tag" --json assets --jq '.assets[].name' |
+    LC_ALL=C /usr/bin/sort)"
+  expected_assets="$(printf '%s\n%s\n' \
+    "GDrive-Backup-Tiger-${version}.pkg" 'SHA256SUMS.txt' |
+    LC_ALL=C /usr/bin/sort)"
+  test "$assets" = "$expected_assets"
+  test "$(gh release view "$tag" --json tagName --jq '.tagName')" = "$tag"
+  for _ in {1..60}; do
+    latest_tag="$(gh api "repos/$REPOSITORY/releases/latest" --jq '.tag_name')"
+    [[ "$latest_tag" = "$tag" ]] && break
+    /bin/sleep 2
+  done
+  test "$latest_tag" = "$tag"
+}
+
+publish_release v2.4.3 "$V243_SHA"
+publish_release v2.4.4 "$MERGED_SHA"
+printf 'Published merge=%s reviewed_head=%s\n' "$MERGED_SHA" "$REVIEWED_HEAD"
+```
+<!-- GDT-RUNBOOK-PUBLISH:END -->
+
+Expected: PR checks and merged-main CI pass; the merge has exactly the pinned
+base and reviewed head as parents; v2.4.3 is an annotated tag of `ddbfe24…`
+with verified assets and is temporarily `latest`; only then v2.4.4 is tagged
+at the merge commit, published, checksum-verified, package-verified, and becomes
+`latest`. The printed evidence directory is intentionally retained.
 
 - [ ] **Step 4: Enforce the successful terminal-backup installation gate**
 
+Run this one block only after both releases above are verified. It performs the
+pre-build gate, immutable export and build, locked transaction, rollback, and
+all final checks. It intentionally retains and prints every stage, rollback,
+previous-version, or quarantine path instead of depending on a Trash binary.
+
+<!-- GDT-RUNBOOK-INSTALL:BEGIN -->
 ```bash
+#!/bin/bash
 set -euo pipefail
-STATUS_FILE="$HOME/Library/Application Support/GDrive Backup Tiger/profiles/default/last-run.status"
-test -f "$STATUS_FILE" && test ! -L "$STATUS_FILE"
-test "$(stat -f '%u' "$STATUS_FILE")" = "$(id -u)"
-test "$(stat -f '%Lp' "$STATUS_FILE")" = "600"
-status_value() {
-  local key="$1"
-  test "$(awk -F= -v key="$key" '$1 == key {count++} END {print count + 0}' \
-    "$STATUS_FILE")" = "1"
-  awk -F= -v key="$key" '$1 == key {print substr($0, index($0, "=") + 1)}' \
-    "$STATUS_FILE"
+
+readonly RELEASE_TAG="v2.4.4"
+readonly EXPECTED_VERSION="2.4.4"
+readonly EXPECTED_BUILD="28"
+readonly SAFE_PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+DOMAIN="gui/$(/usr/bin/id -u)"
+readonly DOMAIN
+readonly CONTROLLER_SERVICE="$DOMAIN/com.commcats.gdrivebackup"
+readonly SCHEDULE_SERVICE="$DOMAIN/com.commcats.gdrivebackup.schedule"
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+RELEASE_COMMIT="$(git rev-parse "$RELEASE_TAG^{commit}")"
+REPOSITORY="$(gh repo view --json nameWithOwner --jq '.nameWithOwner')"
+CURRENT_UID="$(/usr/bin/id -u)"
+CURRENT_GID="$(/usr/bin/id -g)"
+APP_FINAL="/Applications/GDrive Backup Tiger.app"
+SCRIPT_FINAL="/usr/local/bin/backup-google-drive.sh"
+CONTROLLER_PLIST="$HOME/Library/LaunchAgents/com.commcats.gdrivebackup.plist"
+SCHEDULE_PLIST="$HOME/Library/LaunchAgents/com.commcats.gdrivebackup.schedule.plist"
+CONFIG_DIR="$HOME/.config/gdrive-tiger-backup"
+ACTIVE_PROFILE_FILE="$CONFIG_DIR/active-profile"
+PROFILES_DIR="$CONFIG_DIR/profiles"
+PROFILE_CONFIG="$PROFILES_DIR/default.conf"
+STATE_ROOT="$HOME/Library/Application Support/GDrive Backup Tiger"
+ROLLBACK_PARENT="$STATE_ROOT/rollbacks"
+STAGE_PARENT="$STATE_ROOT/install-staging"
+
+STAGE=""
+ROLLBACK=""
+APP_TXN=""
+SCRIPT_TXN=""
+APP_INCOMING=""
+SCRIPT_INCOMING=""
+APP_PREVIOUS=""
+SCRIPT_PREVIOUS=""
+APP_QUARANTINE=""
+SCRIPT_QUARANTINE=""
+OLD_APP_HASH=""
+OLD_SCRIPT_HASH=""
+APP_HASH=""
+SCRIPT_HASH=""
+EFFECTIVE_STATUS=""
+RECOVERY_ARMED=0
+
+assert_absolute_single_line_path() {
+  local value="$1"
+  [[ "$value" = /* && "$value" != *$'\n'* && "$value" != *$'\r'* ]]
 }
+
+assert_user_regular_file() {
+  local path="$1"
+  local expected_mode="$2"
+  test -f "$path" && test ! -L "$path"
+  test "$(/usr/bin/stat -f '%u' "$path")" = "$CURRENT_UID"
+  test "$(/usr/bin/stat -f '%Lp' "$path")" = "$expected_mode"
+}
+
+assert_safe_user_plist() {
+  local path="$1"
+  local mode mode_value
+  test -f "$path" && test ! -L "$path"
+  test "$(/usr/bin/stat -f '%u' "$path")" = "$CURRENT_UID"
+  mode="$(/usr/bin/stat -f '%Lp' "$path")"
+  [[ "$mode" =~ ^[0-7]{3,4}$ ]]
+  mode_value=$((8#$mode))
+  (( (mode_value & 8#022) == 0 ))
+  /usr/bin/plutil -lint "$path" >/dev/null
+}
+
+reject_service_path_overrides() {
+  local plist key
+  for plist in "$CONTROLLER_PLIST" "$SCHEDULE_PLIST"; do
+    for key in \
+      GDRIVE_BACKUP_CONFIG \
+      GDRIVE_BACKUP_CONFIG_DIR \
+      GDRIVE_BACKUP_LOCK \
+      GDRIVE_BACKUP_SUMMARY_STATE_FILE \
+      GDRIVE_BACKUP_PROGRESS_STATE_FILE; do
+      if /usr/bin/plutil -extract "EnvironmentVariables.$key" raw -o - \
+          "$plist" >/dev/null 2>&1; then
+        printf 'Refusing service override %s in %s.\n' "$key" "$plist" >&2
+        return 1
+      fi
+    done
+  done
+}
+
+status_value_from_file() {
+  local key="$1"
+  test "$(/usr/bin/awk -F= -v key="$key" \
+    '$1 == key {count++} END {print count + 0}' "$EFFECTIVE_STATUS")" = "1"
+  /usr/bin/awk -F= -v key="$key" \
+    '$1 == key {print substr($0, index($0, "=") + 1)}' "$EFFECTIVE_STATUS"
+}
+
 backup_process_snapshot() {
   local excluded="," pid
   pid="$(/bin/sh -c 'printf "%s" "$PPID"')"
   while [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 1 ]]; do
     excluded="${excluded}${pid},"
-    pid="$(ps -p "$pid" -o ppid= | tr -d ' ')"
+    pid="$(/bin/ps -p "$pid" -o ppid= | /usr/bin/tr -d ' ')"
   done
-  ps -axo pid=,ppid=,command= | awk -v excluded="$excluded" '
+  /bin/ps -axo pid=,ppid=,command= | /usr/bin/awk -v excluded="$excluded" '
     index(excluded, "," $1 ",") == 0 &&
     /backup-google-drive|\/rclone( |$)/ && $0 !~ /awk/ {print}'
 }
-test "$(status_value protocol)" = "1"
-status="$(status_value status)"
-started_at="$(status_value started_at)"
-finished_at="$(status_value finished_at)"
-last_success_at="$(status_value last_success_at)"
-exit_code="$(status_value exit_code)"
-test "$status" = "success"
-test "$exit_code" = "0"
-[[ "$started_at" =~ ^[0-9]+$ && "$finished_at" =~ ^[0-9]+$ &&
-   "$last_success_at" =~ ^[0-9]+$ ]]
-(( finished_at >= started_at && last_success_at >= started_at ))
-active_backup_processes="$(backup_process_snapshot)"
-test -z "$active_backup_processes"
-```
 
-If any assertion fails, do not build an incoming install, stop services, or
-replace files. Report only the safe status/reason and process count. A failed,
-cancelled, interrupted, or still-running backup is not an installation window.
-
-- [ ] **Step 5: Rebuild from the merged tag, quiesce launchd, and swap with rollback**
-
-Run the following installation block with the already granted external-write
-authority. It does not edit configuration or touch the NAS:
-
-```bash
-set -euo pipefail
-test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 v2.4.4)"
-STAGE="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/gdrive-v2.4.4-install.XXXXXX")"
-cleanup_stage_on_exit() {
-  status=$?
-  trap - EXIT
-  if (( status != 0 )) && [[ -d "$STAGE" ]]; then
-    ./scripts/trash-path.sh "$STAGE" || true
-  fi
-  exit "$status"
-}
-trap cleanup_stage_on_exit EXIT
-make APP_DIR="$STAGE/GDrive Backup Tiger.app" build
-STAGED_APP="$STAGE/GDrive Backup Tiger.app"
-STAGED_BINARY="$STAGED_APP/Contents/MacOS/GDriveBackupTiger"
-test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
-  "$STAGED_APP/Contents/Info.plist")" = "2.4.4"
-test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
-  "$STAGED_APP/Contents/Info.plist")" = "28"
-architectures="$(lipo -archs "$STAGED_BINARY")"
-[[ " $architectures " == *" arm64 "* && " $architectures " == *" x86_64 "* ]]
-codesign --verify --deep --strict --verbose=2 "$STAGED_APP"
-entitlements="$(codesign -d --entitlements :- "$STAGED_APP" 2>&1 || true)"
-[[ "$entitlements" != *'com.apple.developer.usernotifications.time-sensitive'* ]]
-bash -n bin/backup-google-drive.sh
-APP_HASH="$(shasum -a 256 "$STAGED_BINARY" | awk '{print $1}')"
-SCRIPT_HASH="$(shasum -a 256 bin/backup-google-drive.sh | awk '{print $1}')"
-
-STAMP="$(date -u '+%Y%m%dT%H%M%SZ')"
-ROLLBACK="$HOME/Library/Application Support/GDrive Backup Tiger/rollbacks/$STAMP"
-APP_FINAL="/Applications/GDrive Backup Tiger.app"
-SCRIPT_FINAL="/usr/local/bin/backup-google-drive.sh"
-APP_INCOMING="/Applications/.GDrive Backup Tiger.app.incoming.$STAMP"
-SCRIPT_INCOMING="/usr/local/bin/.backup-google-drive.sh.incoming.$STAMP"
-APP_PREVIOUS="/Applications/.GDrive Backup Tiger.app.previous.$STAMP"
-SCRIPT_PREVIOUS="/usr/local/bin/.backup-google-drive.sh.previous.$STAMP"
-CONTROLLER_PLIST="$HOME/Library/LaunchAgents/com.commcats.gdrivebackup.plist"
-SCHEDULE_PLIST="$HOME/Library/LaunchAgents/com.commcats.gdrivebackup.schedule.plist"
-DOMAIN="gui/$(id -u)"
-CONTROLLER_SERVICE="$DOMAIN/com.commcats.gdrivebackup"
-SCHEDULE_SERVICE="$DOMAIN/com.commcats.gdrivebackup.schedule"
-CONFIG_DIR="$HOME/.config/gdrive-tiger-backup"
-PROFILE_CONFIG="$CONFIG_DIR/profiles/default.conf"
-STATUS_FILE="$HOME/Library/Application Support/GDrive Backup Tiger/profiles/default/last-run.status"
-mkdir -p "$ROLLBACK"
-test -d "$APP_FINAL" && test -x "$SCRIPT_FINAL"
-test -f "$CONTROLLER_PLIST" && test -f "$SCHEDULE_PLIST"
-test -f "$PROFILE_CONFIG" && test ! -L "$PROFILE_CONFIG"
-test ! -e "$APP_INCOMING" && test ! -e "$SCRIPT_INCOMING"
-test ! -e "$APP_PREVIOUS" && test ! -e "$SCRIPT_PREVIOUS"
-/usr/bin/ditto "$APP_FINAL" "$ROLLBACK/GDrive Backup Tiger.app"
-/usr/bin/install -m 755 "$SCRIPT_FINAL" "$ROLLBACK/backup-google-drive.sh"
-
-hash_config_tree() {
-  /usr/bin/find "$1" -type f -print | LC_ALL=C /usr/bin/sort |
-    while IFS= read -r path; do
-      /usr/bin/shasum -a 256 "$path"
-    done | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}'
-}
-
-CONFIG_HASH_BEFORE="$(hash_config_tree "$CONFIG_DIR")"
-CONTROLLER_PLIST_HASH="$(shasum -a 256 "$CONTROLLER_PLIST" | awk '{print $1}')"
-SCHEDULE_PLIST_HASH="$(shasum -a 256 "$SCHEDULE_PLIST" | awk '{print $1}')"
-OLD_APP_HASH="$(shasum -a 256 "$APP_FINAL/Contents/MacOS/GDriveBackupTiger" |
-  awk '{print $1}')"
-OLD_SCRIPT_HASH="$(shasum -a 256 "$SCRIPT_FINAL" | awk '{print $1}')"
-OLD_CONTROLLER_PID="$(launchctl print "$CONTROLLER_SERVICE" |
-  awk '/pid =/ {print $3; exit}')"
-test -n "$OLD_CONTROLLER_PID"
-launchctl print "$SCHEDULE_SERVICE" >/dev/null
-
-reload_services() {
-  launchctl bootstrap "$DOMAIN" "$CONTROLLER_PLIST" || return 1
-  launchctl enable "$CONTROLLER_SERVICE" || return 1
-  launchctl bootstrap "$DOMAIN" "$SCHEDULE_PLIST" || return 1
-  launchctl enable "$SCHEDULE_SERVICE" || return 1
-}
-
-restore_previous_install() {
-  local rollback_status=0
-  launchctl bootout "$DOMAIN" "$SCHEDULE_PLIST" >/dev/null 2>&1 || true
-  launchctl bootout "$DOMAIN" "$CONTROLLER_PLIST" >/dev/null 2>&1 || true
-  if [[ -e "$APP_PREVIOUS" ]]; then
-    if [[ -e "$APP_FINAL" ]]; then
-      /usr/bin/sudo /usr/bin/trash "$APP_FINAL" || rollback_status=1
-    fi
-    if (( rollback_status == 0 )); then
-      /usr/bin/sudo /bin/mv "$APP_PREVIOUS" "$APP_FINAL" || rollback_status=1
-    fi
-  fi
-  if [[ -e "$SCRIPT_PREVIOUS" ]]; then
-    if [[ -e "$SCRIPT_FINAL" ]]; then
-      /usr/bin/sudo /usr/bin/trash "$SCRIPT_FINAL" || rollback_status=1
-    fi
-    if [[ ! -e "$SCRIPT_FINAL" ]]; then
-      /usr/bin/sudo /bin/mv "$SCRIPT_PREVIOUS" "$SCRIPT_FINAL" || rollback_status=1
-    fi
-  fi
-  if [[ -e "$APP_INCOMING" ]]; then
-    /usr/bin/sudo /usr/bin/trash "$APP_INCOMING" || rollback_status=1
-  fi
-  if [[ -e "$SCRIPT_INCOMING" ]]; then
-    /usr/bin/sudo /usr/bin/trash "$SCRIPT_INCOMING" || rollback_status=1
-  fi
-  test -d "$APP_FINAL" || rollback_status=1
-  test -x "$SCRIPT_FINAL" || rollback_status=1
-  if [[ -d "$APP_FINAL" ]]; then
-    test "$(shasum -a 256 "$APP_FINAL/Contents/MacOS/GDriveBackupTiger" |
-      awk '{print $1}')" = "$OLD_APP_HASH" || rollback_status=1
-  fi
-  if [[ -x "$SCRIPT_FINAL" ]]; then
-    test "$(shasum -a 256 "$SCRIPT_FINAL" | awk '{print $1}')" = \
-      "$OLD_SCRIPT_HASH" || rollback_status=1
-  fi
-  if (( rollback_status == 0 )); then
-    if ! reload_services; then
-      launchctl bootout "$DOMAIN" "$SCHEDULE_PLIST" >/dev/null 2>&1 || true
-      launchctl bootout "$DOMAIN" "$CONTROLLER_PLIST" >/dev/null 2>&1 || true
-      rollback_status=1
-    fi
-  fi
-  return "$rollback_status"
-}
-
-discard_incoming_install() {
-  local discard_status=0
-  if [[ -e "$APP_INCOMING" ]]; then
-    /usr/bin/sudo /usr/bin/trash "$APP_INCOMING" || discard_status=1
-  fi
-  if [[ -e "$SCRIPT_INCOMING" ]]; then
-    /usr/bin/sudo /usr/bin/trash "$SCRIPT_INCOMING" || discard_status=1
-  fi
-  return "$discard_status"
-}
-
-SERVICES_QUIESCED=0
-on_install_exit() {
-  status=$?
-  trap - EXIT
-  if (( status != 0 && SERVICES_QUIESCED == 1 )); then
-    if ! restore_previous_install; then
-      printf '%s\n' 'CRITICAL: automatic rollback or service reload failed.' >&2
-      status=1
-    fi
-  elif (( status != 0 )); then
-    if ! discard_incoming_install; then
-      printf '%s\n' 'CRITICAL: incoming install cleanup failed.' >&2
-      status=1
-    fi
-  fi
-  if (( status != 0 )) && [[ -d "$STAGE" ]]; then
-    ./scripts/trash-path.sh "$STAGE" || true
-  fi
-  exit "$status"
-}
-trap on_install_exit EXIT
-
-/usr/bin/sudo /usr/bin/ditto "$STAGED_APP" "$APP_INCOMING"
-/usr/bin/sudo /usr/bin/install -m 755 bin/backup-google-drive.sh "$SCRIPT_INCOMING"
-codesign --verify --deep --strict --verbose=2 "$APP_INCOMING"
-bash -n "$SCRIPT_INCOMING"
-test "$(shasum -a 256 "$APP_INCOMING/Contents/MacOS/GDriveBackupTiger" |
-  awk '{print $1}')" = "$APP_HASH"
-test "$(shasum -a 256 "$SCRIPT_INCOMING" | awk '{print $1}')" = "$SCRIPT_HASH"
-test "$(stat -f '%Lp' "$SCRIPT_INCOMING")" = "755"
-
-status_value_from_file() {
-  local key="$1"
-  test "$(awk -F= -v key="$key" '$1 == key {count++} END {print count + 0}' \
-    "$STATUS_FILE")" = "1"
-  awk -F= -v key="$key" '$1 == key {print substr($0, index($0, "=") + 1)}' \
-    "$STATUS_FILE"
-}
-
-assert_successful_terminal_backup() {
-  local status started_at finished_at last_success_at exit_code
-  test -f "$STATUS_FILE" && test ! -L "$STATUS_FILE"
-  test "$(stat -f '%u' "$STATUS_FILE")" = "$(id -u)"
-  test "$(stat -f '%Lp' "$STATUS_FILE")" = "600"
+assert_successful_terminal_backup_and_no_processes() {
+  local status started_at finished_at last_success_at exit_code active
+  assert_user_regular_file "$EFFECTIVE_STATUS" "600"
   test "$(status_value_from_file protocol)" = "1"
   status="$(status_value_from_file status)"
   started_at="$(status_value_from_file started_at)"
@@ -1841,135 +1793,500 @@ assert_successful_terminal_backup() {
   [[ "$started_at" =~ ^[0-9]+$ && "$finished_at" =~ ^[0-9]+$ &&
      "$last_success_at" =~ ^[0-9]+$ ]]
   (( finished_at >= started_at && last_success_at >= started_at ))
+  active="$(backup_process_snapshot)"
+  test -z "$active"
 }
 
-backup_process_snapshot() {
-  local excluded="," pid
-  pid="$(/bin/sh -c 'printf "%s" "$PPID"')"
-  while [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 1 ]]; do
-    excluded="${excluded}${pid},"
-    pid="$(ps -p "$pid" -o ppid= | tr -d ' ')"
-  done
-  ps -axo pid=,ppid=,command= | awk -v excluded="$excluded" '
-    index(excluded, "," $1 ",") == 0 &&
-    /backup-google-drive|\/rclone( |$)/ && $0 !~ /awk/ {print}'
+canonical_config_manifest() {
+  local root="$1"
+  local output="$2"
+  local paths="${output}.paths"
+  local path relative type uid gid mode size digest
+  test -d "$root" && test ! -L "$root"
+  test ! -e "$output" && test ! -L "$output"
+  test ! -e "$paths" && test ! -L "$paths"
+  /usr/bin/find "$root" -mindepth 1 -print0 >"$paths"
+  : >"$output"
+  /bin/chmod 600 "$output" "$paths"
+  while IFS= read -r -d '' path; do
+    relative="${path#"$root"/}"
+    if [[ "$relative" == *'|'* || "$relative" == *$'\n'* ||
+          "$relative" == *$'\r'* ]]; then
+      printf 'Refusing unsafe manifest path: %s\n' "$relative" >&2
+      return 1
+    fi
+    if [[ -L "$path" ]]; then
+      printf 'Refusing unexpected symbolic link in configuration: %s\n' "$relative" >&2
+      return 1
+    elif [[ -f "$path" ]]; then
+      type="file"
+      digest="$(/usr/bin/shasum -a 256 "$path" | /usr/bin/awk '{print $1}')"
+    elif [[ -d "$path" ]]; then
+      type="directory"
+      digest="-"
+    else
+      printf 'Refusing special configuration entry: %s\n' "$relative" >&2
+      return 1
+    fi
+    uid="$(/usr/bin/stat -f '%u' "$path")"
+    gid="$(/usr/bin/stat -f '%g' "$path")"
+    mode="$(/usr/bin/stat -f '%Lp' "$path")"
+    size="$(/usr/bin/stat -f '%z' "$path")"
+    printf 'type=%s|path=%s|uid=%s|gid=%s|mode=%s|size=%s|sha256=%s\n' \
+      "$type" "$relative" "$uid" "$gid" "$mode" "$size" "$digest"
+  done < <(LC_ALL=C /usr/bin/sort -z "$paths") >"${output}.unsorted"
+  LC_ALL=C /usr/bin/sort "${output}.unsorted" >"$output"
+  /bin/chmod 600 "$output"
 }
 
-# Resolve the same effective lock as the scheduled default profile. The local
-# profile is the trusted file the installed backup script itself sources.
-SCHEDULE_LOCK="$(plutil -extract EnvironmentVariables.GDRIVE_BACKUP_LOCK raw -o - \
-  "$SCHEDULE_PLIST" 2>/dev/null || true)"
-CONTROLLER_LOCK="$(plutil -extract EnvironmentVariables.GDRIVE_BACKUP_LOCK raw -o - \
-  "$CONTROLLER_PLIST" 2>/dev/null || true)"
-if [[ -n "$SCHEDULE_LOCK" && -n "$CONTROLLER_LOCK" ]]; then
-  test "$SCHEDULE_LOCK" = "$CONTROLLER_LOCK"
-fi
-INHERITED_LOCK="${SCHEDULE_LOCK:-${CONTROLLER_LOCK:-$HOME/Library/Logs/gdrive-backup.lock}}"
-LOCK_FILE="$(GDRIVE_BACKUP_LOCK="$INHERITED_LOCK" /bin/bash -c '
+extract_entitlements() {
+  local app="$1"
+  local output="$2"
+  local stderr_file="${output}.stderr"
+  test ! -e "$output" && test ! -L "$output"
+  test ! -e "$stderr_file" && test ! -L "$stderr_file"
+  /usr/bin/codesign -d --entitlements :- "$app" >"$output" 2>"$stderr_file"
+  if [[ ! -s "$output" ]]; then
+    printf '%s\n' \
+      '<?xml version="1.0" encoding="UTF-8"?>' \
+      '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+      '<plist version="1.0"><dict/></plist>' >"$output"
+  fi
+  /usr/bin/plutil -lint "$output" >/dev/null
+  if /usr/bin/plutil -extract \
+      com.apple.developer.usernotifications.time-sensitive raw -o - \
+      "$output" >/dev/null 2>&1; then
+    printf '%s\n' 'Refusing restricted time-sensitive entitlement.' >&2
+    return 1
+  fi
+}
+
+reload_services() {
+  /bin/launchctl bootstrap "$DOMAIN" "$CONTROLLER_PLIST"
+  /bin/launchctl enable "$CONTROLLER_SERVICE"
+  /bin/launchctl bootstrap "$DOMAIN" "$SCHEDULE_PLIST"
+  /bin/launchctl enable "$SCHEDULE_SERVICE"
+  /bin/launchctl print "$CONTROLLER_SERVICE" >/dev/null
+  /bin/launchctl print "$SCHEDULE_SERVICE" >/dev/null
+}
+
+recover_previous_install() {
+  local recovery_status=0 current_hash=""
+
+  # These best-effort bootouts are recovery-only: they prevent either service
+  # from observing a partially restored pair.
+  /bin/launchctl bootout "$DOMAIN" "$SCHEDULE_PLIST" >/dev/null 2>&1 || true
+  /bin/launchctl bootout "$DOMAIN" "$CONTROLLER_PLIST" >/dev/null 2>&1 || true
+
+  if [[ -d "$APP_FINAL" && ! -L "$APP_FINAL" ]]; then
+    current_hash="$(/usr/bin/shasum -a 256 \
+      "$APP_FINAL/Contents/MacOS/GDriveBackupTiger" | /usr/bin/awk '{print $1}')"
+    if [[ "$current_hash" = "$APP_HASH" ]]; then
+      test ! -e "$APP_QUARANTINE" && test ! -L "$APP_QUARANTINE" || recovery_status=1
+      if (( recovery_status == 0 )); then
+        /usr/bin/sudo /bin/mv "$APP_FINAL" "$APP_QUARANTINE" || recovery_status=1
+      fi
+    elif [[ "$current_hash" != "$OLD_APP_HASH" ]]; then
+      recovery_status=1
+    fi
+  elif [[ -e "$APP_FINAL" || -L "$APP_FINAL" ]]; then
+    recovery_status=1
+  fi
+  if [[ ! -d "$APP_FINAL" && -d "$APP_PREVIOUS" && ! -L "$APP_PREVIOUS" ]]; then
+    test "$(/usr/bin/shasum -a 256 \
+      "$APP_PREVIOUS/Contents/MacOS/GDriveBackupTiger" | /usr/bin/awk '{print $1}')" = \
+      "$OLD_APP_HASH" || recovery_status=1
+    if (( recovery_status == 0 )); then
+      /usr/bin/sudo /bin/mv "$APP_PREVIOUS" "$APP_FINAL" || recovery_status=1
+    fi
+  elif [[ ! -d "$APP_FINAL" && $recovery_status -eq 0 ]]; then
+    /usr/bin/sudo /usr/bin/ditto "$ROLLBACK/GDrive Backup Tiger.app" \
+      "$APP_FINAL" || recovery_status=1
+  fi
+
+  current_hash=""
+  if [[ -f "$SCRIPT_FINAL" && ! -L "$SCRIPT_FINAL" ]]; then
+    current_hash="$(/usr/bin/shasum -a 256 "$SCRIPT_FINAL" | /usr/bin/awk '{print $1}')"
+    if [[ "$current_hash" = "$SCRIPT_HASH" ]]; then
+      test ! -e "$SCRIPT_QUARANTINE" && test ! -L "$SCRIPT_QUARANTINE" || recovery_status=1
+      if (( recovery_status == 0 )); then
+        /usr/bin/sudo /bin/mv "$SCRIPT_FINAL" "$SCRIPT_QUARANTINE" || recovery_status=1
+      fi
+    elif [[ "$current_hash" != "$OLD_SCRIPT_HASH" ]]; then
+      recovery_status=1
+    fi
+  elif [[ -e "$SCRIPT_FINAL" || -L "$SCRIPT_FINAL" ]]; then
+    recovery_status=1
+  fi
+  if [[ ! -f "$SCRIPT_FINAL" && -f "$SCRIPT_PREVIOUS" && ! -L "$SCRIPT_PREVIOUS" ]]; then
+    test "$(/usr/bin/shasum -a 256 "$SCRIPT_PREVIOUS" | /usr/bin/awk '{print $1}')" = \
+      "$OLD_SCRIPT_HASH" || recovery_status=1
+    if (( recovery_status == 0 )); then
+      /usr/bin/sudo /bin/mv "$SCRIPT_PREVIOUS" "$SCRIPT_FINAL" || recovery_status=1
+    fi
+  elif [[ ! -f "$SCRIPT_FINAL" && $recovery_status -eq 0 ]]; then
+    /usr/bin/sudo /usr/bin/install -m 755 "$ROLLBACK/backup-google-drive.sh" \
+      "$SCRIPT_FINAL" || recovery_status=1
+  fi
+
+  if (( recovery_status == 0 )); then
+    test "$(/usr/bin/shasum -a 256 \
+      "$APP_FINAL/Contents/MacOS/GDriveBackupTiger" | /usr/bin/awk '{print $1}')" = \
+      "$OLD_APP_HASH" || recovery_status=1
+    test "$(/usr/bin/shasum -a 256 "$SCRIPT_FINAL" | /usr/bin/awk '{print $1}')" = \
+      "$OLD_SCRIPT_HASH" || recovery_status=1
+  fi
+  if (( recovery_status == 0 )); then
+    reload_services || recovery_status=1
+  fi
+  if (( recovery_status != 0 )); then
+    /bin/launchctl bootout "$DOMAIN" "$SCHEDULE_PLIST" >/dev/null 2>&1 || true
+    /bin/launchctl bootout "$DOMAIN" "$CONTROLLER_PLIST" >/dev/null 2>&1 || true
+  fi
+  return "$recovery_status"
+}
+
+report_install_leftovers() {
+  [[ -z "$STAGE" ]] || printf 'LEFTOVER_STAGE=%s\n' "$STAGE" >&2
+  [[ -z "$ROLLBACK" ]] || printf 'LEFTOVER_ROLLBACK=%s\n' "$ROLLBACK" >&2
+  [[ -z "$APP_TXN" ]] || printf 'LEFTOVER_APP_TRANSACTION=%s\n' "$APP_TXN" >&2
+  [[ -z "$SCRIPT_TXN" ]] || printf 'LEFTOVER_SCRIPT_TRANSACTION=%s\n' "$SCRIPT_TXN" >&2
+}
+
+on_install_exit() {
+  local status=$?
+  trap - EXIT HUP INT TERM
+  if (( status != 0 && RECOVERY_ARMED == 1 )); then
+    if ! recover_previous_install; then
+      printf '%s\n' \
+        'CRITICAL: hash-aware rollback failed; both services remain unloaded.' >&2
+      status=1
+    fi
+  fi
+  report_install_leftovers
+  exit "$status"
+}
+
+handle_install_signal() {
+  printf '%s\n' 'Installation interrupted; entering the guarded exit path.' >&2
+  exit 130
+}
+
+assert_final_install_state() {
+  local architectures new_controller_pid final_manifest final_entitlements
+  test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+    "$APP_FINAL/Contents/Info.plist")" = "$EXPECTED_VERSION"
+  test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
+    "$APP_FINAL/Contents/Info.plist")" = "$EXPECTED_BUILD"
+  architectures="$(/usr/bin/lipo -archs \
+    "$APP_FINAL/Contents/MacOS/GDriveBackupTiger")"
+  [[ " $architectures " == *" arm64 "* && " $architectures " == *" x86_64 "* ]]
+  /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_FINAL"
+  test "$(/usr/bin/shasum -a 256 \
+    "$APP_FINAL/Contents/MacOS/GDriveBackupTiger" | /usr/bin/awk '{print $1}')" = \
+    "$APP_HASH"
+  test "$(/usr/bin/shasum -a 256 "$SCRIPT_FINAL" | /usr/bin/awk '{print $1}')" = \
+    "$SCRIPT_HASH"
+  test "$(/usr/bin/stat -f '%Lp' "$SCRIPT_FINAL")" = "755"
+  /bin/bash -n "$SCRIPT_FINAL"
+
+  final_entitlements="$STAGE/final-entitlements.plist"
+  extract_entitlements "$APP_FINAL" "$final_entitlements"
+  final_manifest="$STAGE/config-after.manifest"
+  canonical_config_manifest "$CONFIG_DIR" "$final_manifest"
+  /usr/bin/cmp -s "$ROLLBACK/config-before.manifest" "$final_manifest"
+  test "$(/usr/bin/shasum -a 256 "$CONTROLLER_PLIST" | /usr/bin/awk '{print $1}')" = \
+    "$CONTROLLER_PLIST_HASH"
+  test "$(/usr/bin/shasum -a 256 "$SCHEDULE_PLIST" | /usr/bin/awk '{print $1}')" = \
+    "$SCHEDULE_PLIST_HASH"
+  assert_user_regular_file "$ACTIVE_PROFILE_FILE" "600"
+  test "$(/usr/bin/stat -f '%z' "$ACTIVE_PROFILE_FILE")" = "$ACTIVE_PROFILE_SIZE"
+  test "$(/usr/bin/od -An -tx1 -v "$ACTIVE_PROFILE_FILE" |
+    /usr/bin/tr -d ' \n')" = "64656661756c740a"
+  test "$PROFILE_TARGET" = "nas"
+  test "$PROFILE_SCHEDULE" = "daily"
+  test "$PROFILE_NOTIFY_FAILURES" = "1"
+  test -n "$PROFILE_NAS_MOUNT$PROFILE_NAS_URL"
+  test "$(/usr/bin/plutil -extract StartCalendarInterval.Hour raw -o - \
+    "$SCHEDULE_PLIST")" = "20"
+  test "$(/usr/bin/plutil -extract StartCalendarInterval.Minute raw -o - \
+    "$SCHEDULE_PLIST")" = "0"
+  new_controller_pid="$(/bin/launchctl print "$CONTROLLER_SERVICE" |
+    /usr/bin/awk '/pid =/ {print $3; exit}')"
+  [[ "$new_controller_pid" =~ ^[0-9]+$ ]]
+  test "$new_controller_pid" != "$OLD_CONTROLLER_PID"
+  /bin/launchctl print "$SCHEDULE_SERVICE" >/dev/null
+  assert_successful_terminal_backup_and_no_processes
+}
+
+test "$REPO_ROOT" = "$(pwd -P)"
+test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = "tag"
+test "$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" |
+  /usr/bin/awk '{print $1}')" = "$RELEASE_COMMIT"
+test "$(gh release view "$RELEASE_TAG" --json tagName --jq '.tagName')" = \
+  "$RELEASE_TAG"
+test "$(gh api "repos/$REPOSITORY/releases/latest" --jq '.tag_name')" = \
+  "$RELEASE_TAG"
+test "$(gh run list --workflow release.yml --branch "$RELEASE_TAG" \
+  --commit "$RELEASE_COMMIT" --status completed --limit 1 \
+  --json conclusion --jq '.[0].conclusion // empty')" = "success"
+assert_absolute_single_line_path "$HOME"
+test -d "$STATE_ROOT" && test ! -L "$STATE_ROOT"
+test "$(/usr/bin/stat -f '%u' "$STATE_ROOT")" = "$CURRENT_UID"
+for parent in "$ROLLBACK_PARENT" "$STAGE_PARENT"; do
+  if [[ ! -e "$parent" && ! -L "$parent" ]]; then
+    /bin/mkdir "$parent"
+  fi
+  test -d "$parent" && test ! -L "$parent"
+  test "$(/usr/bin/stat -f '%u' "$parent")" = "$CURRENT_UID"
+done
+
+STAGE="$(/usr/bin/mktemp -d "$STAGE_PARENT/v2.4.4.XXXXXX")"
+test -d "$STAGE" && test ! -L "$STAGE"
+test "$(/usr/bin/stat -f '%u' "$STAGE")" = "$CURRENT_UID"
+trap on_install_exit EXIT
+trap 'handle_install_signal' HUP INT TERM
+
+test -d "$CONFIG_DIR" && test ! -L "$CONFIG_DIR"
+test "$(/usr/bin/stat -f '%u' "$CONFIG_DIR")" = "$CURRENT_UID"
+assert_user_regular_file "$ACTIVE_PROFILE_FILE" "600"
+ACTIVE_PROFILE_SIZE="$(/usr/bin/stat -f '%z' "$ACTIVE_PROFILE_FILE")"
+test "$ACTIVE_PROFILE_SIZE" = "8"
+ACTIVE_PROFILE_HEX="$(/usr/bin/od -An -tx1 -v "$ACTIVE_PROFILE_FILE" |
+  /usr/bin/tr -d ' \n')"
+test "$ACTIVE_PROFILE_HEX" = "64656661756c740a"
+test -d "$PROFILES_DIR" && test ! -L "$PROFILES_DIR"
+test "$(/usr/bin/stat -f '%u' "$PROFILES_DIR")" = "$CURRENT_UID"
+assert_user_regular_file "$PROFILE_CONFIG" "600"
+/usr/bin/grep -Fxq 'GDRIVE_BACKUP_PROFILE_ID=default' "$PROFILE_CONFIG"
+
+assert_safe_user_plist "$CONTROLLER_PLIST"
+assert_safe_user_plist "$SCHEDULE_PLIST"
+test "$(/usr/bin/plutil -extract Label raw -o - "$CONTROLLER_PLIST")" = \
+  "com.commcats.gdrivebackup"
+test "$(/usr/bin/plutil -extract ProgramArguments.0 raw -o - "$CONTROLLER_PLIST")" = \
+  "$APP_FINAL/Contents/MacOS/GDriveBackupTiger"
+test "$(/usr/bin/plutil -extract ProgramArguments.1 raw -o - "$CONTROLLER_PLIST")" = \
+  "--menubar"
+test "$(/usr/bin/plutil -extract Label raw -o - "$SCHEDULE_PLIST")" = \
+  "com.commcats.gdrivebackup.schedule"
+test "$(/usr/bin/plutil -extract ProgramArguments.0 raw -o - "$SCHEDULE_PLIST")" = \
+  "/bin/bash"
+test "$(/usr/bin/plutil -extract ProgramArguments.1 raw -o - "$SCHEDULE_PLIST")" = \
+  "$SCRIPT_FINAL"
+test "$(/usr/bin/plutil -extract ProgramArguments.2 raw -o - "$SCHEDULE_PLIST")" = \
+  "--run"
+test "$(/usr/bin/plutil -extract EnvironmentVariables.HOME raw -o - \
+  "$SCHEDULE_PLIST")" = "$HOME"
+test "$(/usr/bin/plutil -extract EnvironmentVariables.PATH raw -o - \
+  "$SCHEDULE_PLIST")" = "$SAFE_PATH"
+test "$(/usr/bin/plutil -extract EnvironmentVariables.HOME raw -o - \
+  "$CONTROLLER_PLIST")" = "$HOME"
+test "$(/usr/bin/plutil -extract EnvironmentVariables.GDRIVE_BACKUP_TRIGGER raw -o - \
+  "$SCHEDULE_PLIST")" = "schedule"
+test "$(/usr/bin/plutil -extract EnvironmentVariables.BACKUP_ASSUME_YES raw -o - \
+  "$SCHEDULE_PLIST")" = "1"
+reject_service_path_overrides
+/bin/launchctl print "$CONTROLLER_SERVICE" >/dev/null
+/bin/launchctl print "$SCHEDULE_SERVICE" >/dev/null
+OLD_CONTROLLER_PID="$(/bin/launchctl print "$CONTROLLER_SERVICE" |
+  /usr/bin/awk '/pid =/ {print $3; exit}')"
+[[ "$OLD_CONTROLLER_PID" =~ ^[0-9]+$ ]]
+
+EFFECTIVE_STATE="$STAGE/effective-state.sh"
+test ! -e "$EFFECTIVE_STATE" && test ! -L "$EFFECTIVE_STATE"
+# The quoted program is evaluated by the sanitized child Bash, not this shell.
+# shellcheck disable=SC2016
+/usr/bin/env -i HOME="$HOME" PATH="$SAFE_PATH" /bin/bash -c '
   set -euo pipefail
-  source "$1"
-  printf "%s" "${GDRIVE_BACKUP_LOCK:-$HOME/Library/Logs/gdrive-backup.lock}"
-' _ "$PROFILE_CONFIG")"
-[[ "$LOCK_FILE" = /* && "$LOCK_FILE" != *$'\n'* ]]
+  # shellcheck source=/dev/null
+  source "$1" >/dev/null
+  test "$HOME" = "$2"
+  test "${GDRIVE_BACKUP_PROFILE_ID:-}" = "default"
+  effective_lock="${GDRIVE_BACKUP_LOCK:-$HOME/Library/Logs/gdrive-backup.lock}"
+  if [[ -n "${GDRIVE_BACKUP_SUMMARY_STATE_FILE:-}" ]]; then
+    effective_status="$GDRIVE_BACKUP_SUMMARY_STATE_FILE"
+  else
+    effective_status="$HOME/Library/Application Support/GDrive Backup Tiger/profiles/default/last-run.status"
+  fi
+  effective_progress="${GDRIVE_BACKUP_PROGRESS_STATE_FILE:-${effective_status%/*}/current-progress.status}"
+  printf "EFFECTIVE_CONFIG=%q\n" "$1"
+  printf "EFFECTIVE_LOCK=%q\n" "$effective_lock"
+  printf "EFFECTIVE_STATUS=%q\n" "$effective_status"
+  printf "EFFECTIVE_PROGRESS=%q\n" "$effective_progress"
+  printf "PROFILE_TARGET=%q\n" "${GDRIVE_BACKUP_TARGET:-}"
+  printf "PROFILE_SCHEDULE=%q\n" "${GDRIVE_BACKUP_SCHEDULE:-}"
+  printf "PROFILE_NOTIFY_FAILURES=%q\n" "${GDRIVE_BACKUP_NOTIFY_FAILURES:-}"
+  printf "PROFILE_NAS_MOUNT=%q\n" "${GDRIVE_BACKUP_NAS_MOUNT:-}"
+  printf "PROFILE_NAS_URL=%q\n" "${GDRIVE_BACKUP_NAS_URL:-}"
+' _ "$PROFILE_CONFIG" "$HOME" >"$EFFECTIVE_STATE"
+/bin/chmod 600 "$EFFECTIVE_STATE"
+# shellcheck source=/dev/null
+source "$EFFECTIVE_STATE"
+test "$EFFECTIVE_CONFIG" = "$PROFILE_CONFIG"
+for effective_path in \
+  "$EFFECTIVE_CONFIG" "$EFFECTIVE_LOCK" "$EFFECTIVE_STATUS" "$EFFECTIVE_PROGRESS"; do
+  assert_absolute_single_line_path "$effective_path"
+done
+
+# A terminal/no-process gate before archive extraction keeps even the build
+# outside an active backup window. The definitive race-free checks follow
+# under the exact effective lock.
+# PREBUILD_GATE
+assert_successful_terminal_backup_and_no_processes
+
+SOURCE_ARCHIVE="$STAGE/source.tar"
+SOURCE_EXPORT="$STAGE/source"
+STAGED_APP="$STAGE/build/GDrive Backup Tiger.app"
+STAGED_BINARY="$STAGED_APP/Contents/MacOS/GDriveBackupTiger"
+STAGED_SCRIPT="$SOURCE_EXPORT/bin/backup-google-drive.sh"
+ENTITLEMENTS_PLIST="$STAGE/staged-entitlements.plist"
+test ! -e "$SOURCE_ARCHIVE" && test ! -L "$SOURCE_ARCHIVE"
+test ! -e "$SOURCE_EXPORT" && test ! -L "$SOURCE_EXPORT"
+test ! -e "${STAGED_APP%/*}" && test ! -L "${STAGED_APP%/*}"
+/bin/mkdir "$SOURCE_EXPORT" "${STAGED_APP%/*}"
+git archive --format=tar --output="$SOURCE_ARCHIVE" "$RELEASE_TAG^{commit}"
+test "$(git get-tar-commit-id <"$SOURCE_ARCHIVE")" = "$RELEASE_COMMIT"
+/usr/bin/tar -xf "$SOURCE_ARCHIVE" -C "$SOURCE_EXPORT"
+make -C "$SOURCE_EXPORT" test
+"$SOURCE_EXPORT/scripts/validate-release.sh" "$RELEASE_TAG"
+make -C "$SOURCE_EXPORT" APP_DIR="$STAGED_APP" build
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+  "$STAGED_APP/Contents/Info.plist")" = "$EXPECTED_VERSION"
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
+  "$STAGED_APP/Contents/Info.plist")" = "$EXPECTED_BUILD"
+architectures="$(/usr/bin/lipo -archs "$STAGED_BINARY")"
+[[ " $architectures " == *" arm64 "* && " $architectures " == *" x86_64 "* ]]
+/usr/bin/codesign --verify --deep --strict --verbose=2 "$STAGED_APP"
+extract_entitlements "$STAGED_APP" "$ENTITLEMENTS_PLIST"
+/usr/bin/plutil -lint "$ENTITLEMENTS_PLIST" >/dev/null
+/bin/bash -n "$STAGED_SCRIPT"
+APP_HASH="$(/usr/bin/shasum -a 256 "$STAGED_BINARY" | /usr/bin/awk '{print $1}')"
+SCRIPT_HASH="$(/usr/bin/shasum -a 256 "$STAGED_SCRIPT" | /usr/bin/awk '{print $1}')"
+[[ "$APP_HASH" =~ ^[0-9a-f]{64}$ && "$SCRIPT_HASH" =~ ^[0-9a-f]{64}$ ]]
+
 FLOCK_BIN="$(command -v flock)"
 test -x "$FLOCK_BIN"
-exec 8>>"$LOCK_FILE"
+LOCK_PARENT="${EFFECTIVE_LOCK%/*}"
+test -d "$LOCK_PARENT" && test ! -L "$LOCK_PARENT"
+test "$(/usr/bin/stat -f '%u' "$LOCK_PARENT")" = "$CURRENT_UID"
+if [[ -e "$EFFECTIVE_LOCK" || -L "$EFFECTIVE_LOCK" ]]; then
+  test -f "$EFFECTIVE_LOCK" && test ! -L "$EFFECTIVE_LOCK"
+  test "$(/usr/bin/stat -f '%u' "$EFFECTIVE_LOCK")" = "$CURRENT_UID"
+fi
+exec 8>"$EFFECTIVE_LOCK"
+test "$(/usr/bin/stat -f '%u' "$EFFECTIVE_LOCK")" = "$CURRENT_UID"
+/bin/chmod 600 "$EFFECTIVE_LOCK"
 "$FLOCK_BIN" -n 8
+# LOCKED_PRE_BOOTOUT_GATE
+assert_successful_terminal_backup_and_no_processes
 
-# The lock is held before any service or installed file changes. A concurrent
-# manual/CLI run using the configured lock therefore makes this gate fail
-# closed, and no later run can begin until verification or rollback completes.
-assert_successful_terminal_backup
+test -d "/Applications" && test ! -L "/Applications"
+test -d "/usr/local/bin" && test ! -L "/usr/local/bin"
+test -d "$APP_FINAL" && test ! -L "$APP_FINAL"
+test -f "$SCRIPT_FINAL" && test ! -L "$SCRIPT_FINAL" && test -x "$SCRIPT_FINAL"
+OLD_APP_HASH="$(/usr/bin/shasum -a 256 \
+  "$APP_FINAL/Contents/MacOS/GDriveBackupTiger" | /usr/bin/awk '{print $1}')"
+OLD_SCRIPT_HASH="$(/usr/bin/shasum -a 256 "$SCRIPT_FINAL" | /usr/bin/awk '{print $1}')"
+CONTROLLER_PLIST_HASH="$(/usr/bin/shasum -a 256 "$CONTROLLER_PLIST" |
+  /usr/bin/awk '{print $1}')"
+SCHEDULE_PLIST_HASH="$(/usr/bin/shasum -a 256 "$SCHEDULE_PLIST" |
+  /usr/bin/awk '{print $1}')"
 
-# Stop the schedule first and the controller second while still holding the
-# real backup lock.
-launchctl bootout "$DOMAIN" "$SCHEDULE_PLIST"
-SERVICES_QUIESCED=1
-launchctl bootout "$DOMAIN" "$CONTROLLER_PLIST"
-active_backup_processes="$(backup_process_snapshot)"
-test -z "$active_backup_processes"
-assert_successful_terminal_backup
+STAMP="$(/bin/date -u '+%Y%m%dT%H%M%SZ')"
+ROLLBACK="$(/usr/bin/mktemp -d "$ROLLBACK_PARENT/v2.4.4-$STAMP.XXXXXX")"
+test -d "$ROLLBACK" && test ! -L "$ROLLBACK"
+test "$(/usr/bin/stat -f '%u' "$ROLLBACK")" = "$CURRENT_UID"
+canonical_config_manifest "$CONFIG_DIR" "$ROLLBACK/config-before.manifest"
+/usr/bin/shasum -a 256 "$ROLLBACK/config-before.manifest" > \
+  "$ROLLBACK/config-before.manifest.sha256"
+/usr/bin/ditto "$APP_FINAL" "$ROLLBACK/GDrive Backup Tiger.app"
+/usr/bin/sudo /usr/bin/install -m 755 "$SCRIPT_FINAL" \
+  "$ROLLBACK/backup-google-drive.sh"
+test "$(/usr/bin/shasum -a 256 \
+  "$ROLLBACK/GDrive Backup Tiger.app/Contents/MacOS/GDriveBackupTiger" |
+  /usr/bin/awk '{print $1}')" = "$OLD_APP_HASH"
+test "$(/usr/bin/shasum -a 256 "$ROLLBACK/backup-google-drive.sh" |
+  /usr/bin/awk '{print $1}')" = "$OLD_SCRIPT_HASH"
+
+APP_TXN="$(/usr/bin/sudo /usr/bin/mktemp -d "/Applications/.gdrive-v2.4.4-txn.XXXXXX")"
+SCRIPT_TXN="$(/usr/bin/sudo /usr/bin/mktemp -d "/usr/local/bin/.gdrive-v2.4.4-txn.XXXXXX")"
+/usr/bin/sudo /usr/sbin/chown "$CURRENT_UID:$CURRENT_GID" "$APP_TXN" "$SCRIPT_TXN"
+/bin/chmod 700 "$APP_TXN" "$SCRIPT_TXN"
+test -d "$APP_TXN" && test ! -L "$APP_TXN"
+test -d "$SCRIPT_TXN" && test ! -L "$SCRIPT_TXN"
+test "$(/usr/bin/stat -f '%u' "$APP_TXN")" = "$CURRENT_UID"
+test "$(/usr/bin/stat -f '%u' "$SCRIPT_TXN")" = "$CURRENT_UID"
+test "$(/usr/bin/stat -f '%Lp' "$APP_TXN")" = "700"
+test "$(/usr/bin/stat -f '%Lp' "$SCRIPT_TXN")" = "700"
+test "$(/usr/bin/stat -f '%d' "$APP_TXN")" = "$(/usr/bin/stat -f '%d' /Applications)"
+test "$(/usr/bin/stat -f '%d' "$SCRIPT_TXN")" = "$(/usr/bin/stat -f '%d' /usr/local/bin)"
+APP_INCOMING="$APP_TXN/incoming.app"
+SCRIPT_INCOMING="$SCRIPT_TXN/incoming"
+APP_PREVIOUS="$APP_TXN/previous.app"
+SCRIPT_PREVIOUS="$SCRIPT_TXN/previous"
+APP_QUARANTINE="$APP_TXN/quarantine-new.app"
+SCRIPT_QUARANTINE="$SCRIPT_TXN/quarantine-new"
+test ! -e "$APP_INCOMING" && test ! -L "$APP_INCOMING"
+test ! -e "$SCRIPT_INCOMING" && test ! -L "$SCRIPT_INCOMING"
+test ! -e "$APP_PREVIOUS" && test ! -L "$APP_PREVIOUS"
+test ! -e "$SCRIPT_PREVIOUS" && test ! -L "$SCRIPT_PREVIOUS"
+test ! -e "$APP_QUARANTINE" && test ! -L "$APP_QUARANTINE"
+test ! -e "$SCRIPT_QUARANTINE" && test ! -L "$SCRIPT_QUARANTINE"
+/usr/bin/ditto "$STAGED_APP" "$APP_INCOMING"
+/usr/bin/install -m 755 "$STAGED_SCRIPT" "$SCRIPT_INCOMING"
+/usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_INCOMING"
+/bin/bash -n "$SCRIPT_INCOMING"
+test "$(/usr/bin/shasum -a 256 \
+  "$APP_INCOMING/Contents/MacOS/GDriveBackupTiger" | /usr/bin/awk '{print $1}')" = \
+  "$APP_HASH"
+test "$(/usr/bin/shasum -a 256 "$SCRIPT_INCOMING" | /usr/bin/awk '{print $1}')" = \
+  "$SCRIPT_HASH"
+test "$(/usr/bin/stat -f '%Lp' "$SCRIPT_INCOMING")" = "755"
+
+# The EXIT and signal traps already see RECOVERY_ARMED before the first
+# service mutation. Any signal from here enters hash-aware recovery.
+RECOVERY_ARMED=1
+# FIRST_SERVICE_MUTATION
+/bin/launchctl bootout "$DOMAIN" "$SCHEDULE_PLIST"
+/bin/launchctl bootout "$DOMAIN" "$CONTROLLER_PLIST"
+# POST_QUIESCE_GATE
+assert_successful_terminal_backup_and_no_processes
 
 /usr/bin/sudo /bin/mv "$APP_FINAL" "$APP_PREVIOUS"
 /usr/bin/sudo /bin/mv "$APP_INCOMING" "$APP_FINAL"
 /usr/bin/sudo /bin/mv "$SCRIPT_FINAL" "$SCRIPT_PREVIOUS"
 /usr/bin/sudo /bin/mv "$SCRIPT_INCOMING" "$SCRIPT_FINAL"
-codesign --verify --deep --strict --verbose=2 "$APP_FINAL"
-test "$(shasum -a 256 "$APP_FINAL/Contents/MacOS/GDriveBackupTiger" |
-  awk '{print $1}')" = "$APP_HASH"
-test "$(shasum -a 256 "$SCRIPT_FINAL" | awk '{print $1}')" = "$SCRIPT_HASH"
-test "$(stat -f '%Lp' "$SCRIPT_FINAL")" = "755"
-bash -n "$SCRIPT_FINAL"
+/usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_FINAL"
+/bin/bash -n "$SCRIPT_FINAL"
+test "$(/usr/bin/shasum -a 256 \
+  "$APP_FINAL/Contents/MacOS/GDriveBackupTiger" | /usr/bin/awk '{print $1}')" = \
+  "$APP_HASH"
+test "$(/usr/bin/shasum -a 256 "$SCRIPT_FINAL" | /usr/bin/awk '{print $1}')" = \
+  "$SCRIPT_HASH"
 reload_services
 
-NEW_CONTROLLER_PID="$(launchctl print "$CONTROLLER_SERVICE" |
-  awk '/pid =/ {print $3; exit}')"
-test -n "$NEW_CONTROLLER_PID"
-test "$NEW_CONTROLLER_PID" != "$OLD_CONTROLLER_PID"
-launchctl print "$SCHEDULE_SERVICE" >/dev/null
-test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
-  "$APP_FINAL/Contents/Info.plist")" = "2.4.4"
-test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
-  "$APP_FINAL/Contents/Info.plist")" = "28"
-test "$(hash_config_tree "$CONFIG_DIR")" = "$CONFIG_HASH_BEFORE"
-test "$(shasum -a 256 "$CONTROLLER_PLIST" | awk '{print $1}')" = \
-  "$CONTROLLER_PLIST_HASH"
-test "$(shasum -a 256 "$SCHEDULE_PLIST" | awk '{print $1}')" = \
-  "$SCHEDULE_PLIST_HASH"
-
-# From here the verified new install is committed; later cleanup failure does
-# not justify replacing a live, verified app with the previous version.
-SERVICES_QUIESCED=0
-trap - EXIT
+# FINAL_VERIFICATION_UNDER_LOCK
+assert_final_install_state
+RECOVERY_ARMED=0
 "$FLOCK_BIN" -u 8
 exec 8>&-
-/usr/bin/sudo /usr/bin/trash "$APP_PREVIOUS" "$SCRIPT_PREVIOUS" || true
-./scripts/trash-path.sh "$STAGE"
+trap - EXIT HUP INT TERM
+report_install_leftovers
+printf 'Installed %s build %s from %s.\n' \
+  "$EXPECTED_VERSION" "$EXPECTED_BUILD" "$RELEASE_COMMIT"
 ```
+<!-- GDT-RUNBOOK-INSTALL:END -->
 
-Until the final version, PID, service, and immutability checks pass, any command
-failure triggers `restore_previous_install`, which restores both previous files
-before reloading either service. If rollback itself fails, stop and report the
-critical state, leave both services unloaded, and never claim installation
-success. Keep the dated rollback
-directory even after success.
+Expected: the immutable tagged export passes its complete test suite and
+release validator before build. The effective scheduled-profile lock remains
+held from the last pre-mutation gate through service, configuration, version,
+entitlement, and process verification. On failure or interruption, only known
+hashes are moved and the old pair is restored before services reload; an
+ambiguous rollback leaves both services unloaded and reports a critical state.
+All printed `LEFTOVER_*` paths remain recoverable for inspection.
 
-- [ ] **Step 6: Verify version, services, schedule, and unchanged configuration**
-
-```bash
-set -euo pipefail
-test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
-  "/Applications/GDrive Backup Tiger.app/Contents/Info.plist")" = "2.4.4"
-test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
-  "/Applications/GDrive Backup Tiger.app/Contents/Info.plist")" = "28"
-architectures="$(lipo -archs "/Applications/GDrive Backup Tiger.app/Contents/MacOS/GDriveBackupTiger")"
-[[ " $architectures " == *" arm64 "* && " $architectures " == *" x86_64 "* ]]
-codesign --verify --deep --strict --verbose=2 "/Applications/GDrive Backup Tiger.app"
-cmp -s bin/backup-google-drive.sh /usr/local/bin/backup-google-drive.sh
-bash -n /usr/local/bin/backup-google-drive.sh
-test "$(cat "$HOME/.config/gdrive-tiger-backup/active-profile")" = "default"
-PROFILE_CONFIG="$HOME/.config/gdrive-tiger-backup/profiles/default.conf"
-test -f "$PROFILE_CONFIG" && test ! -L "$PROFILE_CONFIG"
-grep -Fxq 'GDRIVE_BACKUP_PROFILE_ID=default' "$PROFILE_CONFIG"
-grep -Fxq 'GDRIVE_BACKUP_TARGET=nas' "$PROFILE_CONFIG"
-grep -Fxq 'GDRIVE_BACKUP_SCHEDULE=daily' "$PROFILE_CONFIG"
-grep -Fxq 'GDRIVE_BACKUP_NOTIFY_FAILURES=1' "$PROFILE_CONFIG"
-grep -Eq '^GDRIVE_BACKUP_NAS_(MOUNT|URL)=' "$PROFILE_CONFIG"
-test "$(plutil -extract StartCalendarInterval.Hour raw -o - \
-  "$HOME/Library/LaunchAgents/com.commcats.gdrivebackup.schedule.plist")" = "20"
-test "$(plutil -extract StartCalendarInterval.Minute raw -o - \
-  "$HOME/Library/LaunchAgents/com.commcats.gdrivebackup.schedule.plist")" = "0"
-launchctl print "gui/$(id -u)/com.commcats.gdrivebackup" >/dev/null
-launchctl print "gui/$(id -u)/com.commcats.gdrivebackup.schedule" >/dev/null
-active_backup_processes="$(ps -axo pid=,ppid=,command= |
-  awk '/backup-google-drive|\/rclone( |$)/ && $0 !~ /awk/ {print}')"
-test -z "$active_backup_processes"
-```
-
-Do not trigger a real backup solely to manufacture progress. The next
-legitimate automatic or manual run will produce the validated telemetry.
-
-- [ ] **Step 7: Finish project memory and report recoverable artifacts**
+- [ ] **Step 5: Finish project memory and report recoverable artifacts**
 
 ```bash
 /Users/alexandersmyslowski/Projects/central-agent-data-hub/scripts/agent_finish.sh \
