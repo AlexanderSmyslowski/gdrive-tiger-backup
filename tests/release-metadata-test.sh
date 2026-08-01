@@ -60,6 +60,21 @@ fi
 check_contains "$ROOT/README.md" \
   "Scheduled, retry, mount-triggered, and menu-bar-only runs stay headless and passive, including in full-screen Spaces." \
   "README explicitly keeps automatic retries passive in full-screen Spaces"
+check_contains "$ROOT/README.md" \
+  "silent authenticated and guest SMB mounting" \
+  "README release summary covers authenticated and guest SMB mounting"
+check_contains "$ROOT/README.md" \
+  "Guest SMB URLs such as \`smb://nas.local/Backups\` bypass Keychain and authentication commands and remain no-UI during automatic runs." \
+  "README documents guest SMB without Keychain or UI"
+check_contains "$ROOT/README.md" \
+  "newer persistent failure for the same profile cannot be erased" \
+  "README documents the persistent notification cleanup boundary"
+check_contains "$ROOT/README.md" \
+  "the progress bar remains indeterminate and no stale or invented percentage is shown" \
+  "README documents truthful unknown-total progress"
+check_contains "$ROOT/README.md" \
+  "Completion appears only after the durable terminal status has been published." \
+  "README ties completion to durable terminal status"
 check_contains "$ROOT/CHANGELOG.md" "## v${version} " \
   "changelog contains the app version"
 check_contains "$ROOT/docs/version-history.md" "| v${version} | ${build} |" \

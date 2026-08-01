@@ -63,10 +63,33 @@ fi
 
 if [[ -x "$NOTES_EXTRACTOR" ]]; then
   notes="$("$NOTES_EXTRACTOR" "$tag" 2>/dev/null)"
-  if [[ "$notes" == *"## v${version} "* && "$notes" != *"## v2.3.1 "* ]]; then
+  if [[ "$notes" == *"## v${version} "* && "$notes" != *"## v2.4.3 "* ]]; then
     printf 'ok - extractor returns only the requested changelog section\n'
   else
     printf 'not ok - extractor returns only the requested changelog section\n'
+    failures=$((failures + 1))
+  fi
+
+  if [[ "$notes" == *"accountless/guest SMB remounting without Keychain lookup or UI"* ]]; then
+    printf 'ok - v2.4.4 notes describe guest SMB remounting without Keychain or UI\n'
+  else
+    printf 'not ok - v2.4.4 notes describe guest SMB remounting without Keychain or UI\n'
+    failures=$((failures + 1))
+  fi
+
+  if [[ "$notes" == *"older than or equal to that success"* &&
+        "$notes" == *"newer persistent same-profile failure alert"* ]]; then
+    printf 'ok - v2.4.4 notes preserve newer persistent failure alerts\n'
+  else
+    printf 'not ok - v2.4.4 notes preserve newer persistent failure alerts\n'
+    failures=$((failures + 1))
+  fi
+
+  if [[ "$notes" == *"unknown-total progress indeterminate"* &&
+        "$notes" == *"durable terminal status publication"* ]]; then
+    printf 'ok - v2.4.4 notes describe truthful unknown-total progress\n'
+  else
+    printf 'not ok - v2.4.4 notes describe truthful unknown-total progress\n'
     failures=$((failures + 1))
   fi
 fi
