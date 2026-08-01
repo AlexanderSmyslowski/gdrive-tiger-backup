@@ -26,12 +26,26 @@ int GDTHandleSMBURLWithHandlers(
     NSURLComponents *components = [NSURLComponents componentsWithString:urlString ?: @""];
     NSString *scheme = components.scheme.lowercaseString;
     NSString *host = components.host;
-    NSString *account = components.user;
+    NSString *account = components.user ?: @"";
     NSString *path = components.path;
-    if (![scheme isEqualToString:@"smb"] || !host.length || !account.length ||
-        path.length <= 1 || components.password != nil || !credentialLookup ||
+    BOOL hasEmptyUserInfo = components.percentEncodedUser != nil && !account.length;
+    BOOL hasNoShare = path.length <= 1 || [path characterAtIndex:1] == '/';
+    if (![scheme isEqualToString:@"smb"] || !host.length || hasEmptyUserInfo ||
+        hasNoShare || components.password != nil ||
+        (account.length && !credentialLookup) ||
         (performMount && !mountOperation)) {
         return 64;
+    }
+
+    if (!account.length) {
+        // An absent user means an explicit guest profile. It must bypass the
+        // Keychain entirely so neither authorization nor an automatic retry
+        // can provoke credential UI.
+        if (!performMount) {
+            return 0;
+        }
+        int result = mountOperation(components.URL, @"", [NSMutableData data]);
+        return result == 0 ? 0 : 69;
     }
 
     NSData *credential = credentialLookup(
@@ -114,25 +128,32 @@ static int GDTNetFSMount(
     NSURL *url,
     NSString *account,
     NSData *passwordData) {
-    CFStringRef password = CFStringCreateWithBytesNoCopy(
-        kCFAllocatorDefault,
-        passwordData.bytes,
-        passwordData.length,
-        kCFStringEncodingUTF8,
-        false,
-        kCFAllocatorNull);
-    if (!password) {
-        return EINVAL;
+    BOOL useGuest = !account.length;
+    CFStringRef password = NULL;
+    if (!useGuest) {
+        password = CFStringCreateWithBytesNoCopy(
+            kCFAllocatorDefault,
+            passwordData.bytes,
+            passwordData.length,
+            kCFStringEncodingUTF8,
+            false,
+            kCFAllocatorNull);
+        if (!password) {
+            return EINVAL;
+        }
     }
 
     NSMutableDictionary *openOptions = [@{
         (__bridge id)kNAUIOptionKey: (__bridge id)kNAUIOptionNoUI
     } mutableCopy];
+    if (useGuest) {
+        openOptions[(__bridge id)kNetFSUseGuestKey] = @YES;
+    }
     CFArrayRef mountpoints = NULL;
     int result = NetFSMountURLSync(
         (__bridge CFURLRef)url,
         NULL,
-        (__bridge CFStringRef)account,
+        useGuest ? NULL : (__bridge CFStringRef)account,
         password,
         (__bridge CFMutableDictionaryRef)openOptions,
         NULL,
@@ -140,7 +161,9 @@ static int GDTNetFSMount(
     if (mountpoints) {
         CFRelease(mountpoints);
     }
-    CFRelease(password);
+    if (password) {
+        CFRelease(password);
+    }
     return result;
 }
 
