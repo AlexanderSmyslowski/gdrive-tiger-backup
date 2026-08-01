@@ -10,11 +10,13 @@ The feature is an optional first-run layer inside the existing app process and s
 
 The feature does not change the backup engine, rclone copy semantics, NAS mount policy, retry policy, profile format, launchd identifiers, or destination defaults.
 
+The onboarding distinguishes one automatic primary destination from an optional manually triggered external-volume destination. It does not introduce two competing automatic schedules.
+
 ## User flow
 
-### Step 1: Understand and choose a destination
+### Step 1: Understand and choose destinations
 
-The window explains in plain language that the app creates an independent copy, never deletes files in Google Drive, and can restore files later. The user chooses “NAS / network share” or “External disk”. The existing destination controls and identity checks remain the source of truth; the onboarding only presents them in a narrower sequence.
+The window explains in plain language that the app creates an independent copy, never deletes files in Google Drive, and can restore files later. The user chooses the **automatic primary destination**: “NAS / network share” or “External disk”. A separate optional choice can register a directly attached external disk for **manual “Backup now” use**. The two roles are displayed separately so a NAS schedule is never replaced by a newly attached disk. The existing destination controls and identity checks remain the source of truth; the onboarding only presents them in a narrower sequence.
 
 ### Step 2: Check readiness
 
@@ -22,13 +24,13 @@ The app runs the existing asynchronous setup-health check. It presents three exp
 
 ### Step 3: Confirm schedule and first run
 
-The user confirms daily automatic backups, the time (default 20:00), and failure notifications. The copy and retry behavior are summarized beside the confirmation. Save remains transactional: no backup starts and no configuration is changed until the user explicitly confirms. After save, the app shows “Ready for first backup”, the resolved destination, next scheduled run, and one explicit “Backup now” action.
+The user confirms daily automatic backups for the primary destination, the time (default 20:00), and failure notifications. If a manual external disk was registered, the confirmation shows both roles, for example “Automatic: NAS, daily 20:00” and “Manual: Toshiba_4TB, when connected”. The copy and retry behavior are summarized beside the confirmation. Save remains transactional: no backup starts and no configuration is changed until the user explicitly confirms. After save, the app shows “Ready for first backup”, both resolved destination roles, the next scheduled run, and one explicit “Backup now” action whose target is visible before launch.
 
 ## State and persistence
 
 Onboarding completion is stored in the active profile configuration using one versioned key, `GDRIVE_BACKUP_ONBOARDING_VERSION`. Version `1` is written only after a successful save and readiness confirmation. Existing installations without the key continue to open the current setup/overview and are never treated as newly configured solely because a same-name volume is mounted. Reopening onboarding is always available from setup and does not reset saved values.
 
-The onboarding reads and writes through the existing configuration/profile helpers. It must preserve `GDRIVE_BACKUP_TARGET`, external-volume identity, NAS configuration, encryption settings, schedule, notification preference, and pause state exactly as the current setup does.
+The onboarding reads and writes through the existing configuration/profile helpers. It must preserve `GDRIVE_BACKUP_TARGET`, the optional retained external-volume identity, NAS configuration, encryption settings, schedule, notification preference, and pause state exactly as the current setup does. A newly attached unknown disk is only staged after explicit user action and is saved only after explicit confirmation; it never silently replaces the automatic primary target.
 
 ## Architecture
 
@@ -50,9 +52,10 @@ Add focused tests before implementation:
 1. A first-run profile without `GDRIVE_BACKUP_ONBOARDING_VERSION` opens the onboarding path, while an existing completed profile opens the normal setup/overview.
 2. Step navigation preserves unsaved values, and closing before save leaves the persisted configuration unchanged.
 3. Readiness success enables confirmation; readiness failure exposes a safe retry state and does not start a backup.
-4. Save writes version `1` only after the explicit confirmation and preserves target, schedule, notifications, pause, and encryption values.
-5. The onboarding view exposes native accessibility roles and localized labels for all three steps.
-6. Existing setup, profile, mount-trigger, notification, and launch-agent regression tests remain green.
+4. The automatic primary destination and optional manual external destination remain distinct through staging, save, reopen, and backup launch.
+5. Save writes version `1` only after the explicit confirmation and preserves target, schedule, notifications, pause, and encryption values.
+6. The onboarding view exposes native accessibility roles and localized labels for all three steps and both destination roles.
+7. Existing setup, profile, mount-trigger, notification, and launch-agent regression tests remain green.
 
 ## Release constraints
 
