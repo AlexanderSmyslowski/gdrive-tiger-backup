@@ -1,5 +1,6 @@
 APP_DIR := /Applications/GDrive Backup Tiger.app
 PROGRESS_SUPPORT_SOURCE := macos/GDriveBackupTiger/BackupProgressSupport.m
+ONBOARDING_SUPPORT_SOURCE := macos/GDriveBackupTiger/OnboardingSupport.m
 APP_SOURCES := \
 	macos/GDriveBackupTiger/main.m \
 	macos/GDriveBackupTiger/ConfigSupport.m \
@@ -14,6 +15,7 @@ APP_SOURCES := \
 	macos/GDriveBackupTiger/DiagnosticsView.m \
 	macos/GDriveBackupTiger/UpdateSupport.m \
 	macos/GDriveBackupTiger/NetworkMountSupport.m \
+	$(ONBOARDING_SUPPORT_SOURCE) \
 	macos/GDriveBackupTiger/Localization.m
 OBJC_FLAGS := -fobjc-arc -Wall -Wextra -Werror
 MACOS_DEPLOYMENT_TARGET ?= 13.0
@@ -59,6 +61,20 @@ pkg:
 	./packaging/build-pkg.sh
 
 test:
+	@set -e; ONBOARDING_SUPPORT_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-onboarding-support-test.XXXXXX")"; \
+		clang $(OBJC_FLAGS) -framework Foundation -I macos/GDriveBackupTiger \
+			tests/onboarding-support-test.m $(ONBOARDING_SUPPORT_SOURCE) \
+			macos/GDriveBackupTiger/Localization.m macos/GDriveBackupTiger/ConfigSupport.m \
+			-o "$$ONBOARDING_SUPPORT_TEST_BIN"; \
+		"$$ONBOARDING_SUPPORT_TEST_BIN"; \
+		./scripts/trash-path.sh "$$ONBOARDING_SUPPORT_TEST_BIN"
+	@set -e; ONBOARDING_UI_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-onboarding-ui-test.XXXXXX")"; \
+		clang $(OBJC_FLAGS) -framework Cocoa -I macos/GDriveBackupTiger -I tests \
+			tests/onboarding-ui-test.m $(ONBOARDING_SUPPORT_SOURCE) \
+			macos/GDriveBackupTiger/Localization.m macos/GDriveBackupTiger/ConfigSupport.m \
+			-o "$$ONBOARDING_UI_TEST_BIN"; \
+		"$$ONBOARDING_UI_TEST_BIN"; \
+		./scripts/trash-path.sh "$$ONBOARDING_UI_TEST_BIN"
 	bash tests/app-launch-status-test.sh
 	bash tests/app-trash-mode-test.sh
 	bash tests/backup-control-test.sh
