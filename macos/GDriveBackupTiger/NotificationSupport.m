@@ -92,9 +92,42 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
     NSTimeInterval eventTimestamp = GDTTimestamp(summary[@"finished_at"]);
     if (eventTimestamp <= 0) eventTimestamp = GDTTimestamp(summary[@"started_at"]);
     NSString *trigger = summary[@"trigger"] ?: @"";
+    BOOL retryRunning = [status isEqualToString:@"running"] &&
+        [trigger isEqualToString:@"schedule-retry"];
+    NSTimeInterval retryOrigin = GDTTimestamp(summary[@"retry_origin_started_at"]);
+    NSTimeInterval retryStarted = GDTTimestamp(summary[@"started_at"]);
+    if (retryRunning && retryOrigin > 0 && retryStarted > retryOrigin &&
+        [summary[@"status"] isEqualToString:@"running"] &&
+        [summary[@"retry_attempt"] isEqualToString:@"1"]) {
+        NSString *origin = [NSString stringWithFormat:@"%.0f", retryOrigin];
+        return @{
+            @"identifier": [NSString stringWithFormat:
+                @"com.commcats.gdrivebackup.%@.failure.%@", profileID, origin],
+            @"revision": [NSString stringWithFormat:@"retry-running.%.0f", retryStarted],
+            @"kind": @"retry-running",
+            @"profileID": profileID,
+            @"issueTimestamp": origin,
+            @"issueOriginTimestamp": origin,
+            @"titleKey": @"backupNotificationRetryRunningTitle",
+            @"bodyKey": @"backupNotificationRetryRunningBody"
+        };
+    }
+
     BOOL retryFailure = [trigger isEqualToString:@"schedule-retry"];
     BOOL scheduledFailure = [@[@"schedule", @"schedule-retry"] containsObject:trigger] &&
         ([@[@"failure", @"interrupted", @"cancelled"] containsObject:status]);
+    NSTimeInterval retryFinished = GDTTimestamp(summary[@"finished_at"]);
+    BOOL interruptedRunningRetry = [status isEqualToString:@"interrupted"] &&
+        [summary[@"status"] isEqualToString:@"running"] &&
+        ![summary[@"finished_at"] length] && ![summary[@"exit_code"] length];
+    if (retryFailure &&
+        ((![summary[@"status"] isEqualToString:status] &&
+          !interruptedRunningRetry) ||
+         ![summary[@"retry_attempt"] isEqualToString:@"1"] ||
+         retryOrigin <= 0 || retryStarted <= retryOrigin ||
+         (!interruptedRunningRetry && retryFinished < retryStarted))) {
+        return nil;
+    }
     BOOL eventIsFresh = eventTimestamp > 0 && eventTimestamp <= nowTimestamp + 1 &&
         nowTimestamp - eventTimestamp <= 24 * 60 * 60;
     BOOL eventWasMonitored = monitorStartedAt <= 0 || eventTimestamp >= monitorStartedAt;
@@ -114,17 +147,22 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
         }
         NSTimeInterval runTimestamp = GDTTimestamp(summary[@"started_at"]);
         if (runTimestamp <= 0) runTimestamp = eventTimestamp;
+        NSTimeInterval retryOriginTimestamp =
+            GDTTimestamp(summary[@"retry_origin_started_at"]);
+        NSTimeInterval issueOriginTimestamp =
+            retryFailure && retryOriginTimestamp > 0
+                ? retryOriginTimestamp : runTimestamp;
         NSMutableDictionary<NSString *, NSString *> *decision = [@{
             @"identifier": [NSString stringWithFormat:
                 @"com.commcats.gdrivebackup.%@.failure.%.0f", profileID, runTimestamp],
             @"kind": @"failure",
             @"profileID": profileID,
             @"issueTimestamp": [NSString stringWithFormat:@"%.0f", eventTimestamp],
+            @"issueOriginTimestamp":
+                [NSString stringWithFormat:@"%.0f", issueOriginTimestamp],
             @"titleKey": @"backupNotificationFailureTitle",
             @"bodyKey": bodyKey
         } mutableCopy];
-        NSTimeInterval retryOriginTimestamp =
-            GDTTimestamp(summary[@"retry_origin_started_at"]);
         if (retryFailure && retryOriginTimestamp > 0 &&
             retryOriginTimestamp < runTimestamp) {
             decision[@"supersedesIdentifier"] = [NSString stringWithFormat:
@@ -159,6 +197,7 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
         @"kind": @"missed",
         @"profileID": profileID,
         @"issueTimestamp": [NSString stringWithFormat:@"%.0f", dueTimestamp],
+        @"issueOriginTimestamp": [NSString stringWithFormat:@"%.0f", dueTimestamp],
         @"titleKey": @"backupNotificationMissedTitle",
         @"bodyKey": @"backupNotificationMissedBody"
     };
