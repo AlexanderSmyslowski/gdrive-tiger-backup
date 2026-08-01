@@ -8,6 +8,8 @@
 
 **Tech Stack:** Objective-C/AppKit, Foundation, existing `GDTReadConfigDictionary`/`GDTWriteConfigUpdates`, existing `GDTSetupHealthChecker`, shell-based regression tests, Makefile/installer source lists.
 
+**Status:** Implemented on branch `codex/third-party-onboarding`. Focused onboarding tests, source build, localization, routing, destination-role preservation, and transactional completion checks are green. The full suite's existing GUI smoke test requires a live CoreSimulator/LaunchServices environment and cannot complete in this headless workspace.
+
 ## Global Constraints
 
 - Do not change `bin/backup-google-drive.sh`, rclone arguments, retry timing, NAS mount behavior, profile identifiers, launchd labels, or the automatic backup schedule semantics.
