@@ -1720,6 +1720,57 @@ static BOOL GDTBackupNotificationDecisionCanReplaceQueued(
         GDTBackupNotificationDecisionStage(queued);
 }
 
+static BOOL GDTBackupNotificationAcceptedState(
+    NSUserDefaults *defaults, NSString *stateKey, NSString *originKey,
+    NSString *stageKey, NSTimeInterval *acceptedOrigin,
+    NSUInteger *acceptedStage) {
+    NSDictionary *state = [defaults dictionaryForKey:stateKey];
+    NSNumber *originValue = [state[@"origin"] isKindOfClass:NSNumber.class]
+        ? state[@"origin"] : nil;
+    NSNumber *stageValue = [state[@"stage"] isKindOfClass:NSNumber.class]
+        ? state[@"stage"] : nil;
+    NSTimeInterval origin = originValue.doubleValue;
+    NSUInteger stage = stageValue.unsignedIntegerValue;
+    BOOL hasAuthoritativeState = origin > 0 && stage >= 1 && stage <= 3;
+    if (!hasAuthoritativeState) {
+        origin = [defaults doubleForKey:originKey];
+        stage = (NSUInteger)[defaults integerForKey:stageKey];
+    }
+    *acceptedOrigin = origin;
+    *acceptedStage = stage;
+    return hasAuthoritativeState;
+}
+
+static void GDTAdvanceBackupNotificationAcceptedState(
+    NSUserDefaults *defaults, NSString *stateKey, NSString *originKey,
+    NSString *stageKey, NSTimeInterval candidateOrigin,
+    NSUInteger candidateStage) {
+    NSTimeInterval acceptedOrigin = 0;
+    NSUInteger acceptedStage = 0;
+    BOOL hasAuthoritativeState = GDTBackupNotificationAcceptedState(
+        defaults, stateKey, originKey, stageKey,
+        &acceptedOrigin, &acceptedStage);
+    BOOL advances = candidateOrigin > acceptedOrigin ||
+        (candidateOrigin == acceptedOrigin && candidateStage > acceptedStage);
+    BOOL matches = candidateOrigin == acceptedOrigin &&
+        candidateStage == acceptedStage;
+    if (!advances && !matches) return;
+
+    NSTimeInterval nextOrigin = advances ? candidateOrigin : acceptedOrigin;
+    NSUInteger nextStage = advances ? candidateStage : acceptedStage;
+    if (advances || !hasAuthoritativeState) {
+        // One defaults value is the authoritative crash-safe ordering pair.
+        [defaults setObject:@{
+            @"origin": @(nextOrigin),
+            @"stage": @(nextStage)
+        } forKey:stateKey];
+    }
+    // Keep the established origin key and readable stage mirror for cleanup,
+    // diagnostics, and migration from builds that predate the paired record.
+    [defaults setDouble:nextOrigin forKey:originKey];
+    [defaults setInteger:(NSInteger)nextStage forKey:stageKey];
+}
+
 @implementation AppDelegate
 
 - (NSUserDefaults *)backupNotificationDefaultsStore {
@@ -2149,8 +2200,30 @@ static BOOL GDTBackupNotificationDecisionCanReplaceQueued(
                                                                        suffix:@"deliveredFailureIdentifiers"];
     NSString *dismissedKey = [self backupNotificationDefaultsKeyForProfileID:profileID
                                                                        suffix:@"dismissedIssueAt"];
+    NSString *acceptedOriginKey = [self
+        backupNotificationDefaultsKeyForProfileID:profileID
+                                           suffix:@"latestDeliveredIssueAt"];
+    NSString *acceptedStageKey = [self
+        backupNotificationDefaultsKeyForProfileID:profileID
+                                           suffix:@"latestDeliveredIssueStage"];
+    NSString *acceptedStateKey = [self
+        backupNotificationDefaultsKeyForProfileID:profileID
+                                           suffix:@"latestDeliveredIssueState"];
     NSUserDefaults *defaults = [self backupNotificationDefaultsStore];
     if (issueOriginTimestamp <= [defaults doubleForKey:dismissedKey]) {
+        return;
+    }
+    NSUInteger decisionStage =
+        GDTBackupNotificationDecisionStage(deliveryDecision);
+    NSTimeInterval acceptedOriginTimestamp = 0;
+    NSUInteger acceptedStage = 0;
+    GDTBackupNotificationAcceptedState(
+        defaults, acceptedStateKey, acceptedOriginKey, acceptedStageKey,
+        &acceptedOriginTimestamp, &acceptedStage);
+    if (acceptedOriginTimestamp > 0 &&
+        (issueOriginTimestamp < acceptedOriginTimestamp ||
+         (issueOriginTimestamp == acceptedOriginTimestamp &&
+          decisionStage < acceptedStage))) {
         return;
     }
 
@@ -2163,6 +2236,11 @@ static BOOL GDTBackupNotificationDecisionCanReplaceQueued(
             [[defaults stringForKey:revisionKey] isEqualToString:revision]
         : sameIdentifier;
     if (alreadyDelivered) {
+        // Replay repairs a lifecycle watermark if acceptance was interrupted
+        // after its identifier was saved but before the stage was advanced.
+        GDTAdvanceBackupNotificationAcceptedState(
+            defaults, acceptedStateKey, acceptedOriginKey, acceptedStageKey,
+            issueOriginTimestamp, decisionStage);
         [self retireSupersededBackupNotificationForDecision:deliveryDecision];
         return;
     }
@@ -2250,6 +2328,12 @@ static BOOL GDTBackupNotificationDecisionCanReplaceQueued(
                     [strongSelf removeExactBackupNotificationIdentifiers:@[identifier]
                                                              forProfileID:profileID];
                 } else {
+                    // The monotonic watermark goes first so a replay cannot
+                    // deduplicate an identifier whose accepted stage was lost.
+                    GDTAdvanceBackupNotificationAcceptedState(
+                        store, acceptedStateKey, acceptedOriginKey,
+                        acceptedStageKey,
+                        issueOriginTimestamp, decisionStage);
                     [store setObject:identifier forKey:identifierKey];
                     if (revision.length) {
                         [store setObject:revision forKey:revisionKey];
@@ -2265,12 +2349,6 @@ static BOOL GDTBackupNotificationDecisionCanReplaceQueued(
                     }
                     [strongSelf retireSupersededBackupNotificationForDecision:
                         deliveryDecision];
-                    NSString *issueKey = [strongSelf
-                        backupNotificationDefaultsKeyForProfileID:profileID
-                                                           suffix:@"latestDeliveredIssueAt"];
-                    if (issueOriginTimestamp > [store doubleForKey:issueKey]) {
-                        [store setDouble:issueOriginTimestamp forKey:issueKey];
-                    }
                     NSString *activeAtKey = [strongSelf
                         backupNotificationDefaultsKeyForProfileID:profileID
                                                            suffix:@"activeIssueAt"];
@@ -2398,12 +2476,23 @@ static BOOL GDTBackupNotificationDecisionCanReplaceQueued(
                                                                        suffix:@"deliveredFailureIdentifiers"];
     NSString *latestIssueKey = [self backupNotificationDefaultsKeyForProfileID:profileID
                                                                         suffix:@"latestDeliveredIssueAt"];
+    NSString *latestIssueStageKey = [self
+        backupNotificationDefaultsKeyForProfileID:profileID
+                                           suffix:@"latestDeliveredIssueStage"];
+    NSString *latestIssueStateKey = [self
+        backupNotificationDefaultsKeyForProfileID:profileID
+                                           suffix:@"latestDeliveredIssueState"];
     NSString *activeIssueKey = [self backupNotificationDefaultsKeyForProfileID:profileID
                                                                         suffix:@"activeIssueAt"];
     NSString *dismissedIssueKey = [self backupNotificationDefaultsKeyForProfileID:profileID
                                                                            suffix:@"dismissedIssueAt"];
+    NSTimeInterval latestAcceptedIssueAt = 0;
+    NSUInteger latestAcceptedIssueStage = 0;
+    GDTBackupNotificationAcceptedState(
+        defaults, latestIssueStateKey, latestIssueKey, latestIssueStageKey,
+        &latestAcceptedIssueAt, &latestAcceptedIssueStage);
     NSTimeInterval latestIssueAt = MAX(
-        [defaults doubleForKey:latestIssueKey],
+        latestAcceptedIssueAt,
         MAX([defaults doubleForKey:activeIssueKey],
             [defaults doubleForKey:dismissedIssueKey]));
     if (latestIssueAt > 0 && finishedAt <= latestIssueAt) {
@@ -2444,6 +2533,8 @@ static BOOL GDTBackupNotificationDecisionCanReplaceQueued(
     [defaults removeObjectForKey:[self backupNotificationDefaultsKeyForProfileID:profileID
                                                                            suffix:@"lastDeliveredRevision"]];
     [defaults removeObjectForKey:latestIssueKey];
+    [defaults removeObjectForKey:latestIssueStageKey];
+    [defaults removeObjectForKey:latestIssueStateKey];
     [defaults removeObjectForKey:dismissedIssueKey];
     [defaults removeObjectForKey:activeIssueKey];
     [defaults removeObjectForKey:[self backupNotificationDefaultsKeyForProfileID:profileID
