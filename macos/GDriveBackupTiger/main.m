@@ -4962,6 +4962,13 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     return !self.confirmMode;
 }
 
+- (BOOL)shouldActivateStatusWindow {
+    // A manually requested foreground run must be visible immediately.  The
+    // scheduler and mount triggers intentionally remain passive so they do not
+    // interrupt another app or a fullscreen video.
+    return self.progressForegroundMode;
+}
+
 - (BOOL)shouldShowProgressForTrigger:(NSString *)trigger
                    fromVisibleWindow:(BOOL)visibleWindow {
     if (![trigger isEqualToString:@"manual"] || !visibleWindow) {
@@ -6392,7 +6399,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     };
     self.window.contentView = contentView;
     self.window.alphaValue = 0;
-    if (self.confirmMode && self.progressForegroundMode) {
+    if ([self shouldActivateStatusWindow]) {
         [self.window makeKeyAndOrderFront:nil];
         [NSApp activateIgnoringOtherApps:YES];
     } else {

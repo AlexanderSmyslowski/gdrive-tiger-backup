@@ -451,6 +451,21 @@ int main(void) {
         Assert(manualProgressComesForward && scheduledProgressStaysPassive,
                @"only an explicit progress request receives a Dock presence");
 
+        SEL activateStatusSelector = NSSelectorFromString(@"shouldActivateStatusWindow");
+        BOOL foregroundProgressActivates = NO;
+        BOOL backgroundProgressStaysPassive = NO;
+        if ([delegate respondsToSelector:activateStatusSelector]) {
+            typedef BOOL (*ActivateStatusMethod)(id, SEL);
+            ActivateStatusMethod method =
+                (ActivateStatusMethod)[delegate methodForSelector:activateStatusSelector];
+            delegate.progressForegroundMode = YES;
+            foregroundProgressActivates = method(delegate, activateStatusSelector);
+            delegate.progressForegroundMode = NO;
+            backgroundProgressStaysPassive = !method(delegate, activateStatusSelector);
+        }
+        Assert(foregroundProgressActivates && backgroundProgressStaysPassive,
+               @"foreground progress activates its window while background progress stays passive");
+
         SEL collectionSelector = NSSelectorFromString(@"statusWindowCollectionBehavior");
         NSWindowCollectionBehavior progressCollectionBehavior = NSWindowCollectionBehaviorDefault;
         if ([delegate respondsToSelector:collectionSelector]) {
