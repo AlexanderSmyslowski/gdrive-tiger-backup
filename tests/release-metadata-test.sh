@@ -211,15 +211,19 @@ run_success_notification_migration_fixture() {
     set -u
     # Run the exact installer helpers in a fresh shell without evaluating a
     # string as code in this test process.
+    # shellcheck disable=SC1090
     source "$runner"
 
     fixture_failures=0
+    # These predicates are invoked by name through expect_fixture below.
+    # shellcheck disable=SC2329
     preference_is_exactly_once() {
       local target="$1"
       local expected="$2"
       [[ "$(/usr/bin/grep -cx "GDRIVE_BACKUP_NOTIFY_SUCCESSES=$expected" "$target" || true)" == "1" &&
         "$(/usr/bin/grep -c '^GDRIVE_BACKUP_NOTIFY_SUCCESSES=' "$target" || true)" == "1" ]]
     }
+    # shellcheck disable=SC2329
     preference_is_absent() {
       local target="$1"
       ! /usr/bin/grep -q '^GDRIVE_BACKUP_NOTIFY_SUCCESSES=' "$target"
@@ -239,9 +243,10 @@ run_success_notification_migration_fixture() {
       CONFIG_FILE="$directory/config"
       ACTIVE_PROFILE_FILE="$directory/active-profile"
       PROFILES_DIR="$directory/profiles"
-      config_file="$CONFIG_FILE"
-      active_profile_file="$ACTIVE_PROFILE_FILE"
-      profiles_dir="$PROFILES_DIR"
+      # Extracted source and package helpers use different variable names.
+      export config_file="$CONFIG_FILE"
+      export active_profile_file="$ACTIVE_PROFILE_FILE"
+      export profiles_dir="$PROFILES_DIR"
     }
     create_valid_fixture() {
       local directory="$1"

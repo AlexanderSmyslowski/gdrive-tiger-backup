@@ -70,7 +70,7 @@ if [[ -x "$VALIDATOR" ]]; then
   /bin/mkdir -p "$FIXTURE_ROOT/scripts" "$FIXTURE_ROOT/macos/GDriveBackupTiger"
   /bin/cp "$VALIDATOR" "$FIXTURE_VALIDATOR"
   /bin/cp "$INFO_PLIST" "$FIXTURE_ROOT/macos/GDriveBackupTiger/Info.plist"
-  printf 'Current release: `%s`\nGDrive-Backup-Tiger-%s.pkg\n' \
+  printf "Current release: \`%s\`\nGDrive-Backup-Tiger-%s.pkg\n" \
     "$tag" "$version" >"$FIXTURE_ROOT/README.md"
   write_fixture_changelog ""
 
