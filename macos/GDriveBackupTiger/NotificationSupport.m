@@ -79,6 +79,29 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
     return accepted;
 }
 
++ (NSArray<NSString *> *)successNotificationIdentifiersForProfileID:(NSString *)profileID
+                                                candidateIdentifiers:
+                                                    (NSArray<NSString *> *)candidateIdentifiers {
+    NSString *safeProfileID = GDTSafeNotificationProfileID(profileID);
+    NSString *prefix = [NSString stringWithFormat:
+        @"com.commcats.gdrivebackup.%@.success.", safeProfileID];
+    NSMutableArray<NSString *> *accepted = [NSMutableArray array];
+    for (id candidate in candidateIdentifiers ?: @[]) {
+        if (![candidate isKindOfClass:NSString.class] ||
+            ![(NSString *)candidate hasPrefix:prefix]) {
+            continue;
+        }
+        NSString *timestampValue =
+            [(NSString *)candidate substringFromIndex:prefix.length];
+        if (GDTCanonicalTimestamp(timestampValue) <= 0 ||
+            [accepted containsObject:candidate]) {
+            continue;
+        }
+        [accepted addObject:candidate];
+    }
+    return accepted;
+}
+
 + (NSArray<NSString *> *)failureNotificationIdentifiersForProfileID:(NSString *)profileID
                                  throughIssueOriginTimestamp:(NSTimeInterval)cutoff
                                       candidateNotifications:
@@ -175,7 +198,7 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
     NSTimeInterval successMonitorStartedAt =
         GDTCanonicalTimestamp(config[@"GDRIVE_BACKUP_SUCCESS_NOTIFICATION_MONITOR_STARTED_AT"]);
     BOOL routine = routineNotificationsEnabled && successMonitorStartedAt > 0 &&
-        successMonitorStartedAt <= finishedAt;
+        successMonitorStartedAt < finishedAt;
     if (!recovery && !routine) return nil;
 
     NSString *profileID = GDTSafeNotificationProfileID(config[@"GDRIVE_BACKUP_PROFILE_ID"]);

@@ -22,6 +22,10 @@ NS_ASSUME_NONNULL_BEGIN
                                                 candidateIdentifiers:
                                                     (NSArray<NSString *> *)candidateIdentifiers;
 
++ (NSArray<NSString *> *)successNotificationIdentifiersForProfileID:(NSString *)profileID
+                                                candidateIdentifiers:
+                                                    (NSArray<NSString *> *)candidateIdentifiers;
+
 + (NSArray<NSString *> *)failureNotificationIdentifiersForProfileID:(NSString *)profileID
                                  throughIssueOriginTimestamp:(NSTimeInterval)cutoff
                                       candidateNotifications:

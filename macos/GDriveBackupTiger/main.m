@@ -1593,11 +1593,16 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, strong) NSMutableSet<NSString *> *pendingBackupSuccessIdentifiers;
 - (void)processBackupSuccessNotificationDecision:
     (NSDictionary<NSString *, NSString *> *)decision;
+- (BOOL)isBackupSuccessDecisionCurrent:
+    (NSDictionary<NSString *, NSString *> *)decision
+         capturedActiveIssueTimestamp:(NSTimeInterval)capturedActiveIssueTimestamp;
 - (BOOL)launchAutomaticRetryDecision:(NSDictionary<NSString *, NSString *> *)decision;
 - (void)removeExactBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers
                                       forProfileID:(NSString *)profileID;
 - (void)removeDeliveredBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers;
 - (void)removePendingBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers;
+- (void)enumeratePendingBackupNotificationRequestsWithCompletion:
+    (void (^)(NSArray<UNNotificationRequest *> *requests))completion;
 - (void)retireSupersededBackupNotificationForDecision:
     (NSDictionary<NSString *, NSString *> *)decision;
 - (void)requestCancelBackup:(id)sender;
@@ -1699,6 +1704,86 @@ static NSTimeInterval GDTBackupNotificationTimestamp(id value) {
         return 0;
     }
     return (NSTimeInterval)timestamp;
+}
+
+static NSTimeInterval GDTCanonicalBackupNotificationTimestamp(id value) {
+    NSTimeInterval timestamp = GDTBackupNotificationTimestamp(value);
+    if (timestamp <= 0 || ![value isKindOfClass:NSString.class]) return 0;
+    NSString *canonical = [NSString stringWithFormat:@"%.0f", timestamp];
+    return [(NSString *)value isEqualToString:canonical] ? timestamp : 0;
+}
+
+static NSTimeInterval GDTBackupSuccessIdentifierTimestamp(
+    NSString *profileID, NSString *identifier) {
+    NSArray<NSString *> *safeIdentifiers = [GDTBackupNotificationPolicy
+        successNotificationIdentifiersForProfileID:profileID
+                              candidateIdentifiers:identifier.length ? @[identifier] : @[]];
+    if (safeIdentifiers.count != 1) return 0;
+    return GDTCanonicalBackupNotificationTimestamp(
+        [identifier componentsSeparatedByString:@"."].lastObject);
+}
+
+static BOOL GDTBackupSuccessRequestMatches(
+    NSString *profileID, NSString *identifier, NSString *categoryIdentifier,
+    NSDictionary *userInfo, NSTimeInterval *timestamp) {
+    NSTimeInterval identifierTimestamp =
+        GDTBackupSuccessIdentifierTimestamp(profileID, identifier);
+    NSString *metadataProfileID = [userInfo[@"profileID"] isKindOfClass:NSString.class]
+        ? userInfo[@"profileID"] : @"";
+    NSTimeInterval metadataTimestamp =
+        GDTCanonicalBackupNotificationTimestamp(userInfo[@"eventTimestamp"]);
+    if (identifierTimestamp <= 0 ||
+        ![categoryIdentifier isEqualToString:@"GDT_BACKUP_SUCCESS"] ||
+        ![metadataProfileID isEqualToString:profileID] ||
+        metadataTimestamp != identifierTimestamp) {
+        return NO;
+    }
+    if (timestamp) *timestamp = identifierTimestamp;
+    return YES;
+}
+
+static BOOL GDTBackupSuccessAcceptedState(
+    NSUserDefaults *defaults, NSString *profileID, NSString *stateKey,
+    NSString *timestampKey, NSString *identifierKey, NSTimeInterval *timestamp,
+    NSString * __autoreleasing *identifier) {
+    NSDictionary *state = [defaults dictionaryForKey:stateKey];
+    NSNumber *stateTimestamp = [state[@"timestamp"] isKindOfClass:NSNumber.class]
+        ? state[@"timestamp"] : nil;
+    NSString *stateIdentifier = [state[@"identifier"] isKindOfClass:NSString.class]
+        ? state[@"identifier"] : nil;
+    NSTimeInterval identifierTimestamp =
+        GDTBackupSuccessIdentifierTimestamp(profileID, stateIdentifier);
+    if (stateTimestamp && identifierTimestamp > 0 &&
+        stateTimestamp.doubleValue == identifierTimestamp) {
+        if (timestamp) *timestamp = identifierTimestamp;
+        if (identifier) *identifier = stateIdentifier;
+        return YES;
+    }
+
+    NSString *legacyIdentifier = [defaults stringForKey:identifierKey];
+    NSTimeInterval legacyTimestamp = [defaults doubleForKey:timestampKey];
+    identifierTimestamp =
+        GDTBackupSuccessIdentifierTimestamp(profileID, legacyIdentifier);
+    if (legacyTimestamp > 0 && identifierTimestamp > 0 &&
+        legacyTimestamp == identifierTimestamp) {
+        if (timestamp) *timestamp = identifierTimestamp;
+        if (identifier) *identifier = legacyIdentifier;
+    } else {
+        if (timestamp) *timestamp = 0;
+        if (identifier) *identifier = nil;
+    }
+    return NO;
+}
+
+static void GDTPersistBackupSuccessAcceptedState(
+    NSUserDefaults *defaults, NSString *stateKey, NSString *timestampKey,
+    NSString *identifierKey, NSTimeInterval timestamp, NSString *identifier) {
+    [defaults setObject:@{
+        @"timestamp": @(timestamp),
+        @"identifier": identifier
+    } forKey:stateKey];
+    [defaults setDouble:timestamp forKey:timestampKey];
+    [defaults setObject:identifier forKey:identifierKey];
 }
 
 static NSUInteger GDTBackupNotificationDecisionStage(
@@ -1857,11 +1942,13 @@ static void GDTAdvanceBackupNotificationAcceptedState(
     if (!automaticSchedule || !routineSuccessNotificationsEnabled) {
         [defaults removeObjectForKey:successMonitorKey];
     } else {
-        NSTimeInterval startedAt = [defaults doubleForKey:successMonitorKey];
+        NSTimeInterval startedAt = ceil([defaults doubleForKey:successMonitorKey]);
         if (startedAt <= 0) {
-            startedAt = now.timeIntervalSince1970;
-            [defaults setDouble:startedAt forKey:successMonitorKey];
+            // Event timestamps are integral seconds. Rounding activation up
+            // makes a sub-second opt-in fail closed for a run already ending.
+            startedAt = ceil(now.timeIntervalSince1970);
         }
+        [defaults setDouble:startedAt forKey:successMonitorKey];
         monitoredConfig[@"GDRIVE_BACKUP_SUCCESS_NOTIFICATION_MONITOR_STARTED_AT"] =
             [NSString stringWithFormat:@"%.0f", startedAt];
     }
@@ -2473,31 +2560,183 @@ static void GDTAdvanceBackupNotificationAcceptedState(
     }];
 }
 
+- (BOOL)isBackupSuccessDecisionCurrent:
+    (NSDictionary<NSString *, NSString *> *)decision
+         capturedActiveIssueTimestamp:(NSTimeInterval)capturedActiveIssueTimestamp {
+    NSString *profileID = decision[@"profileID"];
+    NSString *identifier = decision[@"identifier"];
+    NSTimeInterval eventTimestamp =
+        GDTCanonicalBackupNotificationTimestamp(decision[@"eventTimestamp"]);
+    if (!profileID.length || !identifier.length || eventTimestamp <= 0 ||
+        GDTBackupSuccessIdentifierTimestamp(profileID, identifier) != eventTimestamp) {
+        return NO;
+    }
+
+    NSUserDefaults *defaults = [self backupNotificationDefaultsStore];
+    NSString *activeIssueKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                         suffix:@"activeIssueAt"];
+    NSString *dismissedIssueKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                            suffix:@"dismissedIssueAt"];
+    NSString *latestIssueKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                         suffix:@"latestDeliveredIssueAt"];
+    NSString *latestIssueStateKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                              suffix:@"latestDeliveredIssueState"];
+    NSTimeInterval latestAcceptedIssueTimestamp = 0;
+    NSUInteger latestAcceptedIssueStage = 0;
+    GDTBackupNotificationAcceptedState(
+        defaults, latestIssueStateKey, latestIssueKey,
+        &latestAcceptedIssueTimestamp, &latestAcceptedIssueStage);
+    (void)latestAcceptedIssueStage;
+    NSTimeInterval dismissedIssueTimestamp =
+        [defaults doubleForKey:dismissedIssueKey];
+    NSTimeInterval newestIssueTimestamp = MAX(
+        dismissedIssueTimestamp,
+        MAX([defaults doubleForKey:activeIssueKey], latestAcceptedIssueTimestamp));
+    if (newestIssueTimestamp > eventTimestamp) return NO;
+
+    NSString *bodyKey = decision[@"bodyKey"] ?: @"";
+    BOOL recovery = [@[@"backupNotificationRecoverySuccessBody",
+                       @"backupNotificationRetrySuccessBody"] containsObject:bodyKey];
+    if (!recovery) return YES;
+
+    // A recovery refers to the issue captured before the background read. A
+    // later acknowledgement must not be overwritten by that stale snapshot.
+    return capturedActiveIssueTimestamp > 0 &&
+        dismissedIssueTimestamp < capturedActiveIssueTimestamp;
+}
+
+- (NSTimeInterval)reconcileBackupSuccessNotificationsForProfileID:
+    (NSString *)profileID
+                                      deliveredNotifications:
+    (NSArray<UNNotification *> *)deliveredNotifications
+                                            pendingRequests:
+    (NSArray<UNNotificationRequest *> *)pendingRequests {
+    NSUserDefaults *defaults = [self backupNotificationDefaultsStore];
+    NSString *stateKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                    suffix:@"latestDeliveredSuccessState"];
+    NSString *timestampKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                        suffix:@"lastDeliveredSuccessAt"];
+    NSString *identifierKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                         suffix:@"lastDeliveredSuccessIdentifier"];
+    NSTimeInterval acceptedTimestamp = 0;
+    NSString *acceptedIdentifier = nil;
+    GDTBackupSuccessAcceptedState(defaults, profileID, stateKey, timestampKey,
+                                  identifierKey, &acceptedTimestamp,
+                                  &acceptedIdentifier);
+
+    NSMutableArray<NSDictionary<NSString *, id> *> *deliveredCandidates =
+        [NSMutableArray array];
+    for (UNNotification *notification in deliveredNotifications ?: @[]) {
+        UNNotificationRequest *request = notification.request;
+        NSTimeInterval candidateTimestamp = 0;
+        if (!GDTBackupSuccessRequestMatches(
+                profileID, request.identifier, request.content.categoryIdentifier ?: @"",
+                [request.content.userInfo isKindOfClass:NSDictionary.class]
+                    ? request.content.userInfo : @{}, &candidateTimestamp)) {
+            continue;
+        }
+        [deliveredCandidates addObject:@{
+            @"identifier": request.identifier,
+            @"timestamp": @(candidateTimestamp)
+        }];
+        if (candidateTimestamp > acceptedTimestamp) {
+            acceptedTimestamp = candidateTimestamp;
+            acceptedIdentifier = request.identifier;
+        }
+    }
+
+    NSMutableArray<NSDictionary<NSString *, id> *> *pendingCandidates =
+        [NSMutableArray array];
+    for (UNNotificationRequest *request in pendingRequests ?: @[]) {
+        NSTimeInterval candidateTimestamp = 0;
+        if (!GDTBackupSuccessRequestMatches(
+                profileID, request.identifier, request.content.categoryIdentifier ?: @"",
+                [request.content.userInfo isKindOfClass:NSDictionary.class]
+                    ? request.content.userInfo : @{}, &candidateTimestamp)) {
+            continue;
+        }
+        [pendingCandidates addObject:@{
+            @"identifier": request.identifier,
+            @"timestamp": @(candidateTimestamp)
+        }];
+        if (candidateTimestamp > acceptedTimestamp) {
+            acceptedTimestamp = candidateTimestamp;
+            acceptedIdentifier = request.identifier;
+        }
+    }
+
+    if (acceptedTimestamp > 0 && acceptedIdentifier.length) {
+        GDTPersistBackupSuccessAcceptedState(
+            defaults, stateKey, timestampKey, identifierKey,
+            acceptedTimestamp, acceptedIdentifier);
+    }
+
+    NSMutableOrderedSet<NSString *> *deliveredRetirements =
+        [NSMutableOrderedSet orderedSet];
+    NSMutableOrderedSet<NSString *> *pendingRetirements =
+        [NSMutableOrderedSet orderedSet];
+    for (NSDictionary<NSString *, id> *candidate in deliveredCandidates) {
+        if ([candidate[@"timestamp"] doubleValue] < acceptedTimestamp) {
+            [deliveredRetirements addObject:candidate[@"identifier"]];
+        }
+    }
+    for (NSDictionary<NSString *, id> *candidate in pendingCandidates) {
+        if ([candidate[@"timestamp"] doubleValue] < acceptedTimestamp) {
+            [pendingRetirements addObject:candidate[@"identifier"]];
+        }
+    }
+    if (deliveredRetirements.count) {
+        [self removeDeliveredBackupNotificationIdentifiers:
+            deliveredRetirements.array];
+    }
+    if (pendingRetirements.count) {
+        [self removePendingBackupNotificationIdentifiers:pendingRetirements.array];
+    }
+    return acceptedTimestamp;
+}
+
+- (void)reconcileBackupSuccessNotificationsForProfileID:(NSString *)profileID
+                                              completion:(void (^)(NSTimeInterval))completion {
+    __weak typeof(self) weakSelf = self;
+    [self enumerateDeliveredBackupNotificationsWithCompletion:
+        ^(NSArray<UNNotification *> *deliveredNotifications) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf enumeratePendingBackupNotificationRequestsWithCompletion:
+            ^(NSArray<UNNotificationRequest *> *pendingRequests) {
+            void (^finish)(void) = ^{
+                typeof(self) innerSelf = weakSelf;
+                if (!innerSelf) return;
+                NSTimeInterval timestamp = [innerSelf
+                    reconcileBackupSuccessNotificationsForProfileID:profileID
+                                            deliveredNotifications:deliveredNotifications
+                                                  pendingRequests:pendingRequests];
+                if (completion) completion(timestamp);
+            };
+            if (NSThread.isMainThread) {
+                finish();
+            } else {
+                dispatch_async(dispatch_get_main_queue(), finish);
+            }
+        }];
+    }];
+}
+
 - (void)processBackupSuccessNotificationDecision:
     (NSDictionary<NSString *, NSString *> *)decision {
     NSDictionary<NSString *, NSString *> *deliveryDecision = [decision copy];
     NSString *identifier = deliveryDecision[@"identifier"];
     NSString *profileID = deliveryDecision[@"profileID"];
     NSTimeInterval eventTimestamp =
-        GDTBackupNotificationTimestamp(deliveryDecision[@"eventTimestamp"]);
-    NSString *eventValue = [NSString stringWithFormat:@"%.0f", eventTimestamp];
-    NSString *identifierPrefix = [NSString stringWithFormat:
-        @"com.commcats.gdrivebackup.%@.success.", profileID ?: @""];
+        GDTCanonicalBackupNotificationTimestamp(deliveryDecision[@"eventTimestamp"]);
     if (!identifier.length || !profileID.length ||
         ![deliveryDecision[@"kind"] isEqualToString:@"success"] ||
         !deliveryDecision[@"titleKey"].length || !deliveryDecision[@"bodyKey"].length ||
         eventTimestamp <= 0 ||
-        ![deliveryDecision[@"eventTimestamp"] isEqualToString:eventValue] ||
-        ![identifier isEqualToString:[identifierPrefix stringByAppendingString:eventValue]]) {
+        GDTBackupSuccessIdentifierTimestamp(profileID, identifier) != eventTimestamp) {
         return;
     }
 
-    NSString *timestampKey = [self backupNotificationDefaultsKeyForProfileID:profileID
-                                                                        suffix:@"lastDeliveredSuccessAt"];
-    NSString *identifierKey = [self backupNotificationDefaultsKeyForProfileID:profileID
-                                                                         suffix:@"lastDeliveredSuccessIdentifier"];
-    NSUserDefaults *defaults = [self backupNotificationDefaultsStore];
-    if (eventTimestamp <= [defaults doubleForKey:timestampKey]) return;
     if (!self.pendingBackupSuccessIdentifiers) {
         self.pendingBackupSuccessIdentifiers = [NSMutableSet set];
     }
@@ -2505,34 +2744,67 @@ static void GDTAdvanceBackupNotificationAcceptedState(
     [self.pendingBackupSuccessIdentifiers addObject:identifier];
 
     __weak typeof(self) weakSelf = self;
-    [self deliverBackupNotificationDecision:deliveryDecision
-                                  completion:^(BOOL delivered) {
-        void (^finish)(void) = ^{
-            typeof(self) strongSelf = weakSelf;
-            if (!strongSelf) return;
-            [strongSelf.pendingBackupSuccessIdentifiers removeObject:identifier];
-            if (!delivered) return;
-
-            NSUserDefaults *store = [strongSelf backupNotificationDefaultsStore];
-            if (eventTimestamp <= [store doubleForKey:timestampKey]) {
-                [strongSelf removeDeliveredBackupNotificationIdentifiers:@[identifier]];
-                [strongSelf removePendingBackupNotificationIdentifiers:@[identifier]];
-                return;
-            }
-            NSString *previousIdentifier = [store stringForKey:identifierKey];
-            [store setDouble:eventTimestamp forKey:timestampKey];
-            [store setObject:identifier forKey:identifierKey];
-            if (previousIdentifier.length &&
-                ![previousIdentifier isEqualToString:identifier]) {
-                [strongSelf removeDeliveredBackupNotificationIdentifiers:@[previousIdentifier]];
-                [strongSelf removePendingBackupNotificationIdentifiers:@[previousIdentifier]];
-            }
-        };
-        if (NSThread.isMainThread) {
-            finish();
-        } else {
-            dispatch_async(dispatch_get_main_queue(), finish);
+    [self reconcileBackupSuccessNotificationsForProfileID:profileID
+                                                completion:^(NSTimeInterval acceptedTimestamp) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf ||
+            ![strongSelf.pendingBackupSuccessIdentifiers containsObject:identifier]) {
+            return;
         }
+        if (eventTimestamp <= acceptedTimestamp) {
+            [strongSelf.pendingBackupSuccessIdentifiers removeObject:identifier];
+            return;
+        }
+
+        [strongSelf deliverBackupNotificationDecision:deliveryDecision
+                                           completion:^(BOOL delivered) {
+            void (^finish)(void) = ^{
+                typeof(self) innerSelf = weakSelf;
+                if (!innerSelf) return;
+                [innerSelf.pendingBackupSuccessIdentifiers removeObject:identifier];
+                if (!delivered) return;
+
+                NSUserDefaults *defaults = [innerSelf backupNotificationDefaultsStore];
+                NSString *stateKey = [innerSelf
+                    backupNotificationDefaultsKeyForProfileID:profileID
+                                                        suffix:@"latestDeliveredSuccessState"];
+                NSString *timestampKey = [innerSelf
+                    backupNotificationDefaultsKeyForProfileID:profileID
+                                                        suffix:@"lastDeliveredSuccessAt"];
+                NSString *identifierKey = [innerSelf
+                    backupNotificationDefaultsKeyForProfileID:profileID
+                                                        suffix:@"lastDeliveredSuccessIdentifier"];
+                NSTimeInterval currentTimestamp = 0;
+                NSString *previousIdentifier = nil;
+                GDTBackupSuccessAcceptedState(
+                    defaults, profileID, stateKey, timestampKey, identifierKey,
+                    &currentTimestamp, &previousIdentifier);
+                if (eventTimestamp <= currentTimestamp) {
+                    [innerSelf removeDeliveredBackupNotificationIdentifiers:@[identifier]];
+                    [innerSelf removePendingBackupNotificationIdentifiers:@[identifier]];
+                    return;
+                }
+
+                // Persist one coherent success state before touching prior
+                // requests; a restart can then reconcile an interrupted cleanup.
+                GDTPersistBackupSuccessAcceptedState(
+                    defaults, stateKey, timestampKey, identifierKey,
+                    eventTimestamp, identifier);
+                NSTimeInterval previousTimestamp =
+                    GDTBackupSuccessIdentifierTimestamp(profileID, previousIdentifier);
+                if (previousTimestamp > 0 && previousTimestamp < eventTimestamp) {
+                    [innerSelf removeDeliveredBackupNotificationIdentifiers:@[previousIdentifier]];
+                    [innerSelf removePendingBackupNotificationIdentifiers:@[previousIdentifier]];
+                }
+                [innerSelf reconcileBackupSuccessNotificationsForProfileID:profileID
+                                                                  completion:nil];
+            };
+            if (NSThread.isMainThread) {
+                finish();
+            } else {
+                dispatch_async(dispatch_get_main_queue(), finish);
+            }
+        }];
     }];
 }
 
@@ -2595,6 +2867,12 @@ static void GDTAdvanceBackupNotificationAcceptedState(
     (void (^)(NSArray<UNNotification *> *notifications))completion {
     [UNUserNotificationCenter.currentNotificationCenter
         getDeliveredNotificationsWithCompletionHandler:completion];
+}
+
+- (void)enumeratePendingBackupNotificationRequestsWithCompletion:
+    (void (^)(NSArray<UNNotificationRequest *> *requests))completion {
+    [UNUserNotificationCenter.currentNotificationCenter
+        getPendingNotificationRequestsWithCompletionHandler:completion];
 }
 
 - (void)removeBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers
@@ -3839,6 +4117,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                 [innerSelf refreshOverviewStatus:nil];
                 return;
             }
+            BOOL successDecisionCurrent = successDecision &&
+                [innerSelf isBackupSuccessDecisionCurrent:successDecision
+                              capturedActiveIssueTimestamp:activeIssueTimestamp];
             NSMutableDictionary<NSString *, NSString *> *displaySnapshot = [snapshot mutableCopy];
             displaySnapshot[@"alertStatus"] = [innerSelf backupAlertStatusForConfig:config
                 summary:summary rawStatus:status decision:notificationDecision];
@@ -3851,7 +4132,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             [innerSelf clearBackupFailureNotificationsForConfig:config
                                                         summary:summary
                                                          status:status];
-            if (successDecision) {
+            if (successDecisionCurrent) {
                 [innerSelf processBackupSuccessNotificationDecision:successDecision];
             }
             innerSelf.lastOverviewSnapshot = displaySnapshot;

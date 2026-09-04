@@ -65,6 +65,18 @@ static NSArray<NSString *> *ProfileFailureIdentifiers(
     return method(policyClass, selector, profileID, candidates);
 }
 
+static NSArray<NSString *> *ProfileSuccessIdentifiers(
+    Class policyClass,
+    NSString *profileID,
+    NSArray<NSString *> *candidates) {
+    SEL selector = NSSelectorFromString(
+        @"successNotificationIdentifiersForProfileID:candidateIdentifiers:");
+    if (!policyClass || ![policyClass respondsToSelector:selector]) return nil;
+    typedef NSArray<NSString *> *(*FilterMethod)(id, SEL, NSString *, NSArray<NSString *> *);
+    FilterMethod method = (FilterMethod)[policyClass methodForSelector:selector];
+    return method(policyClass, selector, profileID, candidates);
+}
+
 static NSArray<NSString *> *ProfileFailureIdentifiersThroughOrigin(
     Class policyClass,
     NSString *profileID,
@@ -165,6 +177,20 @@ int main(void) {
                SuccessDecision(policyClass, daily, recoveredScheduledSummary,
                                @"success", 0, successNow) == nil,
                @"routine success reporting requires the explicit preference before the run");
+
+        NSMutableDictionary<NSString *, NSString *> *equalMonitorSuccessConfig =
+            [routineSuccessConfig mutableCopy];
+        equalMonitorSuccessConfig[@"GDRIVE_BACKUP_SUCCESS_NOTIFICATION_MONITOR_STARTED_AT"] =
+            @"1788550200";
+        NSMutableDictionary<NSString *, NSString *> *laterMonitorSuccessConfig =
+            [routineSuccessConfig mutableCopy];
+        laterMonitorSuccessConfig[@"GDRIVE_BACKUP_SUCCESS_NOTIFICATION_MONITOR_STARTED_AT"] =
+            @"1788550201";
+        Assert(SuccessDecision(policyClass, equalMonitorSuccessConfig,
+                               recoveredScheduledSummary, @"success", 0, successNow) == nil &&
+               SuccessDecision(policyClass, laterMonitorSuccessConfig,
+                               recoveredScheduledSummary, @"success", 0, successNow) == nil,
+               @"routine success reporting requires opt-in strictly before completion");
 
         NSMutableDictionary<NSString *, NSString *> *manualSuccess =
             [recoveredScheduledSummary mutableCopy];
@@ -515,6 +541,19 @@ int main(void) {
                    @"com.commcats.gdrivebackup.office.missed.200"
                ]],
                @"notification cleanup accepts only exact safe failure IDs for one profile");
+
+        NSArray<NSString *> *profileSuccesses = ProfileSuccessIdentifiers(
+            policyClass, @"office", @[
+                @"com.commcats.gdrivebackup.office.success.100",
+                @"com.commcats.gdrivebackup.archive.success.200",
+                @"com.commcats.gdrivebackup.office.failure.300",
+                @"com.commcats.gdrivebackup.office.success.0300",
+                @"com.commcats.gdrivebackup.office.success.not-a-time"
+            ]);
+        Assert([profileSuccesses isEqualToArray:@[
+                   @"com.commcats.gdrivebackup.office.success.100"
+               ]],
+               @"success retirement accepts only canonical identifiers for its own profile");
 
         NSArray<NSString *> *cutoffFailures =
             ProfileFailureIdentifiersThroughOrigin(policyClass, @"office", 500, @[
