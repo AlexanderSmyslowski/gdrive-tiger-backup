@@ -131,6 +131,70 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
 }
 
 + (NSDictionary<NSString *, NSString *> * _Nullable)
+    successDecisionForConfig:(NSDictionary<NSString *, NSString *> *)config
+                     summary:(NSDictionary<NSString *, NSString *> *)summary
+                      status:(NSString *)status
+        activeIssueTimestamp:(NSTimeInterval)activeIssueTimestamp
+                         now:(NSDate *)now {
+    NSString *schedule = [config[@"GDRIVE_BACKUP_SCHEDULE"] ?: @"manual" lowercaseString];
+    BOOL automaticSchedule = [@[@"login", @"hourly", @"daily"] containsObject:schedule];
+    BOOL recoveryNotificationsEnabled =
+        ![config[@"GDRIVE_BACKUP_NOTIFY_FAILURES"] isEqualToString:@"0"];
+    BOOL routineNotificationsEnabled =
+        [config[@"GDRIVE_BACKUP_NOTIFY_SUCCESSES"] isEqualToString:@"1"];
+    if (!automaticSchedule || [config[@"GDRIVE_BACKUP_PAUSED"] isEqualToString:@"1"] ||
+        ![status isEqualToString:@"success"] ||
+        ![summary[@"status"] isEqualToString:@"success"] ||
+        ![summary[@"exit_code"] isEqualToString:@"0"]) {
+        return nil;
+    }
+
+    NSTimeInterval startedAt = GDTCanonicalTimestamp(summary[@"started_at"]);
+    NSTimeInterval finishedAt = GDTCanonicalTimestamp(summary[@"finished_at"]);
+    NSTimeInterval lastSuccessAt = GDTCanonicalTimestamp(summary[@"last_success_at"]);
+    if (startedAt <= 0 || finishedAt < startedAt || lastSuccessAt < startedAt ||
+        finishedAt > now.timeIntervalSince1970 ||
+        now.timeIntervalSince1970 - finishedAt > 24 * 60 * 60) {
+        return nil;
+    }
+
+    NSString *trigger = summary[@"trigger"] ?: @"";
+    BOOL retry = [trigger isEqualToString:@"schedule-retry"];
+    if (![trigger isEqualToString:@"schedule"] && !retry) return nil;
+    if (retry) {
+        NSTimeInterval retryOrigin =
+            GDTCanonicalTimestamp(summary[@"retry_origin_started_at"]);
+        if (![summary[@"retry_attempt"] isEqualToString:@"1"] ||
+            retryOrigin <= 0 || retryOrigin >= startedAt) {
+            return nil;
+        }
+    }
+
+    BOOL recovery = recoveryNotificationsEnabled && activeIssueTimestamp > 0 &&
+        activeIssueTimestamp < finishedAt;
+    NSTimeInterval successMonitorStartedAt =
+        GDTCanonicalTimestamp(config[@"GDRIVE_BACKUP_SUCCESS_NOTIFICATION_MONITOR_STARTED_AT"]);
+    BOOL routine = routineNotificationsEnabled && successMonitorStartedAt > 0 &&
+        successMonitorStartedAt <= finishedAt;
+    if (!recovery && !routine) return nil;
+
+    NSString *profileID = GDTSafeNotificationProfileID(config[@"GDRIVE_BACKUP_PROFILE_ID"]);
+    NSString *eventTimestamp = [NSString stringWithFormat:@"%.0f", finishedAt];
+    NSString *bodyKey = recovery
+        ? (retry ? @"backupNotificationRetrySuccessBody" : @"backupNotificationRecoverySuccessBody")
+        : @"backupNotificationSuccessBody";
+    return @{
+        @"identifier": [NSString stringWithFormat:
+            @"com.commcats.gdrivebackup.%@.success.%@", profileID, eventTimestamp],
+        @"kind": @"success",
+        @"profileID": profileID,
+        @"eventTimestamp": eventTimestamp,
+        @"titleKey": @"backupNotificationSuccessTitle",
+        @"bodyKey": bodyKey
+    };
+}
+
++ (NSDictionary<NSString *, NSString *> * _Nullable)
     decisionForConfig:(NSDictionary<NSString *, NSString *> *)config
                summary:(NSDictionary<NSString *, NSString *> *)summary
                 status:(NSString *)status

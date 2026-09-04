@@ -1590,6 +1590,9 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     queuedBackupNotificationDecisionsByProfileID;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *
     backupNotificationGenerationsByProfileID;
+@property(nonatomic, strong) NSMutableSet<NSString *> *pendingBackupSuccessIdentifiers;
+- (void)processBackupSuccessNotificationDecision:
+    (NSDictionary<NSString *, NSString *> *)decision;
 - (BOOL)launchAutomaticRetryDecision:(NSDictionary<NSString *, NSString *> *)decision;
 - (void)removeExactBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers
                                       forProfileID:(NSString *)profileID;
@@ -1827,23 +1830,41 @@ static void GDTAdvanceBackupNotificationAcceptedState(
     NSString *schedule = [config[@"GDRIVE_BACKUP_SCHEDULE"] ?: @"manual" lowercaseString];
     BOOL automaticSchedule = [@[@"login", @"hourly", @"daily"] containsObject:schedule];
     NSString *profileID = config[@"GDRIVE_BACKUP_PROFILE_ID"] ?: @"legacy";
-    NSString *key = [self backupNotificationDefaultsKeyForProfileID:profileID suffix:@"monitorStartedAt"];
     NSUserDefaults *defaults = [self backupNotificationDefaultsStore];
-    if (!automaticSchedule || [config[@"GDRIVE_BACKUP_NOTIFY_FAILURES"] isEqualToString:@"0"]) {
+    NSMutableDictionary<NSString *, NSString *> *monitoredConfig = [config mutableCopy];
+    NSString *failureMonitorKey =
+        [self backupNotificationDefaultsKeyForProfileID:profileID suffix:@"monitorStartedAt"];
+    BOOL failureNotificationsEnabled =
+        ![config[@"GDRIVE_BACKUP_NOTIFY_FAILURES"] isEqualToString:@"0"];
+    if (!automaticSchedule || !failureNotificationsEnabled) {
         // Re-enabling later starts a fresh monitoring window instead of
         // reporting deadlines that occurred while alerts were intentionally off.
-        [defaults removeObjectForKey:key];
-        return config;
+        [defaults removeObjectForKey:failureMonitorKey];
+    } else {
+        NSTimeInterval startedAt = [defaults doubleForKey:failureMonitorKey];
+        if (startedAt <= 0) {
+            startedAt = now.timeIntervalSince1970;
+            [defaults setDouble:startedAt forKey:failureMonitorKey];
+        }
+        monitoredConfig[@"GDRIVE_BACKUP_NOTIFICATION_MONITOR_STARTED_AT"] =
+            [NSString stringWithFormat:@"%.0f", startedAt];
     }
 
-    NSTimeInterval startedAt = [defaults doubleForKey:key];
-    if (startedAt <= 0) {
-        startedAt = now.timeIntervalSince1970;
-        [defaults setDouble:startedAt forKey:key];
+    NSString *successMonitorKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                            suffix:@"successMonitorStartedAt"];
+    BOOL routineSuccessNotificationsEnabled =
+        [config[@"GDRIVE_BACKUP_NOTIFY_SUCCESSES"] isEqualToString:@"1"];
+    if (!automaticSchedule || !routineSuccessNotificationsEnabled) {
+        [defaults removeObjectForKey:successMonitorKey];
+    } else {
+        NSTimeInterval startedAt = [defaults doubleForKey:successMonitorKey];
+        if (startedAt <= 0) {
+            startedAt = now.timeIntervalSince1970;
+            [defaults setDouble:startedAt forKey:successMonitorKey];
+        }
+        monitoredConfig[@"GDRIVE_BACKUP_SUCCESS_NOTIFICATION_MONITOR_STARTED_AT"] =
+            [NSString stringWithFormat:@"%.0f", startedAt];
     }
-    NSMutableDictionary<NSString *, NSString *> *monitoredConfig = [config mutableCopy];
-    monitoredConfig[@"GDRIVE_BACKUP_NOTIFICATION_MONITOR_STARTED_AT"] =
-        [NSString stringWithFormat:@"%.0f", startedAt];
     return monitoredConfig;
 }
 
@@ -1857,6 +1878,11 @@ static void GDTAdvanceBackupNotificationAcceptedState(
                        actions:@[openAction]
              intentIdentifiers:@[]
                        options:UNNotificationCategoryOptionCustomDismissAction];
+    UNNotificationCategory *successCategory = [UNNotificationCategory
+        categoryWithIdentifier:@"GDT_BACKUP_SUCCESS"
+                       actions:@[openAction]
+             intentIdentifiers:@[]
+                       options:UNNotificationCategoryOptionNone];
 
     UNNotificationAction *setupExternalVolume = [UNNotificationAction
         actionWithIdentifier:@"GDT_UNKNOWN_EXTERNAL_VOLUME_SETUP"
@@ -1874,7 +1900,8 @@ static void GDTAdvanceBackupNotificationAcceptedState(
                             actions:@[setupExternalVolume, ignoreExternalVolume]
                   intentIdentifiers:@[]
                             options:UNNotificationCategoryOptionNone];
-    return [NSSet setWithObjects:backupCategory, unknownExternalVolumeCategory, nil];
+    return [NSSet setWithObjects:backupCategory, successCategory,
+            unknownExternalVolumeCategory, nil];
 }
 
 - (void)configureBackupNotificationsForConfig:(NSDictionary<NSString *, NSString *> *)config {
@@ -2043,6 +2070,18 @@ static void GDTAdvanceBackupNotificationAcceptedState(
     UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
     content.title = T(self.language ?: @"en", decision[@"titleKey"]);
     content.body = T(self.language ?: @"en", decision[@"bodyKey"]);
+    if ([decision[@"kind"] isEqualToString:@"success"]) {
+        content.sound = nil;
+        content.categoryIdentifier = @"GDT_BACKUP_SUCCESS";
+        content.userInfo = @{
+            @"profileID": decision[@"profileID"] ?: @"",
+            @"eventTimestamp": decision[@"eventTimestamp"] ?: @""
+        };
+        if (@available(macOS 12.0, *)) {
+            content.interruptionLevel = UNNotificationInterruptionLevelActive;
+        }
+        return content;
+    }
     content.sound = UNNotificationSound.defaultSound;
     content.categoryIdentifier = @"GDT_BACKUP_ALERT";
     content.userInfo = @{
@@ -2434,6 +2473,69 @@ static void GDTAdvanceBackupNotificationAcceptedState(
     }];
 }
 
+- (void)processBackupSuccessNotificationDecision:
+    (NSDictionary<NSString *, NSString *> *)decision {
+    NSDictionary<NSString *, NSString *> *deliveryDecision = [decision copy];
+    NSString *identifier = deliveryDecision[@"identifier"];
+    NSString *profileID = deliveryDecision[@"profileID"];
+    NSTimeInterval eventTimestamp =
+        GDTBackupNotificationTimestamp(deliveryDecision[@"eventTimestamp"]);
+    NSString *eventValue = [NSString stringWithFormat:@"%.0f", eventTimestamp];
+    NSString *identifierPrefix = [NSString stringWithFormat:
+        @"com.commcats.gdrivebackup.%@.success.", profileID ?: @""];
+    if (!identifier.length || !profileID.length ||
+        ![deliveryDecision[@"kind"] isEqualToString:@"success"] ||
+        !deliveryDecision[@"titleKey"].length || !deliveryDecision[@"bodyKey"].length ||
+        eventTimestamp <= 0 ||
+        ![deliveryDecision[@"eventTimestamp"] isEqualToString:eventValue] ||
+        ![identifier isEqualToString:[identifierPrefix stringByAppendingString:eventValue]]) {
+        return;
+    }
+
+    NSString *timestampKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                        suffix:@"lastDeliveredSuccessAt"];
+    NSString *identifierKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+                                                                         suffix:@"lastDeliveredSuccessIdentifier"];
+    NSUserDefaults *defaults = [self backupNotificationDefaultsStore];
+    if (eventTimestamp <= [defaults doubleForKey:timestampKey]) return;
+    if (!self.pendingBackupSuccessIdentifiers) {
+        self.pendingBackupSuccessIdentifiers = [NSMutableSet set];
+    }
+    if ([self.pendingBackupSuccessIdentifiers containsObject:identifier]) return;
+    [self.pendingBackupSuccessIdentifiers addObject:identifier];
+
+    __weak typeof(self) weakSelf = self;
+    [self deliverBackupNotificationDecision:deliveryDecision
+                                  completion:^(BOOL delivered) {
+        void (^finish)(void) = ^{
+            typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            [strongSelf.pendingBackupSuccessIdentifiers removeObject:identifier];
+            if (!delivered) return;
+
+            NSUserDefaults *store = [strongSelf backupNotificationDefaultsStore];
+            if (eventTimestamp <= [store doubleForKey:timestampKey]) {
+                [strongSelf removeDeliveredBackupNotificationIdentifiers:@[identifier]];
+                [strongSelf removePendingBackupNotificationIdentifiers:@[identifier]];
+                return;
+            }
+            NSString *previousIdentifier = [store stringForKey:identifierKey];
+            [store setDouble:eventTimestamp forKey:timestampKey];
+            [store setObject:identifier forKey:identifierKey];
+            if (previousIdentifier.length &&
+                ![previousIdentifier isEqualToString:identifier]) {
+                [strongSelf removeDeliveredBackupNotificationIdentifiers:@[previousIdentifier]];
+                [strongSelf removePendingBackupNotificationIdentifiers:@[previousIdentifier]];
+            }
+        };
+        if (NSThread.isMainThread) {
+            finish();
+        } else {
+            dispatch_async(dispatch_get_main_queue(), finish);
+        }
+    }];
+}
+
 - (void)removeExactBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers
                                       forProfileID:(NSString *)profileID {
     NSArray<NSString *> *safeIdentifiers =
@@ -2755,7 +2857,8 @@ static void GDTAdvanceBackupNotificationAcceptedState(
 
 - (UNNotificationPresentationOptions)presentationOptionsForNotificationCategoryIdentifier:
     (NSString *)categoryIdentifier {
-    if ([categoryIdentifier isEqualToString:@"GDT_UNKNOWN_EXTERNAL_VOLUME"]) {
+    if ([categoryIdentifier isEqualToString:@"GDT_UNKNOWN_EXTERNAL_VOLUME"] ||
+        [categoryIdentifier isEqualToString:@"GDT_BACKUP_SUCCESS"]) {
         return UNNotificationPresentationOptionBanner |
             UNNotificationPresentationOptionList;
     }
@@ -3686,6 +3789,10 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSDate *now = [NSDate date];
     NSDictionary<NSString *, NSString *> *config =
         [self notificationMonitoringConfigForConfig:baseConfig now:now];
+    NSString *notificationProfileID = config[@"GDRIVE_BACKUP_PROFILE_ID"] ?: @"legacy";
+    NSTimeInterval activeIssueTimestamp = [[self backupNotificationDefaultsStore]
+        doubleForKey:[self backupNotificationDefaultsKeyForProfileID:notificationProfileID
+                                                               suffix:@"activeIssueAt"]];
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         typeof(self) strongSelf = weakSelf;
@@ -3708,6 +3815,11 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         NSDictionary<NSString *, NSString *> *notificationDecision =
             [GDTBackupNotificationPolicy decisionForConfig:config summary:summary
                                                     status:status now:now calendar:calendar];
+        NSDictionary<NSString *, NSString *> *successDecision =
+            [GDTBackupNotificationPolicy successDecisionForConfig:config summary:summary
+                                                           status:status
+                                             activeIssueTimestamp:activeIssueTimestamp
+                                                              now:now];
         NSDictionary<NSString *, NSString *> *retryDecision =
             [GDTAutomaticRetryPolicy decisionForConfig:config summary:summary
                                                 status:status now:now];
@@ -3739,6 +3851,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             [innerSelf clearBackupFailureNotificationsForConfig:config
                                                         summary:summary
                                                          status:status];
+            if (successDecision) {
+                [innerSelf processBackupSuccessNotificationDecision:successDecision];
+            }
             innerSelf.lastOverviewSnapshot = displaySnapshot;
             if ([innerSelf.window.contentView isKindOfClass:TigerOverviewView.class]) {
                 [innerSelf applyOverviewSnapshot:displaySnapshot
