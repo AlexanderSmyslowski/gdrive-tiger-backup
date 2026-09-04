@@ -26,6 +26,10 @@
     (NSTimeInterval)capturedActiveIssueTimestamp
                                           completion:(void (^)(BOOL delivered))completion;
 - (UNUserNotificationCenter *)backupNotificationCenter;
+- (void)configureBackupNotificationsForConfig:
+    (NSDictionary<NSString *, NSString *> *)config;
+- (void)requestBackupNotificationAuthorizationIfNeededForConfig:
+    (NSDictionary<NSString *, NSString *> *)config;
 - (UNMutableNotificationContent *)backupNotificationContentForDecision:
     (NSDictionary<NSString *, NSString *> *)decision;
 - (BOOL)timeSensitiveBackupNotificationsEnabled;
@@ -132,6 +136,22 @@
 @interface BackupSuccessPreAddRaceTestDelegate : AppDelegate
 @property(nonatomic, strong) NSUserDefaults *testDefaults;
 @property(nonatomic, strong) BackupSuccessPreAddRaceCenter *testNotificationCenter;
+@end
+
+@interface BackupNotificationAuthorizationSettings : NSObject
+@property(nonatomic) UNAuthorizationStatus authorizationStatus;
+@end
+
+@interface BackupNotificationAuthorizationCenter : NSObject
+@property(nonatomic, weak) id delegate;
+@property(nonatomic, strong) BackupNotificationAuthorizationSettings *settings;
+@property(nonatomic) NSInteger setCategoriesCalls;
+@property(nonatomic) NSInteger authorizationRequests;
+@end
+
+@interface BackupNotificationAuthorizationTestDelegate : AppDelegate
+@property(nonatomic, strong) NSUserDefaults *testDefaults;
+@property(nonatomic, strong) BackupNotificationAuthorizationCenter *testNotificationCenter;
 @end
 
 @interface UnknownVolumeNotificationTestDelegate : NotificationTestDelegate
@@ -454,6 +474,42 @@
 @end
 
 @implementation BackupSuccessPreAddRaceTestDelegate
+
+- (NSUserDefaults *)backupNotificationDefaultsStore {
+    return self.testDefaults;
+}
+
+- (UNUserNotificationCenter *)backupNotificationCenter {
+    return (UNUserNotificationCenter *)(id)self.testNotificationCenter;
+}
+
+@end
+
+@implementation BackupNotificationAuthorizationSettings
+@end
+
+@implementation BackupNotificationAuthorizationCenter
+
+- (void)setNotificationCategories:(NSSet<UNNotificationCategory *> *)categories {
+    (void)categories;
+    self.setCategoriesCalls++;
+}
+
+- (void)getNotificationSettingsWithCompletionHandler:
+    (void (^)(UNNotificationSettings *settings))completionHandler {
+    completionHandler((UNNotificationSettings *)(id)self.settings);
+}
+
+- (void)requestAuthorizationWithOptions:(UNAuthorizationOptions)options
+                      completionHandler:(void (^)(BOOL granted, NSError *error))completionHandler {
+    (void)options;
+    self.authorizationRequests++;
+    completionHandler(YES, nil);
+}
+
+@end
+
+@implementation BackupNotificationAuthorizationTestDelegate
 
 - (NSUserDefaults *)backupNotificationDefaultsStore {
     return self.testDefaults;
@@ -3071,6 +3127,71 @@ int main(void) {
                actionDelegate.removedDeliveredNotificationIdentifiers == nil &&
                actionDelegate.removedPendingNotificationIdentifiers == nil,
                @"a legacy Open action keeps overview navigation while refusing untrusted acknowledgement metadata");
+
+        BackupNotificationAuthorizationTestDelegate *authorizationDelegate =
+            [[BackupNotificationAuthorizationTestDelegate alloc] init];
+        authorizationDelegate.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:[suiteName stringByAppendingString:@".authorization"]];
+        BackupNotificationAuthorizationCenter *authorizationCenter =
+            [[BackupNotificationAuthorizationCenter alloc] init];
+        authorizationCenter.settings = [[BackupNotificationAuthorizationSettings alloc] init];
+        authorizationCenter.settings.authorizationStatus = UNAuthorizationStatusNotDetermined;
+        authorizationDelegate.testNotificationCenter = authorizationCenter;
+        NSDictionary<NSString *, NSString *> *successOnlyNotificationConfig = @{
+            @"GDRIVE_BACKUP_PROFILE_ID": @"authorization",
+            @"GDRIVE_BACKUP_SCHEDULE": @"daily",
+            @"GDRIVE_BACKUP_NOTIFY_FAILURES": @"0",
+            @"GDRIVE_BACKUP_NOTIFY_SUCCESSES": @"1"
+        };
+        SEL explicitAuthorizationSelector = NSSelectorFromString(
+            @"requestBackupNotificationAuthorizationIfNeededForConfig:");
+        BOOL exposesExplicitAuthorization = [authorizationDelegate respondsToSelector:
+            explicitAuthorizationSelector];
+        typedef void (*RequestAuthorizationMethod)(id, SEL, NSDictionary *);
+        RequestAuthorizationMethod requestAuthorization = exposesExplicitAuthorization
+            ? (RequestAuthorizationMethod)[authorizationDelegate
+                methodForSelector:explicitAuthorizationSelector] : NULL;
+        if (requestAuthorization) {
+            [authorizationDelegate configureBackupNotificationsForConfig:
+                successOnlyNotificationConfig];
+        }
+        Assert(exposesExplicitAuthorization && authorizationCenter.setCategoriesCalls == 1 &&
+               authorizationCenter.authorizationRequests == 0,
+               @"controller startup configures categories without prompting for notification permission");
+        if (requestAuthorization) {
+            requestAuthorization(authorizationDelegate, explicitAuthorizationSelector,
+                successOnlyNotificationConfig);
+        }
+        BOOL successOptInRequestsAuthorization =
+            authorizationCenter.authorizationRequests == 1;
+        authorizationCenter.authorizationRequests = 0;
+        NSDictionary<NSString *, NSString *> *failureOnlyNotificationConfig = @{
+            @"GDRIVE_BACKUP_PROFILE_ID": @"authorization",
+            @"GDRIVE_BACKUP_SCHEDULE": @"daily",
+            @"GDRIVE_BACKUP_NOTIFY_FAILURES": @"1",
+            @"GDRIVE_BACKUP_NOTIFY_SUCCESSES": @"0"
+        };
+        if (requestAuthorization) {
+            requestAuthorization(authorizationDelegate, explicitAuthorizationSelector,
+                failureOnlyNotificationConfig);
+        }
+        BOOL failureOptInRequestsAuthorization =
+            authorizationCenter.authorizationRequests == 1;
+        authorizationCenter.authorizationRequests = 0;
+        NSDictionary<NSString *, NSString *> *manualSuccessNotificationConfig = @{
+            @"GDRIVE_BACKUP_PROFILE_ID": @"authorization",
+            @"GDRIVE_BACKUP_SCHEDULE": @"manual",
+            @"GDRIVE_BACKUP_NOTIFY_FAILURES": @"0",
+            @"GDRIVE_BACKUP_NOTIFY_SUCCESSES": @"1"
+        };
+        if (requestAuthorization) {
+            requestAuthorization(authorizationDelegate, explicitAuthorizationSelector,
+                manualSuccessNotificationConfig);
+        }
+        Assert(exposesExplicitAuthorization && successOptInRequestsAuthorization &&
+               failureOptInRequestsAuthorization &&
+               authorizationCenter.authorizationRequests == 0,
+               @"an explicit setup save requests notification permission for either automatic preference");
 
         NSApplication *testApplication =
             GDTInitializeAccessoryTestApplication();

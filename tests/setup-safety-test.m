@@ -320,6 +320,15 @@ int main(void) {
         if (exposesNotificationPreference) {
             [previewDelegate setValue:notificationCheckbox forKey:@"notificationCheckbox"];
         }
+        NSButton *successNotificationCheckbox = [[NSButton alloc] init];
+        successNotificationCheckbox.buttonType = NSButtonTypeSwitch;
+        successNotificationCheckbox.state = NSControlStateValueOff;
+        BOOL exposesSuccessNotificationPreference = [previewDelegate respondsToSelector:
+            NSSelectorFromString(@"setSuccessNotificationCheckbox:")];
+        if (exposesSuccessNotificationPreference) {
+            [previewDelegate setValue:successNotificationCheckbox
+                               forKey:@"successNotificationCheckbox"];
+        }
         [previewDelegate updateDestinationPreview];
         Assert([previewDelegate.destinationPreviewField.stringValue isEqualToString:@"/Volumes/Exact Backup Disk"] &&
                [previewDelegate.destinationPreviewField.toolTip isEqualToString:@"/Volumes/Exact Backup Disk"] &&
@@ -343,10 +352,20 @@ int main(void) {
         Assert(exposesNotificationPreference &&
                [notificationUpdates[@"GDRIVE_BACKUP_NOTIFY_FAILURES"] isEqualToString:@"1"],
                @"setup saves the enabled automatic-backup notification preference");
+        Assert(exposesSuccessNotificationPreference &&
+               [T(@"de", @"notifyBackupSuccesses")
+                   isEqualToString:@"Auch erfolgreiche automatische Backups melden"] &&
+               [notificationUpdates[@"GDRIVE_BACKUP_NOTIFY_SUCCESSES"] isEqualToString:@"0"],
+               @"setup exposes a localized opt-in for successful automatic backups");
         notificationCheckbox.state = NSControlStateValueOff;
         Assert([[previewDelegate currentSetupUpdates][@"GDRIVE_BACKUP_NOTIFY_FAILURES"]
                    isEqualToString:@"0"],
                @"setup persists an explicit notification opt-out");
+        successNotificationCheckbox.state = NSControlStateValueOn;
+        Assert([[previewDelegate currentSetupUpdates][@"GDRIVE_BACKUP_NOTIFY_SUCCESSES"]
+                   isEqualToString:@"1"],
+               @"setup persists an explicit routine-success notification opt-in");
+        successNotificationCheckbox.state = NSControlStateValueOff;
 
         UnknownVolumeSetupDelegate *unknownSetup =
             [[UnknownVolumeSetupDelegate alloc] init];
@@ -515,17 +534,29 @@ int main(void) {
         Assert(unsupportedMessageLocalized,
                @"unsupported external-volume guidance is localized in every language");
 
+        [previewDelegate.targetPopup selectItemAtIndex:0];
+        [previewDelegate.schedulePopup selectItemAtIndex:0];
+        previewDelegate.configuredAPFSVolumePath = nil;
+        previewDelegate.configuredAPFSVolumeUUID = nil;
+        notificationCheckbox.state = NSControlStateValueOn;
+        successNotificationCheckbox.state = NSControlStateValueOff;
         NSDictionary<NSString *, NSString *> *defaultsWithNotifications = @{
             @"GDRIVE_BACKUP_TARGET": @"apfs",
             @"GDRIVE_BACKUP_SCHEDULE": @"manual",
             @"GDRIVE_BACKUP_ENCRYPTION": @"none",
             @"GDRIVE_BACKUP_CRYPT_REMOTE": @"",
             @"GDRIVE_BACKUP_VOLUME": @"/Volumes/GoogleDrive-Backup",
-            @"GDRIVE_BACKUP_NOTIFY_FAILURES": @"1"
+            @"GDRIVE_BACKUP_NOTIFY_FAILURES": @"1",
+            @"GDRIVE_BACKUP_NOTIFY_SUCCESSES": @"0"
         };
         Assert([previewDelegate setupUpdatesMatchSavedConfig:defaultsWithNotifications
                                                  savedConfig:@{}],
-               @"existing profiles default to enabled failure notifications without false unsaved changes");
+               @"existing profiles default notification preferences without false unsaved changes");
+        Assert([previewDelegate setupUpdatesMatchSavedConfig:defaultsWithNotifications
+                                                 savedConfig:@{
+            @"GDRIVE_BACKUP_NOTIFY_SUCCESSES": @"malformed"
+        }],
+               @"a missing or malformed routine-success preference remains safely off");
 
         SEL availabilitySelector = NSSelectorFromString(@"updateNotificationControlAvailability");
         if ([previewDelegate respondsToSelector:availabilitySelector]) {
@@ -534,13 +565,15 @@ int main(void) {
                 (VoidMethod)[previewDelegate methodForSelector:availabilitySelector];
             [previewDelegate.schedulePopup selectItemAtIndex:0];
             updateAvailability(previewDelegate, availabilitySelector);
-            BOOL manualDisabled = !notificationCheckbox.enabled;
+            BOOL manualDisabled = !notificationCheckbox.enabled &&
+                !successNotificationCheckbox.enabled;
             [previewDelegate.schedulePopup selectItemAtIndex:1];
             updateAvailability(previewDelegate, availabilitySelector);
-            Assert(manualDisabled && notificationCheckbox.enabled,
-                   @"the notification choice is available only for an automatic schedule");
+            Assert(manualDisabled && notificationCheckbox.enabled &&
+                   successNotificationCheckbox.enabled,
+                   @"both notification choices are available only for an automatic schedule");
         } else {
-            Assert(NO, @"the notification choice is available only for an automatic schedule");
+            Assert(NO, @"both notification choices are available only for an automatic schedule");
         }
 
         BOOL destinationLabelTranslated = YES;
@@ -556,7 +589,10 @@ int main(void) {
         NSArray<NSString *> *notificationKeys = @[
             @"notifyBackupFailures", @"backupNotificationFailureTitle",
             @"backupNotificationMissedTitle", @"backupNotificationMissedBody",
-            @"backupNotificationTargetUnavailable"
+            @"backupNotificationTargetUnavailable", @"notifyBackupSuccesses",
+            @"backupNotificationSuccessTitle", @"backupNotificationSuccessBody",
+            @"backupNotificationRecoverySuccessBody",
+            @"backupNotificationRetrySuccessBody"
         ];
         for (NSString *language in SupportedLanguageCodes()) {
             for (NSString *key in notificationKeys) {

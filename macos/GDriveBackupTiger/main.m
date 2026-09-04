@@ -1118,7 +1118,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     panel.lineWidth = 1;
     [panel stroke];
 
-    NSBezierPath *schedulePanel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 562, NSWidth(bounds) - 36, 76) xRadius:12 yRadius:12];
+    NSBezierPath *schedulePanel = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(18, 562, NSWidth(bounds) - 36, 106) xRadius:12 yRadius:12];
     [[NSColor colorWithCalibratedWhite:1.0 alpha:0.42] setFill];
     [schedulePanel fill];
     [[NSColor colorWithCalibratedWhite:0.42 alpha:0.20] setStroke];
@@ -1526,6 +1526,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, strong) NSPopUpButton *discoveredNasPopup;
 @property(nonatomic, strong) NSPopUpButton *schedulePopup;
 @property(nonatomic, strong) NSButton *notificationCheckbox;
+@property(nonatomic, strong) NSButton *successNotificationCheckbox;
 @property(nonatomic, strong) NSTextField *nasURLField;
 @property(nonatomic, strong) NSTextField *nasMountField;
 @property(nonatomic, strong) NSTextField *nasSubdirField;
@@ -1997,14 +1998,32 @@ static void GDTAdvanceBackupNotificationAcceptedState(
 - (void)configureBackupNotificationsForConfig:(NSDictionary<NSString *, NSString *> *)config {
     NSString *schedule = [config[@"GDRIVE_BACKUP_SCHEDULE"] ?: @"manual" lowercaseString];
     BOOL automaticSchedule = [@[@"login", @"hourly", @"daily"] containsObject:schedule];
-    UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
+    UNUserNotificationCenter *center = [self backupNotificationCenter];
     center.delegate = self;
     [center setNotificationCategories:[self appNotificationCategories]];
-    if (!automaticSchedule || [config[@"GDRIVE_BACKUP_NOTIFY_FAILURES"] isEqualToString:@"0"]) {
+    if (!automaticSchedule) {
         return;
     }
 
+    // Startup configures categories and monitoring only. A permission sheet is
+    // reserved for an explicit setup save, never for controller launch.
     (void)[self notificationMonitoringConfigForConfig:config now:[NSDate date]];
+}
+
+- (void)requestBackupNotificationAuthorizationIfNeededForConfig:
+    (NSDictionary<NSString *, NSString *> *)config {
+    NSString *schedule = [config[@"GDRIVE_BACKUP_SCHEDULE"] ?: @"manual" lowercaseString];
+    BOOL automaticSchedule = [@[@"login", @"hourly", @"daily"] containsObject:schedule];
+    BOOL failureNotificationsEnabled =
+        ![config[@"GDRIVE_BACKUP_NOTIFY_FAILURES"] isEqualToString:@"0"];
+    BOOL routineSuccessNotificationsEnabled =
+        [config[@"GDRIVE_BACKUP_NOTIFY_SUCCESSES"] isEqualToString:@"1"];
+    if (!automaticSchedule ||
+        (!failureNotificationsEnabled && !routineSuccessNotificationsEnabled)) {
+        return;
+    }
+
+    UNUserNotificationCenter *center = [self backupNotificationCenter];
     [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
         if (settings.authorizationStatus != UNAuthorizationStatusNotDetermined) return;
         [center requestAuthorizationWithOptions:
@@ -5852,7 +5871,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         return;
     }
 
-    NSSize size = NSMakeSize(650, 690);
+    NSSize size = NSMakeSize(650, 720);
     NSRect screenFrame = NSScreen.mainScreen ? NSScreen.mainScreen.visibleFrame : NSMakeRect(0, 0, 1200, 800);
     NSPoint origin = NSMakePoint(NSMidX(screenFrame) - size.width / 2, NSMidY(screenFrame) - size.height / 2);
 
@@ -5997,16 +6016,29 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     self.notificationCheckbox.action = @selector(setupControlChanged:);
     self.notificationCheckbox.accessibilityLabel = self.notificationCheckbox.title;
     [content addSubview:self.notificationCheckbox];
+
+    self.successNotificationCheckbox = [[NSButton alloc]
+        initWithFrame:NSMakeRect(164, 636, 440, 24)];
+    self.successNotificationCheckbox.buttonType = NSButtonTypeSwitch;
+    self.successNotificationCheckbox.title = T(self.language, @"notifyBackupSuccesses");
+    self.successNotificationCheckbox.state =
+        [config[@"GDRIVE_BACKUP_NOTIFY_SUCCESSES"] isEqualToString:@"1"]
+        ? NSControlStateValueOn : NSControlStateValueOff;
+    self.successNotificationCheckbox.target = self;
+    self.successNotificationCheckbox.action = @selector(setupControlChanged:);
+    self.successNotificationCheckbox.accessibilityLabel =
+        self.successNotificationCheckbox.title;
+    [content addSubview:self.successNotificationCheckbox];
     [self updateNotificationControlAvailability];
 
-    self.statusField = [self label:T(self.language, @"statusReady") frame:NSMakeRect(26, 648, 270, 20)];
+    self.statusField = [self label:T(self.language, @"statusReady") frame:NSMakeRect(26, 678, 270, 20)];
     self.statusField.textColor = [NSColor colorWithCalibratedWhite:0.36 alpha:1.0];
     [content addSubview:self.statusField];
 
-    NSButton *saveButton = [self button:T(self.language, @"save") frame:NSMakeRect(312, 643, 88, 30) action:@selector(saveSetup:)];
-    self.setupDryRunButton = [self button:T(self.language, @"dryRun") frame:NSMakeRect(408, 643, 112, 30) action:@selector(startDryRun:)];
+    NSButton *saveButton = [self button:T(self.language, @"save") frame:NSMakeRect(312, 673, 88, 30) action:@selector(saveSetup:)];
+    self.setupDryRunButton = [self button:T(self.language, @"dryRun") frame:NSMakeRect(408, 673, 112, 30) action:@selector(startDryRun:)];
     self.setupDryRunButton.toolTip = T(self.language, @"dryRunTip");
-    self.setupBackupButton = [self button:T(self.language, @"backupNow") frame:NSMakeRect(528, 643, 96, 30) action:@selector(startBackupNow:)];
+    self.setupBackupButton = [self button:T(self.language, @"backupNow") frame:NSMakeRect(528, 673, 96, 30) action:@selector(startBackupNow:)];
     self.setupBackupButton.toolTip = T(self.language, @"backupNowTip");
     [content addSubview:saveButton];
     [content addSubview:self.setupDryRunButton];
@@ -6033,7 +6065,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 
 - (void)updateNotificationControlAvailability {
     NSString *schedule = self.schedulePopup.selectedItem.representedObject ?: @"manual";
-    self.notificationCheckbox.enabled = [@[@"login", @"hourly", @"daily"] containsObject:schedule];
+    BOOL automaticSchedule = [@[@"login", @"hourly", @"daily"] containsObject:schedule];
+    self.notificationCheckbox.enabled = automaticSchedule;
+    self.successNotificationCheckbox.enabled = automaticSchedule;
 }
 
 - (void)updateEncryptionControls {
@@ -6285,6 +6319,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     updates[@"GDRIVE_BACKUP_CRYPT_REMOTE"] = self.cryptRemoteField.stringValue ?: @"";
     updates[@"GDRIVE_BACKUP_NOTIFY_FAILURES"] =
         self.notificationCheckbox.state == NSControlStateValueOff ? @"0" : @"1";
+    updates[@"GDRIVE_BACKUP_NOTIFY_SUCCESSES"] =
+        self.successNotificationCheckbox.state == NSControlStateValueOff ? @"0" : @"1";
 
     if ([target isEqualToString:@"nas"]) {
         updates[@"GDRIVE_BACKUP_NAS_MOUNT"] = self.nasMountField.stringValue ?: @"";
@@ -6325,7 +6361,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         @"GDRIVE_BACKUP_NAS_START_ON_MOUNT": @"0",
         @"GDRIVE_BACKUP_VOLUME": @"/Volumes/GoogleDrive-Backup",
         @"GDRIVE_BACKUP_VOLUME_NAME": @"GoogleDrive-Backup",
-        @"GDRIVE_BACKUP_NOTIFY_FAILURES": @"1"
+        @"GDRIVE_BACKUP_NOTIFY_FAILURES": @"1",
+        @"GDRIVE_BACKUP_NOTIFY_SUCCESSES": @"0"
     };
     NSSet<NSString *> *caseInsensitiveKeys = [NSSet setWithArray:@[
         @"GDRIVE_BACKUP_TARGET", @"GDRIVE_BACKUP_SCHEDULE", @"GDRIVE_BACKUP_ENCRYPTION"
@@ -6333,6 +6370,10 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     for (NSString *key in updates) {
         NSString *current = updates[key] ?: @"";
         NSString *saved = savedConfig[key] ?: defaults[key] ?: @"";
+        if ([key isEqualToString:@"GDRIVE_BACKUP_NOTIFY_SUCCESSES"] &&
+            ![@[@"0", @"1"] containsObject:saved]) {
+            saved = @"0";
+        }
         if ([caseInsensitiveKeys containsObject:key]) {
             current = current.lowercaseString;
             saved = saved.lowercaseString;
@@ -6400,8 +6441,14 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         [savedConfig[@"GDRIVE_BACKUP_SCHEDULE"] ?: @"manual" lowercaseString];
     BOOL automaticSchedule =
         [@[@"login", @"hourly", @"daily"] containsObject:savedSchedule];
-    if (!automaticSchedule ||
-        [savedConfig[@"GDRIVE_BACKUP_NOTIFY_FAILURES"] isEqualToString:@"0"]) {
+    BOOL failureNotificationsEnabled =
+        ![savedConfig[@"GDRIVE_BACKUP_NOTIFY_FAILURES"] isEqualToString:@"0"];
+    BOOL routineSuccessNotificationsEnabled =
+        [savedConfig[@"GDRIVE_BACKUP_NOTIFY_SUCCESSES"] isEqualToString:@"1"];
+    if (automaticSchedule &&
+        (failureNotificationsEnabled || routineSuccessNotificationsEnabled)) {
+        [self requestBackupNotificationAuthorizationIfNeededForConfig:savedConfig];
+    } else {
         // This prompt follows an explicit Save in setup; a disk mount itself
         // never opens a permission sheet or steals focus.
         [self requestUnknownExternalVolumeNotificationAuthorizationIfNeeded];

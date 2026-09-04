@@ -70,6 +70,12 @@ check_contains "$ROOT/README.md" \
   "newer persistent failure for the same profile cannot be erased" \
   "README documents the persistent notification cleanup boundary"
 check_contains "$ROOT/README.md" \
+  "Routine successful automatic-backup notifications are opt-in" \
+  "README documents that routine success notifications stay opt-in"
+check_contains "$ROOT/README.md" \
+  "A successful automatic backup after an active issue sends one quiet recovery confirmation" \
+  "README documents automatic quiet recovery confirmations"
+check_contains "$ROOT/README.md" \
   "the progress bar remains indeterminate and no stale or invented percentage is shown" \
   "README documents truthful unknown-total progress"
 check_contains "$ROOT/README.md" \
@@ -98,6 +104,10 @@ check_contains "$ROOT/install.sh" "GDRIVE_BACKUP_PAUSED=0" \
   "source installer enables automatic backups explicitly"
 check_contains "$ROOT/install.sh" "GDRIVE_BACKUP_NOTIFY_FAILURES=1" \
   "source installer enables automatic-backup notifications explicitly"
+check_contains "$ROOT/install.sh" "GDRIVE_BACKUP_NOTIFY_SUCCESSES=0" \
+  "source installer keeps routine-success notifications opt-in"
+check_contains "$ROOT/install.sh" "! grep -q '^GDRIVE_BACKUP_NOTIFY_SUCCESSES='" \
+  "source installer migrates the routine-success preference only when absent"
 check_contains "$ROOT/install.sh" "if [[ \"\${GDRIVE_BACKUP_VOLUME_UUID+x}\" == \"x\" ]]" \
   "source installer accepts only an explicitly supplied APFS UUID"
 check_contains "$ROOT/install.sh" "An explicitly supplied APFS UUID cannot be empty." \
@@ -140,6 +150,13 @@ check_contains "$ROOT/packaging/scripts/postinstall" "GDRIVE_BACKUP_PAUSED=0" \
   "package installer enables automatic backups explicitly"
 check_contains "$ROOT/packaging/scripts/postinstall" "GDRIVE_BACKUP_NOTIFY_FAILURES=1" \
   "package installer enables automatic-backup notifications explicitly"
+check_contains "$ROOT/packaging/scripts/postinstall" "GDRIVE_BACKUP_NOTIFY_SUCCESSES=0" \
+  "package installer keeps routine-success notifications opt-in"
+check_contains "$ROOT/packaging/scripts/postinstall" \
+  "! /usr/bin/grep -q '^GDRIVE_BACKUP_NOTIFY_SUCCESSES='" \
+  "package installer migrates the routine-success preference only when absent"
+check_contains "$ROOT/CHANGELOG.md" "routine successful automatic backups" \
+  "Unreleased changelog records the opt-in routine-success behavior"
 
 for source in \
   ProfileSupport.m \

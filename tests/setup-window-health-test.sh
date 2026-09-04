@@ -58,10 +58,10 @@ else
   failures=$((failures + 1))
 fi
 
-if [[ "$show_setup" == *'NSMakeSize(650, 690)'* ]]; then
-  printf '%s\n' 'ok - setup window reserves space for profiles and the system check'
+if [[ "$show_setup" == *'NSMakeSize(650, 720)'* ]]; then
+  printf '%s\n' 'ok - setup window reserves space for profiles, the system check, and both notification choices'
 else
-  printf '%s\n' 'not ok - setup window is still too short for the system check'
+  printf '%s\n' 'not ok - setup window is too short for both notification choices'
   failures=$((failures + 1))
 fi
 
@@ -73,13 +73,15 @@ else
   failures=$((failures + 1))
 fi
 
-if [[ "$show_setup" == *'NSMakeRect(26, 648, 270, 20)'* &&
-      "$source_contents" == *'NSMakeRect(18, 562, NSWidth(bounds) - 36, 76)'* &&
+if [[ "$show_setup" == *'NSMakeRect(26, 678, 270, 20)'* &&
+      "$source_contents" == *'NSMakeRect(18, 562, NSWidth(bounds) - 36, 106)'* &&
       "$show_setup" == *'NSMakeRect(164, 608, 440, 24)'* &&
+      "$show_setup" == *'NSMakeRect(164, 636, 440, 24)'* &&
+      "$show_setup" == *'self.successNotificationCheckbox.title = T(self.language, @"notifyBackupSuccesses");'* &&
       "$source_contents" == *'NSMakeRect(18, 76, NSWidth(bounds) - 36, 44)'* ]]; then
-  printf '%s\n' 'ok - footer, schedule, and notification preference remain below the setup sections'
+  printf '%s\n' 'ok - footer, schedule, and both notification preferences have separate rows below the setup sections'
 else
-  printf '%s\n' 'not ok - setup controls still overlap the system check'
+  printf '%s\n' 'not ok - the second notification preference can overlap setup controls'
   failures=$((failures + 1))
 fi
 

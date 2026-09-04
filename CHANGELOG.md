@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add one quiet recovery confirmation after a resolved automatic backup issue while keeping routine successful automatic backups opt-in and silent.
+
 ## v2.4.4 - 2026-08-01
 
 - Automatic retries now replace the stale waiting alert with a truthful running state.
