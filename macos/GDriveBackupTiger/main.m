@@ -2023,6 +2023,10 @@ static void GDTAdvanceBackupNotificationAcceptedState(
         return;
     }
 
+    [self requestNotificationAuthorizationAfterExplicitSetupSave];
+}
+
+- (void)requestNotificationAuthorizationAfterExplicitSetupSave {
     UNUserNotificationCenter *center = [self backupNotificationCenter];
     [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
         if (settings.authorizationStatus != UNAuthorizationStatusNotDetermined) return;
@@ -2036,18 +2040,7 @@ static void GDTAdvanceBackupNotificationAcceptedState(
 }
 
 - (void)requestUnknownExternalVolumeNotificationAuthorizationIfNeeded {
-    UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
-    [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
-        if (settings.authorizationStatus != UNAuthorizationStatusNotDetermined) {
-            return;
-        }
-        [center requestAuthorizationWithOptions:
-            UNAuthorizationOptionAlert | UNAuthorizationOptionSound
-                              completionHandler:^(BOOL granted, NSError *error) {
-            (void)granted;
-            (void)error;
-        }];
-    }];
+    [self requestNotificationAuthorizationAfterExplicitSetupSave];
 }
 
 - (NSString *)unknownExternalVolumeBootSessionID {
@@ -2343,26 +2336,16 @@ static void GDTAdvanceBackupNotificationAcceptedState(
 
 - (void)deliverBackupNotificationDecision:(NSDictionary<NSString *, NSString *> *)decision
                                 completion:(void (^)(BOOL delivered))completion {
-    UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
+    UNUserNotificationCenter *center = [self backupNotificationCenter];
     [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
         if (settings.authorizationStatus == UNAuthorizationStatusAuthorized ||
             settings.authorizationStatus == UNAuthorizationStatusProvisional) {
             [self addBackupNotificationDecision:decision toCenter:center completion:completion];
             return;
         }
-        if (settings.authorizationStatus != UNAuthorizationStatusNotDetermined) {
-            completion(NO);
-            return;
-        }
-        [center requestAuthorizationWithOptions:
-            UNAuthorizationOptionAlert | UNAuthorizationOptionSound
-                              completionHandler:^(BOOL granted, NSError *error) {
-            if (!granted || error) {
-                completion(NO);
-                return;
-            }
-            [self addBackupNotificationDecision:decision toCenter:center completion:completion];
-        }];
+        // Delivery never creates a consent sheet. Setup is the sole explicit
+        // interaction that may ask for notification permission.
+        completion(NO);
     }];
 }
 
@@ -2389,8 +2372,8 @@ static void GDTAdvanceBackupNotificationAcceptedState(
 }
 
 - (UNUserNotificationCenter *)backupNotificationCenter {
-    // Success delivery must revalidate after asynchronous authorization, so
-    // keep this external boundary controllable without altering failure delivery.
+    // Both delivery paths share this boundary so tests can verify that
+    // background work stays passive while Setup owns notification consent.
     return UNUserNotificationCenter.currentNotificationCenter;
 }
 
@@ -2408,21 +2391,7 @@ static void GDTAdvanceBackupNotificationAcceptedState(
                                                      toCenter:center completion:completion];
             return;
         }
-        if (settings.authorizationStatus != UNAuthorizationStatusNotDetermined) {
-            completion(NO);
-            return;
-        }
-        [center requestAuthorizationWithOptions:
-            UNAuthorizationOptionAlert | UNAuthorizationOptionSound
-                              completionHandler:^(BOOL granted, NSError *error) {
-            if (!granted || error) {
-                completion(NO);
-                return;
-            }
-            [self addCurrentBackupSuccessNotificationDecision:decision
-                                      capturedActiveIssueTimestamp:capturedActiveIssueTimestamp
-                                                     toCenter:center completion:completion];
-        }];
+        completion(NO);
     }];
 }
 

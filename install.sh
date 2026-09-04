@@ -226,6 +226,10 @@ OSA
 }
 
 CONFIG_LANG=""
+if [[ -L "$CONFIG_FILE" || ( -e "$CONFIG_FILE" && ! -f "$CONFIG_FILE" ) ]]; then
+  echo "The legacy configuration is not a trusted regular file." >&2
+  exit 73
+fi
 if [[ -f "$CONFIG_FILE" ]] && grep -q '^GDRIVE_BACKUP_LANG=' "$CONFIG_FILE"; then
   CONFIG_LANG="$(grep '^GDRIVE_BACKUP_LANG=' "$CONFIG_FILE" | tail -n 1 | cut -d= -f2-)"
 else
@@ -275,9 +279,6 @@ fi
 if [[ -f "$CONFIG_FILE" ]] && ! grep -q '^GDRIVE_BACKUP_NOTIFY_FAILURES=' "$CONFIG_FILE"; then
   printf 'GDRIVE_BACKUP_NOTIFY_FAILURES=1\n' >>"$CONFIG_FILE"
 fi
-if [[ -f "$CONFIG_FILE" ]] && ! grep -q '^GDRIVE_BACKUP_NOTIFY_SUCCESSES=' "$CONFIG_FILE"; then
-  printf 'GDRIVE_BACKUP_NOTIFY_SUCCESSES=0\n' >>"$CONFIG_FILE"
-fi
 if [[ -f "$CONFIG_FILE" && "$BACKUP_TARGET" == "nas" ]]; then
   if [[ -n "$NAS_MOUNT" ]] && ! grep -q '^GDRIVE_BACKUP_NAS_MOUNT=' "$CONFIG_FILE"; then
     LC_ALL=C printf 'GDRIVE_BACKUP_NAS_MOUNT=%q\n' "$NAS_MOUNT" >>"$CONFIG_FILE"
@@ -299,7 +300,7 @@ cleanup_uuid_config_tmp() {
 trap cleanup_uuid_config_tmp EXIT
 
 trusted_active_profile_config() {
-  local profile_id profile_config profile_line id_matches=0
+  local profile_id profile_config profile_line profile_id_assignments=0
   if [[ ! -f "$ACTIVE_PROFILE_FILE" || -L "$ACTIVE_PROFILE_FILE" ]]; then
     echo "The active profile pointer is not a trusted regular file." >&2
     return 73
@@ -318,16 +319,55 @@ trusted_active_profile_config() {
   while IFS= read -r profile_line || [[ -n "$profile_line" ]]; do
     case "$profile_line" in
       "GDRIVE_BACKUP_PROFILE_ID=$profile_id"|"GDRIVE_BACKUP_PROFILE_ID='$profile_id'"|"GDRIVE_BACKUP_PROFILE_ID=\"$profile_id\"")
-        id_matches=1
-        break
+        profile_id_assignments=$((profile_id_assignments + 1))
+        ;;
+      GDRIVE_BACKUP_PROFILE_ID=*)
+        echo "The active profile identity does not match its file name." >&2
+        return 73
         ;;
     esac
   done <"$profile_config"
-  if [[ "$id_matches" != "1" ]]; then
+  if [[ "$profile_id_assignments" != "1" ]]; then
     echo "The active profile identity does not match its file name." >&2
     return 73
   fi
   printf '%s' "$profile_config"
+}
+
+migrate_success_notification_preference() {
+  local target="$1"
+  local temporary_config
+  if [[ ! -f "$target" || -L "$target" ]]; then
+    echo "Refusing to update an untrusted configuration file: $target" >&2
+    return 73
+  fi
+  if /usr/bin/grep -q '^GDRIVE_BACKUP_NOTIFY_SUCCESSES=' "$target"; then
+    return
+  fi
+  temporary_config="$(/usr/bin/mktemp "${target}.successes.XXXXXX")" || return
+  /bin/cp -p "$target" "$temporary_config" || return
+  if [[ -s "$temporary_config" &&
+        "$(/usr/bin/tail -c 1 "$temporary_config" | /usr/bin/od -An -tx1 | /usr/bin/tr -d '[:space:]')" != "0a" ]]; then
+    printf '\n' >>"$temporary_config" || return
+  fi
+  printf 'GDRIVE_BACKUP_NOTIFY_SUCCESSES=0\n' >>"$temporary_config" || return
+  /bin/mv "$temporary_config" "$target"
+}
+
+ACTIVE_PROFILE_CONFIG=""
+migrate_notification_success_preferences() {
+  if [[ ! -f "$CONFIG_FILE" || -L "$CONFIG_FILE" ]]; then
+    echo "The legacy configuration is not a trusted regular file." >&2
+    return 73
+  fi
+  ACTIVE_PROFILE_CONFIG=""
+  if [[ -e "$ACTIVE_PROFILE_FILE" || -L "$ACTIVE_PROFILE_FILE" ]]; then
+    ACTIVE_PROFILE_CONFIG="$(trusted_active_profile_config)" || return
+  fi
+  migrate_success_notification_preference "$CONFIG_FILE" || return
+  if [[ -n "$ACTIVE_PROFILE_CONFIG" ]]; then
+    migrate_success_notification_preference "$ACTIVE_PROFILE_CONFIG" || return
+  fi
 }
 
 upsert_volume_identity() {
@@ -352,13 +392,9 @@ upsert_volume_identity() {
   UUID_CONFIG_TMP=""
 }
 
+migrate_notification_success_preferences || exit $?
+
 if [[ "$BACKUP_TARGET" == "apfs" && -n "$BACKUP_VOLUME_UUID" ]]; then
-  ACTIVE_PROFILE_CONFIG=""
-  if [[ -e "$ACTIVE_PROFILE_FILE" || -L "$ACTIVE_PROFILE_FILE" ]]; then
-    if ! ACTIVE_PROFILE_CONFIG="$(trusted_active_profile_config)"; then
-      exit 73
-    fi
-  fi
   if [[ -n "$ACTIVE_PROFILE_CONFIG" ]]; then
     upsert_volume_identity "$ACTIVE_PROFILE_CONFIG"
   fi

@@ -1,10 +1,25 @@
 #import <Cocoa/Cocoa.h>
+#import <objc/runtime.h>
 
 #import "TestApplicationSupport.h"
 
 #define main GDTApplicationMain
 #import "../macos/GDriveBackupTiger/main.m"
 #undef main
+
+static UNUserNotificationCenter *GDTNotificationIntegrationCurrentCenter;
+
+@interface UNUserNotificationCenter (NotificationIntegrationTesting)
++ (UNUserNotificationCenter *)gdt_notificationIntegrationCurrentCenter;
+@end
+
+@implementation UNUserNotificationCenter (NotificationIntegrationTesting)
+
++ (UNUserNotificationCenter *)gdt_notificationIntegrationCurrentCenter {
+    return GDTNotificationIntegrationCurrentCenter;
+}
+
+@end
 
 @interface AppDelegate (NotificationIntegrationTesting)
 - (void)processBackupNotificationDecision:(NSDictionary<NSString *, NSString *> *)decision;
@@ -127,6 +142,7 @@
 @property(nonatomic, strong) BackupSuccessPreAddRaceSettings *settings;
 @property(nonatomic) BOOL deferSettings;
 @property(nonatomic) BOOL deferAuthorization;
+@property(nonatomic) NSInteger authorizationRequests;
 @property(nonatomic) NSInteger addRequestCalls;
 @property(nonatomic) BOOL addRequestRanOnMainThread;
 @property(nonatomic, copy) void (^deferredSettingsCompletion)(UNNotificationSettings *settings);
@@ -147,6 +163,7 @@
 @property(nonatomic, strong) BackupNotificationAuthorizationSettings *settings;
 @property(nonatomic) NSInteger setCategoriesCalls;
 @property(nonatomic) NSInteger authorizationRequests;
+@property(nonatomic) NSInteger addRequestCalls;
 @end
 
 @interface BackupNotificationAuthorizationTestDelegate : AppDelegate
@@ -456,6 +473,7 @@
 - (void)requestAuthorizationWithOptions:(UNAuthorizationOptions)options
                       completionHandler:(void (^)(BOOL granted, NSError *error))completionHandler {
     (void)options;
+    self.authorizationRequests++;
     if (self.deferAuthorization) {
         self.deferredAuthorizationCompletion = completionHandler;
         return;
@@ -505,6 +523,13 @@
     (void)options;
     self.authorizationRequests++;
     completionHandler(YES, nil);
+}
+
+- (void)addNotificationRequest:(UNNotificationRequest *)request
+          withCompletionHandler:(void (^)(NSError *error))completionHandler {
+    (void)request;
+    self.addRequestCalls++;
+    completionHandler(nil);
 }
 
 @end
@@ -923,9 +948,9 @@ int main(void) {
         __block BOOL settingsRaceCompleted = NO;
         __block BOOL settingsRaceDelivered = YES;
         __block BOOL settingsRaceCompletionRanOnMainThread = NO;
-        __block BOOL authorizationRaceCompleted = NO;
-        __block BOOL authorizationRaceDelivered = YES;
-        __block BOOL authorizationRaceCompletionRanOnMainThread = NO;
+        __block BOOL undeterminedSuccessCompleted = NO;
+        __block BOOL undeterminedSuccessDelivered = YES;
+        __block BOOL undeterminedSuccessCompletionRanOnMainThread = NO;
         __block BOOL currentSuccessCompleted = NO;
         __block BOOL currentSuccessDelivered = NO;
         if (backupNotificationCenterSeamAvailable) {
@@ -956,30 +981,24 @@ int main(void) {
                 finishSettings((UNNotificationSettings *)(id)settingsCenter.settings);
             }
 
-            BackupSuccessPreAddRaceTestDelegate *authorizationRace =
+            BackupSuccessPreAddRaceTestDelegate *undeterminedSuccess =
                 [[BackupSuccessPreAddRaceTestDelegate alloc] init];
-            authorizationRace.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
-                [suiteName stringByAppendingString:@".success-pre-add-authorization"]];
-            BackupSuccessPreAddRaceCenter *authorizationCenter =
+            undeterminedSuccess.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+                [suiteName stringByAppendingString:@".success-undetermined-consent"]];
+            BackupSuccessPreAddRaceCenter *undeterminedSuccessCenter =
                 [[BackupSuccessPreAddRaceCenter alloc] init];
-            authorizationCenter.settings = [[BackupSuccessPreAddRaceSettings alloc] init];
-            authorizationCenter.settings.authorizationStatus = UNAuthorizationStatusNotDetermined;
-            authorizationCenter.deferAuthorization = YES;
-            authorizationRace.testNotificationCenter = authorizationCenter;
-            [authorizationRace.testDefaults setDouble:100 forKey:
+            undeterminedSuccessCenter.settings = [[BackupSuccessPreAddRaceSettings alloc] init];
+            undeterminedSuccessCenter.settings.authorizationStatus = UNAuthorizationStatusNotDetermined;
+            undeterminedSuccess.testNotificationCenter = undeterminedSuccessCenter;
+            [undeterminedSuccess.testDefaults setDouble:100 forKey:
                 @"GDTBackupNotification.office.activeIssueAt"];
-            [authorizationRace deliverBackupSuccessNotificationDecision:firstSuccess
-                                            capturedActiveIssueTimestamp:100
-                                                                 completion:^(BOOL delivered) {
-                authorizationRaceCompleted = YES;
-                authorizationRaceDelivered = delivered;
-                authorizationRaceCompletionRanOnMainThread = NSThread.isMainThread;
+            [undeterminedSuccess deliverBackupSuccessNotificationDecision:firstSuccess
+                                               capturedActiveIssueTimestamp:100
+                                                                    completion:^(BOOL delivered) {
+                undeterminedSuccessCompleted = YES;
+                undeterminedSuccessDelivered = delivered;
+                undeterminedSuccessCompletionRanOnMainThread = NSThread.isMainThread;
             }];
-            void (^finishAuthorization)(BOOL, NSError *) =
-                authorizationCenter.deferredAuthorizationCompletion;
-            [authorizationRace.testDefaults setDouble:300 forKey:
-                @"GDTBackupNotification.office.activeIssueAt"];
-            if (finishAuthorization) finishAuthorization(YES, nil);
 
             BackupSuccessPreAddRaceTestDelegate *currentSuccess =
                 [[BackupSuccessPreAddRaceTestDelegate alloc] init];
@@ -1013,11 +1032,11 @@ int main(void) {
                    !settingsRaceDelivered && settingsRaceCompletionRanOnMainThread &&
                    settingsCenter.addRequestCalls == 0,
                    @"a newer issue during delayed settings prevents success delivery before add");
-            Assert(authorizationCenter.deferredAuthorizationCompletion &&
-                   authorizationRaceCompleted && !authorizationRaceDelivered &&
-                   authorizationRaceCompletionRanOnMainThread &&
-                   authorizationCenter.addRequestCalls == 0,
-                   @"a newer issue during delayed authorization prevents success delivery before add");
+            Assert(undeterminedSuccessCompleted && !undeterminedSuccessDelivered &&
+                   undeterminedSuccessCompletionRanOnMainThread &&
+                   undeterminedSuccessCenter.authorizationRequests == 0 &&
+                   undeterminedSuccessCenter.addRequestCalls == 0,
+                   @"success delivery fails closed until explicit notification consent");
             Assert(finishCurrentSettings && currentSuccessFinished &&
                    currentSuccessDelivered &&
                    currentCenter.addRequestCalls == 1 &&
@@ -3137,6 +3156,67 @@ int main(void) {
         authorizationCenter.settings = [[BackupNotificationAuthorizationSettings alloc] init];
         authorizationCenter.settings.authorizationStatus = UNAuthorizationStatusNotDetermined;
         authorizationDelegate.testNotificationCenter = authorizationCenter;
+        NSDictionary<NSString *, NSString *> *undeterminedFailureDecision = @{
+            @"identifier": @"com.commcats.gdrivebackup.authorization.failure.100",
+            @"profileID": @"authorization",
+            @"kind": @"failure",
+            @"issueOriginTimestamp": @"100",
+            @"titleKey": @"backupNotificationFailureTitle",
+            @"bodyKey": @"backupNotificationTargetUnavailable"
+        };
+        __block BOOL undeterminedFailureCompleted = NO;
+        __block BOOL undeterminedFailureDelivered = YES;
+        Method currentCenterMethod = class_getClassMethod(
+            UNUserNotificationCenter.class, @selector(currentNotificationCenter));
+        Method fakeCurrentCenterMethod = class_getClassMethod(
+            UNUserNotificationCenter.class,
+            @selector(gdt_notificationIntegrationCurrentCenter));
+        IMP originalCurrentCenterImplementation = method_getImplementation(currentCenterMethod);
+        GDTNotificationIntegrationCurrentCenter =
+            (UNUserNotificationCenter *)(id)authorizationCenter;
+        method_setImplementation(currentCenterMethod,
+            method_getImplementation(fakeCurrentCenterMethod));
+        @try {
+            [authorizationDelegate deliverBackupNotificationDecision:
+                undeterminedFailureDecision completion:^(BOOL delivered) {
+                undeterminedFailureCompleted = YES;
+                undeterminedFailureDelivered = delivered;
+            }];
+        } @finally {
+            method_setImplementation(currentCenterMethod,
+                originalCurrentCenterImplementation);
+            GDTNotificationIntegrationCurrentCenter = nil;
+        }
+        Assert(undeterminedFailureCompleted && !undeterminedFailureDelivered &&
+               authorizationCenter.authorizationRequests == 0 &&
+               authorizationCenter.addRequestCalls == 0,
+               @"failure delivery fails closed without prompting before explicit notification consent");
+
+        authorizationCenter.authorizationRequests = 0;
+        authorizationCenter.addRequestCalls = 0;
+        NSDictionary<NSString *, NSString *> *undeterminedSuccessDecision = @{
+            @"identifier": @"com.commcats.gdrivebackup.authorization.success.200",
+            @"profileID": @"authorization",
+            @"kind": @"success",
+            @"eventTimestamp": @"200",
+            @"titleKey": @"backupNotificationSuccessTitle",
+            @"bodyKey": @"backupNotificationSuccessBody"
+        };
+        __block BOOL directUndeterminedSuccessCompleted = NO;
+        __block BOOL directUndeterminedSuccessDelivered = YES;
+        [authorizationDelegate deliverBackupSuccessNotificationDecision:
+            undeterminedSuccessDecision capturedActiveIssueTimestamp:-1
+            completion:^(BOOL delivered) {
+            directUndeterminedSuccessCompleted = YES;
+            directUndeterminedSuccessDelivered = delivered;
+        }];
+        Assert(directUndeterminedSuccessCompleted && !directUndeterminedSuccessDelivered &&
+               authorizationCenter.authorizationRequests == 0 &&
+               authorizationCenter.addRequestCalls == 0,
+               @"success delivery fails closed without prompting before explicit notification consent");
+
+        authorizationCenter.authorizationRequests = 0;
+        authorizationCenter.addRequestCalls = 0;
         NSDictionary<NSString *, NSString *> *successOnlyNotificationConfig = @{
             @"GDRIVE_BACKUP_PROFILE_ID": @"authorization",
             @"GDRIVE_BACKUP_SCHEDULE": @"daily",

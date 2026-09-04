@@ -106,8 +106,8 @@ check_contains "$ROOT/install.sh" "GDRIVE_BACKUP_NOTIFY_FAILURES=1" \
   "source installer enables automatic-backup notifications explicitly"
 check_contains "$ROOT/install.sh" "GDRIVE_BACKUP_NOTIFY_SUCCESSES=0" \
   "source installer keeps routine-success notifications opt-in"
-check_contains "$ROOT/install.sh" "! grep -q '^GDRIVE_BACKUP_NOTIFY_SUCCESSES='" \
-  "source installer migrates the routine-success preference only when absent"
+check_contains "$ROOT/install.sh" "migrate_notification_success_preferences()" \
+  "source installer migrates the legacy and trusted active-profile preferences"
 check_contains "$ROOT/install.sh" "if [[ \"\${GDRIVE_BACKUP_VOLUME_UUID+x}\" == \"x\" ]]" \
   "source installer accepts only an explicitly supplied APFS UUID"
 check_contains "$ROOT/install.sh" "An explicitly supplied APFS UUID cannot be empty." \
@@ -153,8 +153,11 @@ check_contains "$ROOT/packaging/scripts/postinstall" "GDRIVE_BACKUP_NOTIFY_FAILU
 check_contains "$ROOT/packaging/scripts/postinstall" "GDRIVE_BACKUP_NOTIFY_SUCCESSES=0" \
   "package installer keeps routine-success notifications opt-in"
 check_contains "$ROOT/packaging/scripts/postinstall" \
-  "! /usr/bin/grep -q '^GDRIVE_BACKUP_NOTIFY_SUCCESSES='" \
-  "package installer migrates the routine-success preference only when absent"
+  "migrate_notification_success_preferences()" \
+  "package installer migrates the legacy and trusted active-profile preferences"
+check_contains "$ROOT/README.md" \
+  "Inactive profiles remain fail-closed until an explicit setup Save writes their preference." \
+  "README documents the fail-closed inactive-profile upgrade boundary"
 check_contains "$ROOT/CHANGELOG.md" "routine successful automatic backups" \
   "Unreleased changelog records the opt-in routine-success behavior"
 
@@ -172,6 +175,228 @@ for source in \
   check_contains "$ROOT/install.sh" "macos/GDriveBackupTiger/$source" \
     "source installer links $source"
 done
+
+extract_shell_function() {
+  local file="$1"
+  local function_name="$2"
+  /usr/bin/awk -v signature="${function_name}() {" '
+    $0 == signature { printing = 1 }
+    printing { print }
+    printing && /^}$/ { exit }
+  ' "$file"
+}
+
+run_success_notification_migration_fixture() {
+  local installer="$1"
+  local installer_label="$2"
+  local trusted_function
+  local migration_function
+  local orchestration_function
+  local runner
+  trusted_function="$(extract_shell_function "$installer" trusted_active_profile_config)"
+  migration_function="$(extract_shell_function "$installer" migrate_success_notification_preference)"
+  orchestration_function="$(extract_shell_function "$installer" migrate_notification_success_preferences)"
+  if [[ -z "$trusted_function" || -z "$migration_function" || -z "$orchestration_function" ]]; then
+    printf 'not ok - %s exposes executable success-preference migration helpers\n' \
+      "$installer_label"
+    failures=$((failures + 1))
+    return
+  fi
+
+  local fixture_root
+  fixture_root="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/gdrive-success-preference-fixture.XXXXXX")"
+  runner="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/gdrive-success-preference-runner.XXXXXX")"
+  printf '%s\n' "$trusted_function" "$migration_function" "$orchestration_function" >"$runner"
+  if (
+    set -u
+    # Run the exact installer helpers in a fresh shell without evaluating a
+    # string as code in this test process.
+    source "$runner"
+
+    fixture_failures=0
+    preference_is_exactly_once() {
+      local target="$1"
+      local expected="$2"
+      [[ "$(/usr/bin/grep -cx "GDRIVE_BACKUP_NOTIFY_SUCCESSES=$expected" "$target" || true)" == "1" &&
+        "$(/usr/bin/grep -c '^GDRIVE_BACKUP_NOTIFY_SUCCESSES=' "$target" || true)" == "1" ]]
+    }
+    preference_is_absent() {
+      local target="$1"
+      ! /usr/bin/grep -q '^GDRIVE_BACKUP_NOTIFY_SUCCESSES=' "$target"
+    }
+    expect_fixture() {
+      local description="$1"
+      shift
+      if "$@"; then
+        printf 'ok - %s (%s)\n' "$description" "$installer_label"
+      else
+        printf 'not ok - %s (%s)\n' "$description" "$installer_label"
+        fixture_failures=$((fixture_failures + 1))
+      fi
+    }
+    set_fixture_paths() {
+      local directory="$1"
+      CONFIG_FILE="$directory/config"
+      ACTIVE_PROFILE_FILE="$directory/active-profile"
+      PROFILES_DIR="$directory/profiles"
+      config_file="$CONFIG_FILE"
+      active_profile_file="$ACTIVE_PROFILE_FILE"
+      profiles_dir="$PROFILES_DIR"
+    }
+    create_valid_fixture() {
+      local directory="$1"
+      local legacy_preference="$2"
+      local profile_preference="$3"
+      /bin/mkdir -p "$directory/profiles"
+      printf 'GDRIVE_BACKUP_PROFILE_ID=legacy\n' >"$directory/config"
+      if [[ -n "$legacy_preference" ]]; then
+        printf 'GDRIVE_BACKUP_NOTIFY_SUCCESSES=%s\n' "$legacy_preference" >>"$directory/config"
+      fi
+      printf 'GDRIVE_BACKUP_PROFILE_ID=office\n' >"$directory/profiles/office.conf"
+      if [[ -n "$profile_preference" ]]; then
+        printf 'GDRIVE_BACKUP_NOTIFY_SUCCESSES=%s\n' "$profile_preference" >>"$directory/profiles/office.conf"
+      fi
+      printf 'office\n' >"$directory/active-profile"
+    }
+    run_valid_fixture() {
+      local name="$1"
+      local legacy_preference="$2"
+      local profile_preference="$3"
+      local expected_preference="$4"
+      local directory="$fixture_root/$name"
+      create_valid_fixture "$directory" "$legacy_preference" "$profile_preference"
+      set_fixture_paths "$directory"
+      if [[ -n "$legacy_preference" ]]; then
+        /bin/cp "$directory/config" "$directory/config.expected"
+        /bin/cp "$directory/profiles/office.conf" \
+          "$directory/profiles/office.conf.expected"
+      fi
+      migrate_notification_success_preferences
+      expect_fixture "$name preserves or writes the legacy preference" \
+        preference_is_exactly_once "$directory/config" "$expected_preference"
+      expect_fixture "$name preserves or writes the active-profile preference" \
+        preference_is_exactly_once "$directory/profiles/office.conf" "$expected_preference"
+      if [[ -n "$legacy_preference" ]]; then
+        expect_fixture "$name keeps the legacy config byte-identical" \
+          /usr/bin/cmp -s "$directory/config.expected" "$directory/config"
+        expect_fixture "$name keeps the active profile byte-identical" \
+          /usr/bin/cmp -s "$directory/profiles/office.conf.expected" \
+          "$directory/profiles/office.conf"
+      fi
+    }
+
+    run_valid_fixture "missing-preference" "" "" "0"
+    run_valid_fixture "existing-zero" "0" "0" "0"
+    run_valid_fixture "existing-one" "1" "1" "1"
+    run_valid_fixture "existing-malformed" "malformed" "malformed" "malformed"
+
+    pointer_directory="$fixture_root/symlink-pointer"
+    create_valid_fixture "$pointer_directory" "" ""
+    /usr/bin/trash "$pointer_directory/active-profile"
+    printf 'office\n' >"$pointer_directory/outside-pointer"
+    /bin/ln -s "$pointer_directory/outside-pointer" \
+      "$pointer_directory/active-profile"
+    set_fixture_paths "$pointer_directory"
+    if migrate_notification_success_preferences >/dev/null 2>&1; then
+      pointer_status=0
+    else
+      pointer_status=$?
+    fi
+    expect_fixture "a symlinked active-profile pointer fails closed" test "$pointer_status" = "73"
+    expect_fixture "a symlinked active-profile pointer leaves legacy config untouched" \
+      preference_is_absent "$pointer_directory/config"
+    expect_fixture "a symlinked active-profile pointer leaves profile untouched" \
+      preference_is_absent "$pointer_directory/profiles/office.conf"
+
+    profile_symlink_directory="$fixture_root/symlink-profile"
+    /bin/mkdir -p "$profile_symlink_directory/profiles"
+    printf 'GDRIVE_BACKUP_PROFILE_ID=legacy\n' >"$profile_symlink_directory/config"
+    printf 'GDRIVE_BACKUP_PROFILE_ID=office\n' >"$profile_symlink_directory/outside.conf"
+    /bin/ln -s "$profile_symlink_directory/outside.conf" \
+      "$profile_symlink_directory/profiles/office.conf"
+    printf 'office\n' >"$profile_symlink_directory/active-profile"
+    set_fixture_paths "$profile_symlink_directory"
+    if migrate_notification_success_preferences >/dev/null 2>&1; then
+      profile_symlink_status=0
+    else
+      profile_symlink_status=$?
+    fi
+    expect_fixture "a symlinked active profile fails closed" test "$profile_symlink_status" = "73"
+    expect_fixture "a symlinked active profile leaves legacy config untouched" \
+      preference_is_absent "$profile_symlink_directory/config"
+    expect_fixture "a symlinked active profile leaves its target untouched" \
+      preference_is_absent "$profile_symlink_directory/outside.conf"
+
+    mismatch_directory="$fixture_root/id-mismatch"
+    /bin/mkdir -p "$mismatch_directory/profiles"
+    printf 'GDRIVE_BACKUP_PROFILE_ID=legacy\n' >"$mismatch_directory/config"
+    printf 'GDRIVE_BACKUP_PROFILE_ID=other\n' >"$mismatch_directory/profiles/office.conf"
+    printf 'office\n' >"$mismatch_directory/active-profile"
+    set_fixture_paths "$mismatch_directory"
+    if migrate_notification_success_preferences >/dev/null 2>&1; then
+      mismatch_status=0
+    else
+      mismatch_status=$?
+    fi
+    expect_fixture "an active-profile identity mismatch fails closed" test "$mismatch_status" = "73"
+    expect_fixture "an active-profile identity mismatch leaves legacy config untouched" \
+      preference_is_absent "$mismatch_directory/config"
+    expect_fixture "an active-profile identity mismatch leaves profile untouched" \
+      preference_is_absent "$mismatch_directory/profiles/office.conf"
+
+    run_repeated_profile_id_fixture() {
+      local name="$1"
+      local second_profile_id="$2"
+      local directory="$fixture_root/$name"
+      /bin/mkdir -p "$directory/profiles"
+      printf 'GDRIVE_BACKUP_PROFILE_ID=legacy\n' >"$directory/config"
+      printf 'GDRIVE_BACKUP_PROFILE_ID=office\nGDRIVE_BACKUP_PROFILE_ID=%s\n' \
+        "$second_profile_id" >"$directory/profiles/office.conf"
+      printf 'office\n' >"$directory/active-profile"
+      /bin/cp "$directory/config" "$directory/config.expected"
+      /bin/cp "$directory/profiles/office.conf" \
+        "$directory/profiles/office.conf.expected"
+      set_fixture_paths "$directory"
+      if migrate_notification_success_preferences >/dev/null 2>&1; then
+        repeated_profile_id_status=0
+      else
+        repeated_profile_id_status=$?
+      fi
+      expect_fixture "$name fails closed" test "$repeated_profile_id_status" = "73"
+      expect_fixture "$name keeps the legacy config byte-identical" \
+        /usr/bin/cmp -s "$directory/config.expected" "$directory/config"
+      expect_fixture "$name keeps the active profile byte-identical" \
+        /usr/bin/cmp -s "$directory/profiles/office.conf.expected" \
+        "$directory/profiles/office.conf"
+    }
+    run_repeated_profile_id_fixture "a duplicate active-profile identity" "office"
+    run_repeated_profile_id_fixture "a conflicting active-profile identity" "other"
+
+    legacy_symlink_directory="$fixture_root/symlink-legacy"
+    /bin/mkdir -p "$legacy_symlink_directory"
+    printf 'GDRIVE_BACKUP_PROFILE_ID=legacy\n' >"$legacy_symlink_directory/outside.conf"
+    /bin/ln -s "$legacy_symlink_directory/outside.conf" "$legacy_symlink_directory/config"
+    set_fixture_paths "$legacy_symlink_directory"
+    if migrate_notification_success_preferences >/dev/null 2>&1; then
+      legacy_symlink_status=0
+    else
+      legacy_symlink_status=$?
+    fi
+    expect_fixture "a symlinked legacy config fails closed" test "$legacy_symlink_status" = "73"
+    expect_fixture "a symlinked legacy config leaves its target untouched" \
+      preference_is_absent "$legacy_symlink_directory/outside.conf"
+
+    [[ "$fixture_failures" == "0" ]]
+  ); then
+    :
+  else
+    failures=$((failures + 1))
+  fi
+  "$ROOT/scripts/trash-path.sh" "$fixture_root" "$runner"
+}
+
+run_success_notification_migration_fixture "$ROOT/install.sh" "source installer"
+run_success_notification_migration_fixture "$ROOT/packaging/scripts/postinstall" "package installer"
 
 if (( failures > 0 )); then
   printf '%s release metadata check(s) failed.\n' "$failures"
