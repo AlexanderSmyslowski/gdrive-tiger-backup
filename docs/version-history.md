@@ -35,12 +35,13 @@ records are restored transparently as historical source milestones.
 | v2.4.1 | 25 | tag `v2.4.1` | Superseded; its protected entitlement caused macOS to reject the unsigned app at launch |
 | v2.4.2 | 26 | tag `v2.4.2` | Superseded tested release |
 | v2.4.3 | 27 | tag `v2.4.3` | Superseded tested release |
-| v2.4.4 | 28 | tag `v2.4.4` | Current tested release |
+| v2.4.4 | 28 | tag `v2.4.4` | Superseded tested release |
+| v2.4.5 | 29 | tag `v2.4.5` | Current tested release |
 
 No retrospectively built installer is presented as an original historical artifact.
 Retrospective release pages expose GitHub's source archives and state
-their later publication date. The v2.4.3 and v2.4.4 installers are built and verified from their exact tags:
-v2.4.3 during the transparent publication repair and v2.4.4 as the current release.
+their later publication date. The v2.4.3, v2.4.4, and v2.4.5 installers are built and verified from their exact tags:
+v2.4.3 during the transparent publication repair, v2.4.4 as its tested successor, and v2.4.5 as the current release.
 
 Future version tags trigger the release workflow. It refuses a tag that does
 not match the app version, positive build number, README, and dated changelog

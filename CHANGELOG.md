@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.4.5 - 2026-09-04
+
 - Identify an external backup destination in the confirmation dialog by its physical disk name, decimal capacity, connection type, and logical volume name instead of showing an ambiguous macOS mount-path suffix.
 - Keep UUIDs, serial numbers, BSD device identifiers, and mount paths out of that user-facing identity while preserving exact UUID/device revalidation before and after confirmation.
 - Add one quiet recovery confirmation after a resolved automatic backup issue while keeping routine successful automatic backups opt-in and silent.

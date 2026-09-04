@@ -3,8 +3,8 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INFO_PLIST="$ROOT/macos/GDriveBackupTiger/Info.plist"
-EXPECTED_VERSION="2.4.4"
-EXPECTED_BUILD="28"
+EXPECTED_VERSION="2.4.5"
+EXPECTED_BUILD="29"
 failures=0
 
 check_contains() {
@@ -86,8 +86,8 @@ check_contains "$ROOT/CHANGELOG.md" "## v${version} " \
 check_contains "$ROOT/docs/version-history.md" "| v${version} | ${build} |" \
   "publication history contains the app version and build"
 check_contains "$ROOT/docs/version-history.md" \
-  "The v2.4.3 and v2.4.4 installers are built and verified from their exact tags" \
-  "publication history explains both exact-tag installer builds"
+  "The v2.4.3, v2.4.4, and v2.4.5 installers are built and verified from their exact tags" \
+  "publication history explains the exact-tag installer builds"
 check_contains "$ROOT/docs/version-history.md" \
   "No retrospectively built installer is presented as an original historical artifact." \
   "publication history labels retrospectively built installers honestly"
@@ -159,7 +159,7 @@ check_contains "$ROOT/README.md" \
   "Inactive profiles remain fail-closed until an explicit setup Save writes their preference." \
   "README documents the fail-closed inactive-profile upgrade boundary"
 check_contains "$ROOT/CHANGELOG.md" "routine successful automatic backups" \
-  "Unreleased changelog records the opt-in routine-success behavior"
+  "release changelog records the opt-in routine-success behavior"
 
 for source in \
   ProfileSupport.m \
