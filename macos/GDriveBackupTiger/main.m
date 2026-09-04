@@ -2347,6 +2347,60 @@ static void GDTAdvanceBackupNotificationAcceptedState(
     }];
 }
 
+- (void)addCurrentBackupSuccessNotificationDecision:
+    (NSDictionary<NSString *, NSString *> *)decision
+                              capturedActiveIssueTimestamp:
+    (NSTimeInterval)capturedActiveIssueTimestamp
+                                           toCenter:(UNUserNotificationCenter *)center
+                                         completion:(void (^)(BOOL delivered))completion {
+    void (^addIfCurrent)(void) = ^{
+        if (capturedActiveIssueTimestamp >= 0 &&
+            ![self isBackupSuccessDecisionCurrent:decision
+                           capturedActiveIssueTimestamp:capturedActiveIssueTimestamp]) {
+            completion(NO);
+            return;
+        }
+        [self addBackupNotificationDecision:decision toCenter:center completion:completion];
+    };
+    if (NSThread.isMainThread) {
+        addIfCurrent();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), addIfCurrent);
+    }
+}
+
+- (void)deliverBackupSuccessNotificationDecision:
+    (NSDictionary<NSString *, NSString *> *)decision
+                             capturedActiveIssueTimestamp:
+    (NSTimeInterval)capturedActiveIssueTimestamp
+                                          completion:(void (^)(BOOL delivered))completion {
+    UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
+    [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
+        if (settings.authorizationStatus == UNAuthorizationStatusAuthorized ||
+            settings.authorizationStatus == UNAuthorizationStatusProvisional) {
+            [self addCurrentBackupSuccessNotificationDecision:decision
+                                      capturedActiveIssueTimestamp:capturedActiveIssueTimestamp
+                                                     toCenter:center completion:completion];
+            return;
+        }
+        if (settings.authorizationStatus != UNAuthorizationStatusNotDetermined) {
+            completion(NO);
+            return;
+        }
+        [center requestAuthorizationWithOptions:
+            UNAuthorizationOptionAlert | UNAuthorizationOptionSound
+                              completionHandler:^(BOOL granted, NSError *error) {
+            if (!granted || error) {
+                completion(NO);
+                return;
+            }
+            [self addCurrentBackupSuccessNotificationDecision:decision
+                                      capturedActiveIssueTimestamp:capturedActiveIssueTimestamp
+                                                     toCenter:center completion:completion];
+        }];
+    }];
+}
+
 - (void)processBackupNotificationDecision:(NSDictionary<NSString *, NSString *> *)decision {
     NSDictionary<NSString *, NSString *> *deliveryDecision = [decision copy];
     NSString *identifier = deliveryDecision[@"identifier"];
@@ -2776,13 +2830,23 @@ static void GDTAdvanceBackupNotificationAcceptedState(
             return;
         }
 
-        [strongSelf deliverBackupNotificationDecision:deliveryDecision
-                                           completion:^(BOOL delivered) {
+        [strongSelf deliverBackupSuccessNotificationDecision:deliveryDecision
+                                 capturedActiveIssueTimestamp:capturedActiveIssueTimestamp
+                                                    completion:^(BOOL delivered) {
             void (^finish)(void) = ^{
                 typeof(self) innerSelf = weakSelf;
                 if (!innerSelf) return;
                 [innerSelf.pendingBackupSuccessIdentifiers removeObject:identifier];
                 if (!delivered) return;
+
+                if (capturedActiveIssueTimestamp >= 0 &&
+                    ![innerSelf isBackupSuccessDecisionCurrent:deliveryDecision
+                                       capturedActiveIssueTimestamp:
+                        capturedActiveIssueTimestamp]) {
+                    [innerSelf removeDeliveredBackupNotificationIdentifiers:@[identifier]];
+                    [innerSelf removePendingBackupNotificationIdentifiers:@[identifier]];
+                    return;
+                }
 
                 NSUserDefaults *defaults = [innerSelf backupNotificationDefaultsStore];
                 NSString *stateKey = [innerSelf

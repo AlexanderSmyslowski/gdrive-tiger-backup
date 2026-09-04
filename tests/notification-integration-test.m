@@ -20,6 +20,11 @@
 - (NSUserDefaults *)backupNotificationDefaultsStore;
 - (void)deliverBackupNotificationDecision:(NSDictionary<NSString *, NSString *> *)decision
                                 completion:(void (^)(BOOL delivered))completion;
+- (void)deliverBackupSuccessNotificationDecision:
+    (NSDictionary<NSString *, NSString *> *)decision
+                             capturedActiveIssueTimestamp:
+    (NSTimeInterval)capturedActiveIssueTimestamp
+                                          completion:(void (^)(BOOL delivered))completion;
 - (UNMutableNotificationContent *)backupNotificationContentForDecision:
     (NSDictionary<NSString *, NSString *> *)decision;
 - (BOOL)timeSensitiveBackupNotificationsEnabled;
@@ -302,6 +307,15 @@
         return;
     }
     finish(self.deliverySucceeds);
+}
+
+- (void)deliverBackupSuccessNotificationDecision:
+    (NSDictionary<NSString *, NSString *> *)decision
+                             capturedActiveIssueTimestamp:
+    (NSTimeInterval)capturedActiveIssueTimestamp
+                                          completion:(void (^)(BOOL delivered))completion {
+    (void)capturedActiveIssueTimestamp;
+    [self deliverBackupNotificationDecision:decision completion:completion];
 }
 
 - (void)enumerateDeliveredBackupNotificationsWithCompletion:
@@ -781,6 +795,33 @@ int main(void) {
         Assert(capturedSuccessProcessorAvailable && resumeSuccessReconciliation &&
                newIssueDuringSuccessReconciliation.deliveryCalls == 0,
                @"a new issue during success reconciliation suppresses delivery before acceptance");
+
+        NotificationTestDelegate *newIssueDuringSuccessDelivery =
+            [[NotificationTestDelegate alloc] init];
+        newIssueDuringSuccessDelivery.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:[suiteName stringByAppendingString:
+                @".new-issue-during-success-delivery"]];
+        newIssueDuringSuccessDelivery.deliverySucceeds = YES;
+        newIssueDuringSuccessDelivery.deferBackupDelivery = YES;
+        [newIssueDuringSuccessDelivery.testDefaults setDouble:100 forKey:
+            @"GDTBackupNotification.office.activeIssueAt"];
+        BOOL delayedSuccessProcessorAvailable = NO;
+        ProcessSuccessWithCapturedIssue(newIssueDuringSuccessDelivery,
+            firstSuccess, 100, &delayedSuccessProcessorAvailable);
+        void (^finishDelayedSuccessDelivery)(BOOL) =
+            newIssueDuringSuccessDelivery.deferredBackupDeliveryCompletions.firstObject;
+        [newIssueDuringSuccessDelivery.testDefaults setDouble:300 forKey:
+            @"GDTBackupNotification.office.activeIssueAt"];
+        if (finishDelayedSuccessDelivery) finishDelayedSuccessDelivery(YES);
+        Assert(delayedSuccessProcessorAvailable && finishDelayedSuccessDelivery &&
+               newIssueDuringSuccessDelivery.deliveryCalls == 1 &&
+               [newIssueDuringSuccessDelivery.testDefaults doubleForKey:
+                   @"GDTBackupNotification.office.lastDeliveredSuccessAt"] == 0 &&
+               [newIssueDuringSuccessDelivery.removedDeliveredNotificationIdentifiers
+                   isEqualToArray:@[firstSuccess[@"identifier"]]] &&
+               [newIssueDuringSuccessDelivery.removedPendingNotificationIdentifiers
+                   isEqualToArray:@[firstSuccess[@"identifier"]]],
+               @"a newer issue after delayed success acceptance removes the stale notice without a watermark");
 
         NotificationTestDelegate *newerDismissedIssue = [[NotificationTestDelegate alloc] init];
         newerDismissedIssue.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
