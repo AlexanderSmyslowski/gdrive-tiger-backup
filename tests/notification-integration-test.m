@@ -25,6 +25,7 @@
                              capturedActiveIssueTimestamp:
     (NSTimeInterval)capturedActiveIssueTimestamp
                                           completion:(void (^)(BOOL delivered))completion;
+- (UNUserNotificationCenter *)backupNotificationCenter;
 - (UNMutableNotificationContent *)backupNotificationContentForDecision:
     (NSDictionary<NSString *, NSString *> *)decision;
 - (BOOL)timeSensitiveBackupNotificationsEnabled;
@@ -112,6 +113,25 @@
 @property(nonatomic, copy) NSArray<NSString *> *removedPendingNotificationIdentifiers;
 @property(nonatomic, copy) void (^deferredDeliveredEnumeration)(
     NSArray<UNNotification *> *notifications);
+@end
+
+@interface BackupSuccessPreAddRaceSettings : NSObject
+@property(nonatomic) UNAuthorizationStatus authorizationStatus;
+@end
+
+@interface BackupSuccessPreAddRaceCenter : NSObject
+@property(nonatomic, strong) BackupSuccessPreAddRaceSettings *settings;
+@property(nonatomic) BOOL deferSettings;
+@property(nonatomic) BOOL deferAuthorization;
+@property(nonatomic) NSInteger addRequestCalls;
+@property(nonatomic) BOOL addRequestRanOnMainThread;
+@property(nonatomic, copy) void (^deferredSettingsCompletion)(UNNotificationSettings *settings);
+@property(nonatomic, copy) void (^deferredAuthorizationCompletion)(BOOL granted, NSError *error);
+@end
+
+@interface BackupSuccessPreAddRaceTestDelegate : AppDelegate
+@property(nonatomic, strong) NSUserDefaults *testDefaults;
+@property(nonatomic, strong) BackupSuccessPreAddRaceCenter *testNotificationCenter;
 @end
 
 @interface UnknownVolumeNotificationTestDelegate : NotificationTestDelegate
@@ -395,6 +415,52 @@
 
 - (void)removePendingBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers {
     self.removedPendingNotificationIdentifiers = identifiers;
+}
+
+@end
+
+@implementation BackupSuccessPreAddRaceSettings
+@end
+
+@implementation BackupSuccessPreAddRaceCenter
+
+- (void)getNotificationSettingsWithCompletionHandler:
+    (void (^)(UNNotificationSettings *settings))completionHandler {
+    if (self.deferSettings) {
+        self.deferredSettingsCompletion = completionHandler;
+        return;
+    }
+    completionHandler((UNNotificationSettings *)(id)self.settings);
+}
+
+- (void)requestAuthorizationWithOptions:(UNAuthorizationOptions)options
+                      completionHandler:(void (^)(BOOL granted, NSError *error))completionHandler {
+    (void)options;
+    if (self.deferAuthorization) {
+        self.deferredAuthorizationCompletion = completionHandler;
+        return;
+    }
+    completionHandler(YES, nil);
+}
+
+- (void)addNotificationRequest:(UNNotificationRequest *)request
+          withCompletionHandler:(void (^)(NSError *error))completionHandler {
+    (void)request;
+    self.addRequestCalls++;
+    self.addRequestRanOnMainThread = NSThread.isMainThread;
+    completionHandler(nil);
+}
+
+@end
+
+@implementation BackupSuccessPreAddRaceTestDelegate
+
+- (NSUserDefaults *)backupNotificationDefaultsStore {
+    return self.testDefaults;
+}
+
+- (UNUserNotificationCenter *)backupNotificationCenter {
+    return (UNUserNotificationCenter *)(id)self.testNotificationCenter;
 }
 
 @end
@@ -795,6 +861,115 @@ int main(void) {
         Assert(capturedSuccessProcessorAvailable && resumeSuccessReconciliation &&
                newIssueDuringSuccessReconciliation.deliveryCalls == 0,
                @"a new issue during success reconciliation suppresses delivery before acceptance");
+
+        BOOL backupNotificationCenterSeamAvailable = [AppDelegate
+            instancesRespondToSelector:@selector(backupNotificationCenter)];
+        __block BOOL settingsRaceCompleted = NO;
+        __block BOOL settingsRaceDelivered = YES;
+        __block BOOL settingsRaceCompletionRanOnMainThread = NO;
+        __block BOOL authorizationRaceCompleted = NO;
+        __block BOOL authorizationRaceDelivered = YES;
+        __block BOOL authorizationRaceCompletionRanOnMainThread = NO;
+        __block BOOL currentSuccessCompleted = NO;
+        __block BOOL currentSuccessDelivered = NO;
+        if (backupNotificationCenterSeamAvailable) {
+            BackupSuccessPreAddRaceTestDelegate *settingsRace =
+                [[BackupSuccessPreAddRaceTestDelegate alloc] init];
+            settingsRace.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+                [suiteName stringByAppendingString:@".success-pre-add-settings"]];
+            BackupSuccessPreAddRaceCenter *settingsCenter =
+                [[BackupSuccessPreAddRaceCenter alloc] init];
+            settingsCenter.settings = [[BackupSuccessPreAddRaceSettings alloc] init];
+            settingsCenter.settings.authorizationStatus = UNAuthorizationStatusAuthorized;
+            settingsCenter.deferSettings = YES;
+            settingsRace.testNotificationCenter = settingsCenter;
+            [settingsRace.testDefaults setDouble:100 forKey:
+                @"GDTBackupNotification.office.activeIssueAt"];
+            [settingsRace deliverBackupSuccessNotificationDecision:firstSuccess
+                                       capturedActiveIssueTimestamp:100
+                                                            completion:^(BOOL delivered) {
+                settingsRaceCompleted = YES;
+                settingsRaceDelivered = delivered;
+                settingsRaceCompletionRanOnMainThread = NSThread.isMainThread;
+            }];
+            void (^finishSettings)(UNNotificationSettings *) =
+                settingsCenter.deferredSettingsCompletion;
+            [settingsRace.testDefaults setDouble:300 forKey:
+                @"GDTBackupNotification.office.activeIssueAt"];
+            if (finishSettings) {
+                finishSettings((UNNotificationSettings *)(id)settingsCenter.settings);
+            }
+
+            BackupSuccessPreAddRaceTestDelegate *authorizationRace =
+                [[BackupSuccessPreAddRaceTestDelegate alloc] init];
+            authorizationRace.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+                [suiteName stringByAppendingString:@".success-pre-add-authorization"]];
+            BackupSuccessPreAddRaceCenter *authorizationCenter =
+                [[BackupSuccessPreAddRaceCenter alloc] init];
+            authorizationCenter.settings = [[BackupSuccessPreAddRaceSettings alloc] init];
+            authorizationCenter.settings.authorizationStatus = UNAuthorizationStatusNotDetermined;
+            authorizationCenter.deferAuthorization = YES;
+            authorizationRace.testNotificationCenter = authorizationCenter;
+            [authorizationRace.testDefaults setDouble:100 forKey:
+                @"GDTBackupNotification.office.activeIssueAt"];
+            [authorizationRace deliverBackupSuccessNotificationDecision:firstSuccess
+                                            capturedActiveIssueTimestamp:100
+                                                                 completion:^(BOOL delivered) {
+                authorizationRaceCompleted = YES;
+                authorizationRaceDelivered = delivered;
+                authorizationRaceCompletionRanOnMainThread = NSThread.isMainThread;
+            }];
+            void (^finishAuthorization)(BOOL, NSError *) =
+                authorizationCenter.deferredAuthorizationCompletion;
+            [authorizationRace.testDefaults setDouble:300 forKey:
+                @"GDTBackupNotification.office.activeIssueAt"];
+            if (finishAuthorization) finishAuthorization(YES, nil);
+
+            BackupSuccessPreAddRaceTestDelegate *currentSuccess =
+                [[BackupSuccessPreAddRaceTestDelegate alloc] init];
+            currentSuccess.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+                [suiteName stringByAppendingString:@".success-pre-add-current"]];
+            BackupSuccessPreAddRaceCenter *currentCenter =
+                [[BackupSuccessPreAddRaceCenter alloc] init];
+            currentCenter.settings = [[BackupSuccessPreAddRaceSettings alloc] init];
+            currentCenter.settings.authorizationStatus = UNAuthorizationStatusAuthorized;
+            currentCenter.deferSettings = YES;
+            currentSuccess.testNotificationCenter = currentCenter;
+            [currentSuccess.testDefaults setDouble:100 forKey:
+                @"GDTBackupNotification.office.activeIssueAt"];
+            [currentSuccess deliverBackupSuccessNotificationDecision:firstSuccess
+                                             capturedActiveIssueTimestamp:100
+                                                                  completion:^(BOOL delivered) {
+                currentSuccessCompleted = YES;
+                currentSuccessDelivered = delivered;
+            }];
+            void (^finishCurrentSettings)(UNNotificationSettings *) =
+                currentCenter.deferredSettingsCompletion;
+            if (finishCurrentSettings) {
+                dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+                    finishCurrentSettings((UNNotificationSettings *)(id)currentCenter.settings);
+                });
+            }
+            BOOL currentSuccessFinished = WaitForCondition(^BOOL {
+                return currentSuccessCompleted;
+            }, 1.0);
+            Assert(settingsCenter.deferredSettingsCompletion && settingsRaceCompleted &&
+                   !settingsRaceDelivered && settingsRaceCompletionRanOnMainThread &&
+                   settingsCenter.addRequestCalls == 0,
+                   @"a newer issue during delayed settings prevents success delivery before add");
+            Assert(authorizationCenter.deferredAuthorizationCompletion &&
+                   authorizationRaceCompleted && !authorizationRaceDelivered &&
+                   authorizationRaceCompletionRanOnMainThread &&
+                   authorizationCenter.addRequestCalls == 0,
+                   @"a newer issue during delayed authorization prevents success delivery before add");
+            Assert(finishCurrentSettings && currentSuccessFinished &&
+                   currentSuccessDelivered &&
+                   currentCenter.addRequestCalls == 1 &&
+                   currentCenter.addRequestRanOnMainThread,
+                   @"a current success adds its notification on the main queue");
+        }
+        Assert(backupNotificationCenterSeamAvailable,
+               @"success delivery exposes a deterministic notification-center seam");
 
         NotificationTestDelegate *newIssueDuringSuccessDelivery =
             [[NotificationTestDelegate alloc] init];

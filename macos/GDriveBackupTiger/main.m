@@ -2369,12 +2369,18 @@ static void GDTAdvanceBackupNotificationAcceptedState(
     }
 }
 
+- (UNUserNotificationCenter *)backupNotificationCenter {
+    // Success delivery must revalidate after asynchronous authorization, so
+    // keep this external boundary controllable without altering failure delivery.
+    return UNUserNotificationCenter.currentNotificationCenter;
+}
+
 - (void)deliverBackupSuccessNotificationDecision:
     (NSDictionary<NSString *, NSString *> *)decision
                              capturedActiveIssueTimestamp:
     (NSTimeInterval)capturedActiveIssueTimestamp
                                           completion:(void (^)(BOOL delivered))completion {
-    UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
+    UNUserNotificationCenter *center = [self backupNotificationCenter];
     [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
         if (settings.authorizationStatus == UNAuthorizationStatusAuthorized ||
             settings.authorizationStatus == UNAuthorizationStatusProvisional) {
