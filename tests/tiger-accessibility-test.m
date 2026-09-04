@@ -17,7 +17,7 @@ static void Assert(BOOL condition, NSString *name) {
 
 int main(void) {
     @autoreleasepool {
-        TigerBackupView *view = [[TigerBackupView alloc] initWithFrame:NSMakeRect(0, 0, 392, 162)];
+        TigerBackupView *view = [[TigerBackupView alloc] initWithFrame:NSMakeRect(0, 0, 392, 180)];
         view.language = @"en";
         view.primaryActionTitle = @"Start backup";
         view.secondaryActionTitle = @"Not now";
@@ -86,14 +86,29 @@ int main(void) {
         }
         Assert(allStaticText, @"status labels expose static text roles");
 
+        NSString *identifiedTarget = @"Disk: TOSHIBA_4TB · 4 TB · USB\nVolume: GoogleDrive-Backup";
+        view.confirmDetail = identifiedTarget;
+        Assert(view.detailLabel.maximumNumberOfLines == 2 &&
+               NSHeight(view.detailLabel.frame) >= 30 &&
+               view.detailLabel.lineBreakMode == NSLineBreakByTruncatingTail,
+               @"identified external targets use a readable two-line detail");
+        Assert(NSMinY(primary.frame) > NSMaxY(view.detailLabel.frame) &&
+               NSMaxY(primary.frame) <= NSHeight(view.bounds),
+               @"confirmation actions remain below the two-line target identity");
+        Assert([view.detailLabel.toolTip isEqualToString:identifiedTarget] &&
+               [view.detailLabel.accessibilityLabel isEqualToString:identifiedTarget],
+               @"the complete physical and volume identity remains available to VoiceOver");
+
         NSString *longTarget = @"/Volumes/Archive/GoogleDrive-Backup/Current";
         view.confirmDetail = longTarget;
-        Assert(view.detailLabel.lineBreakMode == NSLineBreakByTruncatingMiddle,
+        Assert(view.detailLabel.maximumNumberOfLines == 1 &&
+               view.detailLabel.lineBreakMode == NSLineBreakByTruncatingMiddle,
                @"long backup targets preserve their beginning and destination name");
         Assert([view.detailLabel.toolTip isEqualToString:longTarget] &&
                [view.detailLabel.accessibilityLabel isEqualToString:longTarget],
                @"the full backup target remains available to pointer and VoiceOver users");
 
+        [view setFrameSize:NSMakeSize(392, 198)];
         view.confirmMode = NO;
         view.progressPercent = 44;
         NSMutableArray<NSProgressIndicator *> *progressIndicators = [NSMutableArray array];

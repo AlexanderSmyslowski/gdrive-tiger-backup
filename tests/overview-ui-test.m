@@ -544,7 +544,9 @@ int main(void) {
             @"overviewFreeOf", @"overviewStatusInterrupted", @"overviewStatusUnknown",
             @"automaticBackupsPaused", @"pauseAutomaticBackups", @"resumeAutomaticBackups",
             @"automaticRetryRunning", @"automaticRetryRunningShort",
-            @"backupProgressCurrentPhase", @"progressAreaFormat", @"progressPreparing"
+            @"backupProgressCurrentPhase", @"progressAreaFormat", @"progressPreparing",
+            @"progressChecking", @"progressTransferredFormat",
+            @"progressCheckedListedFormat"
         ];
         BOOL allOverviewTextLocalized = YES;
         BOOL allProgressAreaFormatsLocalized = YES;
@@ -561,17 +563,26 @@ int main(void) {
         }
         Assert(allOverviewTextLocalized && allProgressAreaFormatsLocalized,
                @"overview and menu bar text is localized in all supported languages");
+        Assert([T(@"de", @"overviewStorage") isEqualToString:@"Freier Zielspeicher"] &&
+               [T(@"en", @"overviewStorage") isEqualToString:@"Destination free space"],
+               @"capacity is labelled as destination free space instead of progress");
 
         BOOL actionTitlesFit = YES;
+        BOOL capacityCaptionFits = YES;
         for (NSString *language in SupportedLanguageCodes()) {
             view.language = language;
             actionTitlesFit = actionTitlesFit && restoreButton != nil &&
                 view.settingsButton.frame.size.width >= ceil(view.settingsButton.cell.cellSize.width) &&
                 restoreButton.frame.size.width >= ceil(restoreButton.cell.cellSize.width) &&
                 view.backupButton.frame.size.width >= ceil(view.backupButton.cell.cellSize.width);
+            capacityCaptionFits = capacityCaptionFits &&
+                view.storageCaptionLabel.frame.size.width >=
+                    ceil(view.storageCaptionLabel.cell.cellSize.width);
         }
         Assert(actionTitlesFit,
                @"overview action titles remain fully visible in every supported language");
+        Assert(capacityCaptionFits,
+               @"destination free-space caption remains fully visible in every supported language");
 
         NSString *summaryPath = [NSTemporaryDirectory() stringByAppendingPathComponent:
             [NSString stringWithFormat:@"gdrive-overview-summary-%@", NSUUID.UUID.UUIDString]];
@@ -669,8 +680,55 @@ int main(void) {
                        @"4", @"5"]] &&
                [phaseOnlyRetrySnapshot[@"progressPercent"] isEqualToString:@""] &&
                [phaseOnlyRetrySnapshot[@"progressDetail"]
+                   isEqualToString:T(@"en", @"progressChecking")],
+               @"fresh copy-phase telemetry names the active check while remaining indeterminate");
+
+        NSDictionary *checkingRetrySnapshot = [delegate overviewSnapshotForConfig:dailyNAS
+            summary:retrySummary status:@"running" progress:@{
+                @"label": @"Shared Drive", @"phase": @"4/5",
+                @"checked": @"43129", @"listed": @"103256"
+            } now:now calendar:calendar];
+        NSString *checkingDetail = [NSString stringWithFormat:
+            T(@"en", @"progressCheckedListedFormat"), @"43,129", @"103,256"];
+        Assert([checkingRetrySnapshot[@"progressPercent"] isEqualToString:@""] &&
+               [checkingRetrySnapshot[@"progressDetail"] isEqualToString:checkingDetail] &&
+               ![checkingRetrySnapshot[@"progressDetail"]
                    isEqualToString:T(@"en", @"progressPreparing")],
-               @"fresh phase-only retry telemetry renders indeterminate");
+               @"aggregate check counters visibly prove that an indeterminate retry is active");
+        NSString *checkingMenuText = [[[[delegate
+            statusMenuForSnapshot:checkingRetrySnapshot] itemArray] valueForKey:@"title"]
+            componentsJoinedByString:@" "];
+        Assert([checkingMenuText containsString:checkingDetail],
+               @"menu bar exposes aggregate activity when no percentage is trustworthy");
+
+        NSDictionary *transferringRetrySnapshot = [delegate overviewSnapshotForConfig:dailyNAS
+            summary:retrySummary status:@"running" progress:@{
+                @"label": @"Shared Drive", @"phase": @"4/5",
+                @"checked": @"43129", @"listed": @"103256",
+                @"transferred": @"12.000 MiB", @"speed": @"1.500 MiB/s"
+            } now:now calendar:calendar];
+        NSString *transferringDetail = [NSString stringWithFormat:
+            T(@"en", @"progressTransferredFormat"), @"12.000 MiB", @"1.500 MiB/s"];
+        Assert([transferringRetrySnapshot[@"progressPercent"] isEqualToString:@""] &&
+               [transferringRetrySnapshot[@"progressDetail"]
+                   isEqualToString:transferringDetail],
+               @"unknown-total byte activity takes precedence over comparison counters");
+        NSString *transferringMenuText = [[[[delegate
+            statusMenuForSnapshot:transferringRetrySnapshot] itemArray] valueForKey:@"title"]
+            componentsJoinedByString:@" "];
+        Assert([transferringMenuText containsString:transferringDetail],
+               @"menu bar exposes transfer activity when no percentage is trustworthy");
+
+        NSDictionary *zeroTransferRetrySnapshot = [delegate overviewSnapshotForConfig:dailyNAS
+            summary:retrySummary status:@"running" progress:@{
+                @"label": @"Shared Drive", @"phase": @"4/5",
+                @"checked": @"0", @"listed": @"1",
+                @"transferred": @"0 B", @"speed": @"0 B/s"
+            } now:now calendar:calendar];
+        NSString *zeroCheckDetail = [NSString stringWithFormat:
+            T(@"en", @"progressCheckedListedFormat"), @"0", @"1"];
+        Assert([zeroTransferRetrySnapshot[@"progressDetail"] isEqualToString:zeroCheckDetail],
+               @"zero-byte unknown-total activity still reports useful comparison counters");
 
         NSDictionary<NSString *, NSString *> *snapshot =
             [delegate overviewSnapshotForConfig:config summaryPath:summaryPath now:now calendar:calendar];

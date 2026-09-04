@@ -389,12 +389,17 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     if (self.confirmMode) {
         status = self.confirmTitle ?: T(language, @"confirmTarget");
         detail = self.confirmDetail ?: @"";
-        self.detailLabel.frame = NSMakeRect(112, 98, 250, 16);
-        // Confirmation details are usually filesystem paths. Middle truncation
-        // preserves both the volume and final destination folder in the compact UI.
-        self.detailLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+        BOOL hasMultipleLines = [detail rangeOfString:@"\n"].location != NSNotFound;
+        self.detailLabel.frame = NSMakeRect(112, 98, 250, hasMultipleLines ? 32 : 16);
+        self.detailLabel.maximumNumberOfLines = hasMultipleLines ? 2 : 1;
+        self.detailLabel.cell.wraps = hasMultipleLines;
+        self.detailLabel.lineBreakMode = hasMultipleLines
+            ? NSLineBreakByTruncatingTail
+            : NSLineBreakByTruncatingMiddle;
     } else {
         self.detailLabel.frame = NSMakeRect(112, 133, 250, 16);
+        self.detailLabel.maximumNumberOfLines = 1;
+        self.detailLabel.cell.wraps = NO;
         self.detailLabel.lineBreakMode = NSLineBreakByTruncatingTail;
         if ([self.terminalStatus isEqualToString:@"success"]) {
             status = T(language, @"completed");
@@ -713,7 +718,9 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     [subtitle drawInRect:NSMakeRect(112, 76, 250, 18) withAttributes:subtitleAttributes];
 
     if (self.confirmMode) {
-        [hint drawInRect:NSMakeRect(112, 98, 250, 16) withAttributes:hintAttributes];
+        BOOL hasMultipleLines = [hint rangeOfString:@"\n"].location != NSNotFound;
+        [hint drawInRect:NSMakeRect(112, 98, 250, hasMultipleLines ? 32 : 16)
+          withAttributes:hintAttributes];
     } else {
         [hint drawInRect:NSMakeRect(112, 133, 250, 16) withAttributes:hintAttributes];
     }
@@ -807,11 +814,11 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 }
 
 - (NSRect)primaryButtonRect {
-    return NSMakeRect(232, 116, 130, 27);
+    return NSMakeRect(232, 137, 130, 27);
 }
 
 - (NSRect)secondaryButtonRect {
-    return NSMakeRect(112, 116, 110, 27);
+    return NSMakeRect(112, 137, 110, 27);
 }
 
 - (void)drawButtonWithTitle:(NSString *)title inRect:(NSRect)rect primary:(BOOL)primary {
@@ -1260,10 +1267,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
                                                      font:valueFont color:ink];
     [self addSubview:self.targetValueLabel];
 
-    self.storageCaptionLabel = [self overviewLabelWithFrame:NSMakeRect(48, 314, 132, 19)
+    self.storageCaptionLabel = [self overviewLabelWithFrame:NSMakeRect(48, 314, 180, 19)
                                                         font:captionFont color:muted];
     [self addSubview:self.storageCaptionLabel];
-    self.storageValueLabel = [self overviewLabelWithFrame:NSMakeRect(190, 312, 374, 22)
+    self.storageValueLabel = [self overviewLabelWithFrame:NSMakeRect(238, 312, 326, 22)
                                                       font:valueFont color:ink];
     [self addSubview:self.storageValueLabel];
 
@@ -1701,6 +1708,76 @@ static NSString *GDTLocalizedProgressPhase(NSString *phase, NSString *language) 
     }
     return [NSString stringWithFormat:T(language, @"progressAreaFormat"),
         parts[0], parts[1]];
+}
+
+static NSString *GDTLocalizedProgressCount(NSString *rawCount, NSString *language) {
+    if (![rawCount isKindOfClass:NSString.class] || !rawCount.length || rawCount.length > 18 ||
+        [rawCount rangeOfCharacterFromSet:NSCharacterSet.decimalDigitCharacterSet.invertedSet].location
+            != NSNotFound) {
+        return nil;
+    }
+    NSDictionary<NSString *, NSString *> *localeIdentifiers = @{
+        @"de": @"de_DE", @"en": @"en_US", @"fr": @"fr_FR", @"es": @"es_ES",
+        @"ja": @"ja_JP", @"yue": @"zh_HK", @"ko": @"ko_KR"
+    };
+    NSNumberFormatter *formatter = [[NSNumberFormatter alloc] init];
+    formatter.numberStyle = NSNumberFormatterDecimalStyle;
+    formatter.maximumFractionDigits = 0;
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:
+        localeIdentifiers[language ?: @"en"] ?: @"en_US"];
+    NSDecimalNumber *number = [NSDecimalNumber decimalNumberWithString:rawCount];
+    return [formatter stringFromNumber:number];
+}
+
+static BOOL GDTProgressMetricMatches(NSString *value, NSString *pattern,
+                                     NSUInteger maximumLength) {
+    if (![value isKindOfClass:NSString.class] || !value.length ||
+        value.length > maximumLength) {
+        return NO;
+    }
+    NSRegularExpression *expression = [NSRegularExpression
+        regularExpressionWithPattern:pattern options:0 error:nil];
+    return [expression firstMatchInString:value options:0
+        range:NSMakeRange(0, value.length)] != nil;
+}
+
+static BOOL GDTProgressTransferPairIsSafe(NSString *transferred, NSString *speed) {
+    return GDTProgressMetricMatches(transferred,
+        @"^[0-9]+([.][0-9]+)? ([KMGTPE]i)?B$", 32) &&
+        GDTProgressMetricMatches(speed,
+        @"^[0-9]+([.][0-9]+)? ([KMGTPE]i)?B/s$", 34);
+}
+
+static BOOL GDTProgressTransferIsPositive(NSString *transferred) {
+    NSRange separator = [transferred rangeOfString:@" "];
+    if (separator.location == NSNotFound) return NO;
+    NSDecimalNumber *number = [NSDecimalNumber decimalNumberWithString:
+        [transferred substringToIndex:separator.location]];
+    return ![number isEqualToNumber:NSDecimalNumber.notANumber] &&
+        [number compare:NSDecimalNumber.zero] == NSOrderedDescending;
+}
+
+static NSString *GDTLocalizedProgressDetail(
+    NSDictionary<NSString *, NSString *> *progress, NSString *language) {
+    NSString *detail = progress[@"detail"];
+    if (detail.length) return detail;
+
+    NSString *transferred = progress[@"transferred"];
+    NSString *speed = progress[@"speed"];
+    if (GDTProgressTransferPairIsSafe(transferred, speed) &&
+        GDTProgressTransferIsPositive(transferred)) {
+        return [NSString stringWithFormat:T(language, @"progressTransferredFormat"),
+            transferred, speed];
+    }
+
+    NSString *checked = GDTLocalizedProgressCount(progress[@"checked"], language);
+    NSString *listed = GDTLocalizedProgressCount(progress[@"listed"], language);
+    if (checked.length && listed.length) {
+        return [NSString stringWithFormat:T(language, @"progressCheckedListedFormat"),
+            checked, listed];
+    }
+    return progress[@"phase"].length
+        ? T(language, @"progressChecking") : T(language, @"progressPreparing");
 }
 
 static NSTimeInterval GDTBackupNotificationTimestamp(id value) {
@@ -3964,7 +4041,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             ? GDTLocalizedProgressPhase(progress[@"phase"], language) : @"",
         @"progressPercent": retryRunning ? (progress[@"percent"] ?: @"") : @"",
         @"progressDetail": retryRunning
-            ? (progress[@"detail"] ?: T(language, @"progressPreparing")) : @"",
+            ? GDTLocalizedProgressDetail(progress, language) : @"",
         @"lastRun": lastRun ?: @"",
         @"lastRunDetail": lastRunDetail,
         @"nextRun": nextRun ?: T(language, @"overviewUnavailable"),
@@ -4027,9 +4104,13 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         if ([snapshot[@"progressPhase"] length]) {
             [progressParts addObject:snapshot[@"progressPhase"]];
         }
-        if ([snapshot[@"progressPercent"] length]) {
+        NSString *progressPercent = snapshot[@"progressPercent"] ?: @"";
+        NSString *progressDetail = snapshot[@"progressDetail"] ?: @"";
+        if (progressPercent.length) {
             [progressParts addObject:[NSString stringWithFormat:@"%@ %%",
-                snapshot[@"progressPercent"]]];
+                progressPercent]];
+        } else if (progressDetail.length) {
+            [progressParts addObject:progressDetail];
         }
         NSMenuItem *retryProgressItem = [[NSMenuItem alloc]
             initWithTitle:[progressParts componentsJoinedByString:@" · "]
@@ -6889,7 +6970,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     [NSApp setActivationPolicy:self.progressForegroundMode
         ? NSApplicationActivationPolicyRegular : NSApplicationActivationPolicyAccessory];
 
-    NSSize size = self.confirmMode ? NSMakeSize(392, 162) : NSMakeSize(392, 198);
+    NSSize size = self.confirmMode ? NSMakeSize(392, 180) : NSMakeSize(392, 198);
     NSRect screenFrame = NSScreen.mainScreen ? NSScreen.mainScreen.visibleFrame : NSMakeRect(0, 0, 1200, 800);
     NSPoint origin = NSMakePoint(NSMidX(screenFrame) - size.width / 2, NSMidY(screenFrame) - size.height / 2);
 
@@ -7361,7 +7442,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         contentView.progressTitle = nil;
     }
 
-    contentView.progressDetail = values[@"detail"];
+    contentView.progressDetail = GDTLocalizedProgressDetail(values, self.language ?: @"en");
 
     NSString *percent = values[@"percent"];
     contentView.progressPercent = percent.length

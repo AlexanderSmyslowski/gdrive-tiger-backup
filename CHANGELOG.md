@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v2.4.5 - 2026-09-04
+
+- Identify an external backup destination in the confirmation dialog by its physical disk name, decimal capacity, connection type, and logical volume name instead of showing an ambiguous macOS mount-path suffix.
+- Count APFS physical stores without an out-of-range key-path probe, so that the same single-disk identity works on macOS 15 and newer releases.
+- Keep UUIDs, serial numbers, BSD device identifiers, and mount paths out of that user-facing identity while preserving exact UUID/device revalidation before and after confirmation.
+- Show transferred bytes and speed—or increasing aggregate checked/listed counters—while rclone works on an area with no trustworthy byte total, instead of calling that active work “Preparing”.
+- Label destination free space explicitly as capacity rather than implying that it is backup progress.
+- Publish transient progress and run-state updates through private, unpredictable sibling files before each atomic replacement.
 - Add one quiet recovery confirmation after a resolved automatic backup issue while keeping routine successful automatic backups opt-in and silent.
 
 ## v2.4.4 - 2026-08-01

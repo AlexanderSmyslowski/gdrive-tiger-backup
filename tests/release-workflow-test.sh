@@ -70,7 +70,9 @@ if [[ -x "$VALIDATOR" ]]; then
   /bin/mkdir -p "$FIXTURE_ROOT/scripts" "$FIXTURE_ROOT/macos/GDriveBackupTiger"
   /bin/cp "$VALIDATOR" "$FIXTURE_VALIDATOR"
   /bin/cp "$INFO_PLIST" "$FIXTURE_ROOT/macos/GDriveBackupTiger/Info.plist"
-  printf "Current release: \`%s\`\nGDrive-Backup-Tiger-%s.pkg\n" \
+  # Backticks are literal Markdown delimiters in the fixture README.
+  # shellcheck disable=SC2016
+  printf 'Current release: `%s`\nGDrive-Backup-Tiger-%s.pkg\n' \
     "$tag" "$version" >"$FIXTURE_ROOT/README.md"
   write_fixture_changelog ""
 
@@ -113,26 +115,36 @@ if [[ -x "$NOTES_EXTRACTOR" ]]; then
     failures=$((failures + 1))
   fi
 
-  if [[ "$notes" == *"accountless/guest SMB remounting without Keychain lookup or UI"* ]]; then
-    printf 'ok - v2.4.4 notes describe guest SMB remounting without Keychain or UI\n'
+  if [[ "$notes" == *"physical disk name"* &&
+        "$notes" == *"logical volume name"* ]]; then
+    printf 'ok - v2.4.5 notes describe readable physical and logical disk identity\n'
   else
-    printf 'not ok - v2.4.4 notes describe guest SMB remounting without Keychain or UI\n'
+    printf 'not ok - v2.4.5 notes describe readable physical and logical disk identity\n'
     failures=$((failures + 1))
   fi
 
-  if [[ "$notes" == *"older than or equal to that success"* &&
-        "$notes" == *"newer persistent same-profile failure alert"* ]]; then
-    printf 'ok - v2.4.4 notes preserve newer persistent failure alerts\n'
+  if [[ "$notes" == *"UUIDs, serial numbers, BSD device identifiers, and mount paths"* &&
+        "$notes" == *"exact UUID/device revalidation"* ]]; then
+    printf 'ok - v2.4.5 notes preserve private display and exact device validation\n'
   else
-    printf 'not ok - v2.4.4 notes preserve newer persistent failure alerts\n'
+    printf 'not ok - v2.4.5 notes preserve private display and exact device validation\n'
     failures=$((failures + 1))
   fi
 
-  if [[ "$notes" == *"unknown-total progress indeterminate"* &&
-        "$notes" == *"durable terminal status publication"* ]]; then
-    printf 'ok - v2.4.4 notes describe truthful unknown-total progress\n'
+  if [[ "$notes" == *"quiet recovery confirmation"* &&
+        "$notes" == *"opt-in and silent"* ]]; then
+    printf 'ok - v2.4.5 notes describe quiet successful-backup notifications\n'
   else
-    printf 'not ok - v2.4.4 notes describe truthful unknown-total progress\n'
+    printf 'not ok - v2.4.5 notes describe quiet successful-backup notifications\n'
+    failures=$((failures + 1))
+  fi
+
+  if [[ "$notes" == *"macOS 15"* &&
+        "$notes" == *"checked/listed counters"* &&
+        "$notes" == *"destination free space"* ]]; then
+    printf 'ok - v2.4.5 notes describe portable disk identity and truthful aggregate activity\n'
+  else
+    printf 'not ok - v2.4.5 notes describe portable disk identity and truthful aggregate activity\n'
     failures=$((failures + 1))
   fi
 fi

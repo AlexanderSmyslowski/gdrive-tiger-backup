@@ -192,6 +192,7 @@ RETENTION_APP_TRASH_BIN="${GDRIVE_BACKUP_APP_TRASH_BIN-${ANIMATION_APP%/}/Conten
 ENCRYPTION="$(lowercase "${GDRIVE_BACKUP_ENCRYPTION-none}")"
 CRYPT_REMOTE="${GDRIVE_BACKUP_CRYPT_REMOTE-}"
 DISKUTIL_BIN="${GDRIVE_BACKUP_DISKUTIL-/usr/sbin/diskutil}"
+IOREG_BIN="${GDRIVE_BACKUP_IOREG-/usr/sbin/ioreg}"
 OSASCRIPT_BIN="${GDRIVE_BACKUP_OSASCRIPT-/usr/bin/osascript}"
 MOUNT_BIN="${GDRIVE_BACKUP_MOUNT_BIN-/sbin/mount}"
 CMP_BIN="${GDRIVE_BACKUP_CMP_BIN-/usr/bin/cmp}"
@@ -203,6 +204,7 @@ APFS_VOLUME_REAL=""
 APFS_VOLUME_DEVICE=""
 APFS_VOLUME_UUID=""
 APFS_VOLUME_IDENTIFIER=""
+VALIDATED_APFS_VOLUME_PLIST=""
 CREATED_APFS_VOLUME_UUID=""
 VERSION_RUN_ID=""
 TARGET_APPROVED=0
@@ -717,6 +719,7 @@ resolve_configured_apfs_volume() {
     return 69
   fi
   VOLUME="$resolved_mount"
+  VALIDATED_APFS_VOLUME_PLIST="$plist_data"
   log "APFS-Backup-Volume per UUID aufgeloest: $VOLUME"
   return 0
 }
@@ -868,6 +871,7 @@ validate_configured_apfs_volume_identity() {
     log "FEHLER: Das APFS-Backup-Volume wurde waehrend des Laufs ausgetauscht."
     return 1
   fi
+  VALIDATED_APFS_VOLUME_PLIST="$plist_data"
   return 0
 }
 
@@ -1668,6 +1672,11 @@ t() {
     de:start_backup) printf 'Backup starten' ;;
     de:use_volume) printf 'Dieses Volume verwenden?' ;;
     de:use_destination) printf 'Dieses Backup-Ziel verwenden?' ;;
+    de:disk_label) printf 'Festplatte' ;;
+    de:volume_label) printf 'Volume' ;;
+    de:external_disk) printf 'Externe Festplatte' ;;
+    de:storage_set) printf 'Speicherverbund' ;;
+    de:backup_volume) printf 'Backup-Volume' ;;
     de:create_volume) printf 'Backup-Volume anlegen?' ;;
     de:create_volume_action) printf 'Volume anlegen' ;;
     de:log_confirmed) printf 'Backup durch Benutzer bestaetigt.' ;;
@@ -1679,6 +1688,11 @@ t() {
     en:start_backup) printf 'Start backup' ;;
     en:use_volume) printf 'Use this volume?' ;;
     en:use_destination) printf 'Use this backup destination?' ;;
+    en:disk_label) printf 'Disk' ;;
+    en:volume_label) printf 'Volume' ;;
+    en:external_disk) printf 'External disk' ;;
+    en:storage_set) printf 'Storage set' ;;
+    en:backup_volume) printf 'Backup volume' ;;
     en:create_volume) printf 'Create backup volume?' ;;
     en:create_volume_action) printf 'Create volume' ;;
     en:log_confirmed) printf 'Backup confirmed by user.' ;;
@@ -1690,6 +1704,11 @@ t() {
     fr:start_backup) printf 'Sauvegarder' ;;
     fr:use_volume) printf 'Utiliser ce volume ?' ;;
     fr:use_destination) printf 'Utiliser cette destination ?' ;;
+    fr:disk_label) printf 'Disque' ;;
+    fr:volume_label) printf 'Volume' ;;
+    fr:external_disk) printf 'Disque externe' ;;
+    fr:storage_set) printf 'Ensemble de stockage' ;;
+    fr:backup_volume) printf 'Volume de sauvegarde' ;;
     fr:create_volume) printf 'Créer le volume de sauvegarde ?' ;;
     fr:create_volume_action) printf 'Créer volume' ;;
     fr:log_confirmed) printf 'Sauvegarde confirmée par l utilisateur.' ;;
@@ -1701,6 +1720,11 @@ t() {
     es:start_backup) printf 'Iniciar copia' ;;
     es:use_volume) printf '¿Usar este volumen?' ;;
     es:use_destination) printf '¿Usar este destino de copia?' ;;
+    es:disk_label) printf 'Disco' ;;
+    es:volume_label) printf 'Volumen' ;;
+    es:external_disk) printf 'Disco externo' ;;
+    es:storage_set) printf 'Conjunto de almacenamiento' ;;
+    es:backup_volume) printf 'Volumen de copia' ;;
     es:create_volume) printf '¿Crear volumen de copia?' ;;
     es:create_volume_action) printf 'Crear volumen' ;;
     es:log_confirmed) printf 'Copia confirmada por el usuario.' ;;
@@ -1712,6 +1736,11 @@ t() {
     ja:start_backup) printf 'バックアップ開始' ;;
     ja:use_volume) printf 'このボリュームを使いますか？' ;;
     ja:use_destination) printf 'このバックアップ先を使いますか？' ;;
+    ja:disk_label) printf 'ディスク' ;;
+    ja:volume_label) printf 'ボリューム' ;;
+    ja:external_disk) printf '外付けディスク' ;;
+    ja:storage_set) printf 'ストレージセット' ;;
+    ja:backup_volume) printf 'バックアップボリューム' ;;
     ja:create_volume) printf 'バックアップ用ボリュームを作成？' ;;
     ja:create_volume_action) printf 'ボリューム作成' ;;
     ja:log_confirmed) printf 'ユーザーがバックアップを確認しました。' ;;
@@ -1723,6 +1752,11 @@ t() {
     yue:start_backup) printf '開始備份' ;;
     yue:use_volume) printf '使用呢個卷宗？' ;;
     yue:use_destination) printf '使用呢個備份目的地？' ;;
+    yue:disk_label) printf '硬碟' ;;
+    yue:volume_label) printf '卷宗' ;;
+    yue:external_disk) printf '外置硬碟' ;;
+    yue:storage_set) printf '儲存組合' ;;
+    yue:backup_volume) printf '備份卷宗' ;;
     yue:create_volume) printf '建立備份卷宗？' ;;
     yue:create_volume_action) printf '建立卷宗' ;;
     yue:log_confirmed) printf '使用者已確認備份。' ;;
@@ -1734,6 +1768,11 @@ t() {
     ko:start_backup) printf '백업 시작' ;;
     ko:use_volume) printf '이 볼륨을 사용할까요?' ;;
     ko:use_destination) printf '이 백업 대상을 사용할까요?' ;;
+    ko:disk_label) printf '디스크' ;;
+    ko:volume_label) printf '볼륨' ;;
+    ko:external_disk) printf '외장 디스크' ;;
+    ko:storage_set) printf '스토리지 세트' ;;
+    ko:backup_volume) printf '백업 볼륨' ;;
     ko:create_volume) printf '백업 볼륨을 만들까요?' ;;
     ko:create_volume_action) printf '볼륨 생성' ;;
     ko:log_confirmed) printf '사용자가 백업을 확인했습니다.' ;;
@@ -1759,15 +1798,31 @@ write_progress() {
   local percent="${2:-}"
   local detail="${3:-}"
   local phase="${4:-}"
-  local tmp="${PROGRESS_FILE}.$$"
+  local checked="${5:-}"
+  local listed="${6:-}"
+  local transferred="${7:-}"
+  local speed="${8:-}"
+  local tmp
 
-  {
+  tmp="$(umask 077; mktemp "${PROGRESS_FILE}.tmp.XXXXXX")" || return 1
+  if ! (umask 077; {
     printf 'label=%s\n' "$(progress_escape "$label")"
     [[ -n "$phase" ]] && printf 'phase=%s\n' "$(progress_escape "$phase")"
     [[ -n "$percent" ]] && printf 'percent=%s\n' "$(progress_escape "$percent")"
     [[ -n "$detail" ]] && printf 'detail=%s\n' "$(progress_escape "$detail")"
+    [[ -n "$checked" ]] && printf 'checked=%s\n' "$checked"
+    [[ -n "$listed" ]] && printf 'listed=%s\n' "$listed"
+    [[ -n "$transferred" ]] && printf 'transferred=%s\n' "$(progress_escape "$transferred")"
+    [[ -n "$speed" ]] && printf 'speed=%s\n' "$(progress_escape "$speed")"
     :
-  } >"$tmp" && mv -f "$tmp" "$PROGRESS_FILE"
+  } >"$tmp" && chmod 600 "$tmp"); then
+    cleanup_temp_file "$tmp"
+    return 1
+  fi
+  if ! mv -f "$tmp" "$PROGRESS_FILE"; then
+    cleanup_temp_file "$tmp"
+    return 1
+  fi
 }
 
 public_progress_label() {
@@ -1778,16 +1833,19 @@ public_progress_label() {
   esac
 }
 
-parse_rclone_progress_fields() {
-  local line="$1"
-  local pattern='^Transferred:[[:space:]]*([0-9][0-9.]*[[:space:]]+([KMGTPE]i)?B)[[:space:]]+/[[:space:]]+([0-9][0-9.]*[[:space:]]+([KMGTPE]i)?B),[[:space:]]+([0-9]{1,3})%,[[:space:]]+([0-9][0-9.]*[[:space:]]+([KMGTPE]i)?B/s),[[:space:]]+ETA[[:space:]]+(-|([0-9]+[dhms])+)$'
-  local transferred total percent speed eta
+reset_rclone_transfer_progress() {
   RCLONE_PROGRESS_TRANSFERRED=""
   RCLONE_PROGRESS_TOTAL=""
   RCLONE_PROGRESS_PERCENT=""
   RCLONE_PROGRESS_SPEED=""
   RCLONE_PROGRESS_ETA=""
   RCLONE_PROGRESS_DETAIL=""
+}
+
+parse_rclone_progress_fields() {
+  local line="$1"
+  local pattern='^Transferred:[[:space:]]*([0-9][0-9.]*[[:space:]]+([KMGTPE]i)?B)[[:space:]]+/[[:space:]]+([0-9][0-9.]*[[:space:]]+([KMGTPE]i)?B),[[:space:]]+([0-9]{1,3})%,[[:space:]]+([0-9][0-9.]*[[:space:]]+([KMGTPE]i)?B/s),[[:space:]]+ETA[[:space:]]+(-|([0-9]+[dhms])+)$'
+  local transferred total percent speed eta
   [[ "$line" =~ $pattern ]] || return 1
   transferred="${BASH_REMATCH[1]}"
   total="${BASH_REMATCH[3]}"
@@ -1815,10 +1873,32 @@ parse_rclone_unknown_total_progress() {
   speed="${BASH_REMATCH[4]}"
   [[ "${transferred%% *}" =~ ^[0-9]+([.][0-9]+)?$ &&
      "${speed%% *}" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+  RCLONE_PROGRESS_TRANSFERRED="$transferred"
+  RCLONE_PROGRESS_TOTAL=""
+  RCLONE_PROGRESS_PERCENT=""
+  RCLONE_PROGRESS_SPEED="$speed"
+  RCLONE_PROGRESS_ETA=""
+  RCLONE_PROGRESS_DETAIL=""
+}
+
+parse_rclone_check_progress() {
+  local line="$1"
+  local pattern='^Checks:[[:space:]]*([0-9]{1,18})[[:space:]]*/[[:space:]]*[0-9]{1,18},[[:space:]]*(-|[0-9]{1,3}%)[[:space:]]*,[[:space:]]*Listed[[:space:]]+([0-9]{1,18})$'
+  local check_percent
+  [[ "$line" =~ $pattern ]] || return 1
+  check_percent="${BASH_REMATCH[2]}"
+  if [[ "$check_percent" != "-" ]]; then
+    check_percent="${check_percent%%%}"
+    (( 10#$check_percent <= 100 )) || return 1
+  fi
+  RCLONE_PROGRESS_CHECKED="${BASH_REMATCH[1]}"
+  RCLONE_PROGRESS_LISTED="${BASH_REMATCH[3]}"
 }
 
 write_durable_progress() {
   local label="${1:-preparing}" percent="${2:-}" detail="${3:-}" phase="${4:-}"
+  local checked="${5:-}" listed="${6:-}"
+  local transferred="${7:-}" speed="${8:-}"
   local directory temporary existing_owner phase_current phase_total
   [[ -n "$DURABLE_PROGRESS_FILE" ]] || return 0
   case "$label" in preparing|"My Drive"|"Shared with me"|"Shared Drive") ;; *) return 1 ;; esac
@@ -1830,6 +1910,15 @@ write_durable_progress() {
   fi
   [[ -z "$percent" || ( "$percent" =~ ^[0-9]+$ && "$percent" -le 100 ) ]] || return 1
   if [[ -n "$detail" && "$detail" != "${RCLONE_PROGRESS_DETAIL:-}" ]]; then return 1; fi
+  if [[ -n "$checked" || -n "$listed" ]]; then
+    [[ "$checked" =~ ^[0-9]{1,18}$ && "$listed" =~ ^[0-9]{1,18}$ ]] || return 1
+  fi
+  if [[ -n "$transferred" || -n "$speed" ]]; then
+    [[ "$label" != "preparing" &&
+       ${#transferred} -le 32 && ${#speed} -le 34 &&
+       "$transferred" =~ ^[0-9]+([.][0-9]+)?[[:space:]]+([KMGTPE]i)?B$ &&
+       "$speed" =~ ^[0-9]+([.][0-9]+)?[[:space:]]+([KMGTPE]i)?B/s$ ]] || return 1
+  fi
   [[ ! -L "$DURABLE_PROGRESS_FILE" ]] || return 1
   [[ ! -e "$DURABLE_PROGRESS_FILE" || -f "$DURABLE_PROGRESS_FILE" ]] || return 1
   if [[ -e "$DURABLE_PROGRESS_FILE" ]]; then
@@ -1847,6 +1936,10 @@ write_durable_progress() {
       [[ -n "$phase" ]] && printf 'phase=%s\n' "$phase"
       [[ -n "$percent" ]] && printf 'percent=%s\n' "$percent"
       [[ -n "$detail" ]] && printf 'detail=%s\n' "$detail"
+      [[ -n "$checked" ]] && printf 'checked=%s\n' "$checked"
+      [[ -n "$listed" ]] && printf 'listed=%s\n' "$listed"
+      [[ -n "$transferred" ]] && printf 'transferred=%s\n' "$transferred"
+      [[ -n "$speed" ]] && printf 'speed=%s\n' "$speed"
       printf 'updated_at=%s\n' "$(date +%s)"
     } >"$temporary" && chmod 600 "$temporary"); then
     cleanup_temp_file "$temporary"
@@ -1909,8 +2002,11 @@ write_run_state() {
 
   local status="$1"
   local exit_code="${2:-}"
-  local tmp="${RUN_STATE_FILE}.$$"
-  {
+  local tmp
+  [[ ! -L "$RUN_STATE_FILE" ]] || return 1
+  [[ ! -e "$RUN_STATE_FILE" || ( -f "$RUN_STATE_FILE" && -O "$RUN_STATE_FILE" ) ]] || return 1
+  tmp="$(umask 077; mktemp "${RUN_STATE_FILE}.tmp.XXXXXX")" || return 1
+  if ! (umask 077; {
     printf 'protocol=1\n'
     printf 'status=%s\n' "$status"
     printf 'pid=%s\n' "$$"
@@ -1920,7 +2016,14 @@ write_run_state() {
       printf 'retry_origin_started_at=%s\n' "$RETRY_ORIGIN_STARTED_AT"
     [[ -n "$RETRY_ATTEMPT" ]] && printf 'retry_attempt=%s\n' "$RETRY_ATTEMPT"
     [[ -n "$exit_code" ]] && printf 'exit_code=%s\n' "$exit_code"
-  } >"$tmp" && mv -f "$tmp" "$RUN_STATE_FILE"
+  } >"$tmp" && chmod 600 "$tmp"); then
+    cleanup_temp_file "$tmp"
+    return 1
+  fi
+  if ! mv -f "$tmp" "$RUN_STATE_FILE"; then
+    cleanup_temp_file "$tmp"
+    return 1
+  fi
 }
 
 write_last_run_summary() {
@@ -1990,17 +2093,40 @@ update_progress_from_rclone_line() {
   local phase="$2"
   local line="$3"
 
+  # Keep check counters across each stats block, but never pair them with a
+  # stale transfer percentage if rclone changes or emits an unknown format.
+  if [[ "$line" == Transferred:* ]]; then
+    reset_rclone_transfer_progress
+  fi
   if parse_rclone_progress_fields "$line"; then
-    write_progress "$label" "$RCLONE_PROGRESS_PERCENT" "$RCLONE_PROGRESS_DETAIL" "$phase"
+    write_progress "$label" "$RCLONE_PROGRESS_PERCENT" "$RCLONE_PROGRESS_DETAIL" \
+      "$phase" "$RCLONE_PROGRESS_CHECKED" "$RCLONE_PROGRESS_LISTED" \
+      "$RCLONE_PROGRESS_TRANSFERRED" "$RCLONE_PROGRESS_SPEED"
     if ! write_durable_progress "$(public_progress_label "$label")" \
-        "$RCLONE_PROGRESS_PERCENT" "$RCLONE_PROGRESS_DETAIL" "$phase"; then
+        "$RCLONE_PROGRESS_PERCENT" "$RCLONE_PROGRESS_DETAIL" "$phase" \
+        "$RCLONE_PROGRESS_CHECKED" "$RCLONE_PROGRESS_LISTED" \
+        "$RCLONE_PROGRESS_TRANSFERRED" "$RCLONE_PROGRESS_SPEED"; then
       warn_progress_unavailable
       write_progress "$label" "" "" "$phase"
       write_durable_progress "$(public_progress_label "$label")" "" "" "$phase" || true
     fi
   elif parse_rclone_unknown_total_progress "$line"; then
-    write_progress "$label" "" "" "$phase"
-    if ! write_durable_progress "$(public_progress_label "$label")" "" "" "$phase"; then
+    write_progress "$label" "" "" "$phase" \
+      "$RCLONE_PROGRESS_CHECKED" "$RCLONE_PROGRESS_LISTED" \
+      "$RCLONE_PROGRESS_TRANSFERRED" "$RCLONE_PROGRESS_SPEED"
+    if ! write_durable_progress "$(public_progress_label "$label")" "" "" "$phase" \
+        "$RCLONE_PROGRESS_CHECKED" "$RCLONE_PROGRESS_LISTED" \
+        "$RCLONE_PROGRESS_TRANSFERRED" "$RCLONE_PROGRESS_SPEED"; then
+      warn_progress_unavailable
+    fi
+  elif parse_rclone_check_progress "$line"; then
+    write_progress "$label" "$RCLONE_PROGRESS_PERCENT" "$RCLONE_PROGRESS_DETAIL" \
+      "$phase" "$RCLONE_PROGRESS_CHECKED" "$RCLONE_PROGRESS_LISTED" \
+      "$RCLONE_PROGRESS_TRANSFERRED" "$RCLONE_PROGRESS_SPEED"
+    if ! write_durable_progress "$(public_progress_label "$label")" \
+        "$RCLONE_PROGRESS_PERCENT" "$RCLONE_PROGRESS_DETAIL" "$phase" \
+        "$RCLONE_PROGRESS_CHECKED" "$RCLONE_PROGRESS_LISTED" \
+        "$RCLONE_PROGRESS_TRANSFERRED" "$RCLONE_PROGRESS_SPEED"; then
       warn_progress_unavailable
     fi
   fi
@@ -2014,6 +2140,9 @@ run_rclone_with_progress() {
   local line status error_class_file="" collision_report="" collision_path=""
   local collision_prefix="" collision_kind=""
   local detected_count=0 parsed_count=0 unhandled_count=0
+  reset_rclone_transfer_progress
+  RCLONE_PROGRESS_CHECKED=""
+  RCLONE_PROGRESS_LISTED=""
   LAST_RCLONE_COLLISION_REPORT=""
   if ! error_class_file="$(mktemp "${TMPDIR:-/tmp}/gdrive-backup-error-class.XXXXXX")"; then
     log "FEHLER: Die rclone-Auswertung konnte nicht sicher vorbereitet werden."
@@ -2229,6 +2358,241 @@ plist_value() {
   /usr/bin/plutil -extract "$key" raw -o - "$plist" 2>/dev/null || true
 }
 
+display_metadata_value() {
+  local value="${1:-}"
+
+  # Disk labels come from removable media. Reject control characters rather
+  # than forwarding untrusted formatting into the dialog or backup log.
+  if [[ "$value" =~ [[:cntrl:]] ]]; then
+    return 0
+  fi
+  value="$(printf '%s' "$value" | /usr/bin/sed -E \
+    -e 's/^[[:space:]]+//' -e 's/[[:space:]]+$//' -e 's/[[:space:]]+/ /g')"
+
+  # Bidirectional format characters can make a device label visually claim a
+  # different identity. Keep the display metadata plain and reasonably short;
+  # the actual trust decision continues to use the validated APFS UUID.
+  local marker
+  for marker in \
+    "$(printf '\330\234')" \
+    "$(printf '\342\200\216')" "$(printf '\342\200\217')" \
+    "$(printf '\342\200\252')" "$(printf '\342\200\253')" \
+    "$(printf '\342\200\254')" "$(printf '\342\200\255')" \
+    "$(printf '\342\200\256')" \
+    "$(printf '\342\201\246')" "$(printf '\342\201\247')" \
+    "$(printf '\342\201\250')" "$(printf '\342\201\251')"; do
+    if [[ "$value" == *"$marker"* ]]; then
+      return 0
+    fi
+  done
+  if (( ${#value} > 96 )); then
+    return 0
+  fi
+  printf '%s' "$value"
+}
+
+first_valid_size_value() {
+  local value
+
+  for value in "$@"; do
+    if [[ "$value" =~ ^[0-9]+$ && "$value" != "0" ]]; then
+      printf '%s' "$value"
+      return 0
+    fi
+  done
+  return 1
+}
+
+first_nonempty_display_value() {
+  local candidate value
+
+  for candidate in "$@"; do
+    value="$(display_metadata_value "$candidate")"
+    if [[ -n "$value" ]]; then
+      printf '%s' "$value"
+      return 0
+    fi
+  done
+  return 1
+}
+
+ioreg_media_name_for_bsd_id() {
+  local disk_id="$1"
+  local registry_name=""
+
+  [[ "$disk_id" =~ ^disk[0-9]+s[0-9]+$ ]] || return 1
+  [[ -x "$IOREG_BIN" ]] || return 1
+
+  # IOKit exposes the physical-store label immediately, while diskutil may
+  # block for several seconds on an otherwise healthy USB disk. Associate the
+  # label with the exact validated BSD ID; never print any other registry data.
+  registry_name="$(
+    run_with_timeout 3 "$IOREG_BIN" -r -c IOMedia -l -w 0 2>/dev/null |
+      /usr/bin/awk -v bsd="$disk_id" '
+        /<class IOMedia,/ {
+          node = $0
+          sub(/^.*\+-o[[:space:]]+/, "", node)
+          sub(/[[:space:]]+<class IOMedia,.*$/, "", node)
+          sub(/@[0-9]+$/, "", node)
+        }
+        index($0, "\"BSD Name\" = \"" bsd "\"") {
+          print node
+          exit
+        }
+      ' || true
+  )"
+  registry_name="$(display_metadata_value "$registry_name")"
+  [[ -n "$registry_name" ]] || return 1
+  printf '%s' "$registry_name"
+}
+
+decimal_capacity_label() {
+  local bytes="${1:-}"
+
+  [[ "$bytes" =~ ^[0-9]+$ && "$bytes" != "0" ]] || return 0
+  LC_ALL=C /usr/bin/awk -v bytes="$bytes" 'BEGIN {
+    split("B KB MB GB TB PB", units, " ")
+    value = bytes + 0
+    unit = 1
+    while (value >= 1000 && unit < 6) {
+      value /= 1000
+      unit++
+    }
+    if (unit == 1 || value >= 100) {
+      formatted = sprintf("%.0f", value)
+    } else {
+      formatted = sprintf("%.1f", value)
+      sub(/\.0$/, "", formatted)
+    }
+    printf "%s %s", formatted, units[unit]
+  }'
+}
+
+external_volume_confirmation_detail() {
+  local volume_reference="$VOLUME"
+  local volume_plist="" physical_plist="" whole_plist=""
+  local volume_name="" physical_store="" physical_store_count="" parent_whole=""
+  local vendor="" model="" device_name="" entry_name="" media_name=""
+  local physical_name_hint="" physical_size="" physical_bus=""
+  local volume_size="" volume_bus=""
+  local size="" bus="" capacity="" vendor_lower="" model_lower="" disk_detail=""
+
+  if [[ -n "$BACKUP_VOLUME_UUID" ]]; then
+    volume_reference="$BACKUP_VOLUME_UUID"
+  fi
+  # Reuse the plist accepted by the immediately preceding UUID/device check.
+  # A legacy caller without that cache gets the same bounded identity lookup.
+  volume_plist="$VALIDATED_APFS_VOLUME_PLIST"
+  if [[ -z "$volume_plist" ]]; then
+    volume_plist="$(run_with_timeout 8 "$DISKUTIL_BIN" info -plist "$volume_reference" 2>/dev/null || true)"
+  fi
+  volume_name="$(display_metadata_value "$(plist_data_value "$volume_plist" VolumeName || true)")"
+  if [[ -z "$volume_name" ]]; then
+    volume_name="$(display_metadata_value "$BACKUP_VOLUME_NAME")"
+  fi
+  if [[ -z "$volume_name" ]]; then
+    volume_name="$(t backup_volume)"
+  fi
+
+  physical_store="$(plist_data_value "$volume_plist" APFSPhysicalStores.0.APFSPhysicalStore || true)"
+  # Ask plutil for the array cardinality. Probing a missing numeric key path is
+  # not portable: macOS 15 can return non-empty output for an out-of-range item.
+  physical_store_count="$(plist_data_value "$volume_plist" APFSPhysicalStores || true)"
+  volume_size="$(first_valid_size_value \
+    "$(plist_data_value "$volume_plist" APFSContainerSize || true)" \
+    "$(plist_data_value "$volume_plist" TotalSize || true)" || true)"
+  volume_bus="$(display_metadata_value "$(plist_data_value "$volume_plist" BusProtocol || true)")"
+  if [[ "$physical_store_count" =~ ^[0-9]+$ ]] &&
+     (( physical_store_count > 1 )); then
+    device_name="$(t storage_set)"
+  elif [[ "$physical_store_count" == "1" &&
+          "$physical_store" =~ ^disk[0-9]+s[0-9]+$ ]]; then
+    device_name="$(ioreg_media_name_for_bsd_id "$physical_store" || true)"
+    if [[ -z "$device_name" || -z "$volume_size" || -z "$volume_bus" ]]; then
+      physical_plist="$(run_with_timeout 8 "$DISKUTIL_BIN" info -plist "$physical_store" 2>/dev/null || true)"
+      parent_whole="$(plist_data_value "$physical_plist" ParentWholeDisk || true)"
+      physical_name_hint="$(first_nonempty_display_value \
+        "$(plist_data_value "$physical_plist" DeviceVendor || true)" \
+        "$(plist_data_value "$physical_plist" DeviceModel || true)" \
+        "$(plist_data_value "$physical_plist" IORegistryEntryName || true)" \
+        "$(plist_data_value "$physical_plist" MediaName || true)" || true)"
+      physical_size="$(first_valid_size_value \
+        "$(plist_data_value "$physical_plist" TotalSize || true)" || true)"
+      physical_bus="$(display_metadata_value "$(plist_data_value "$physical_plist" BusProtocol || true)")"
+      if [[ "$parent_whole" =~ ^disk[0-9]+$ ]] &&
+         [[ ( -z "$device_name" && -z "$physical_name_hint" ) ||
+            ( -z "$physical_size" && -z "$volume_size" ) ||
+            ( -z "$physical_bus" && -z "$volume_bus" ) ]]; then
+        whole_plist="$(run_with_timeout 4 "$DISKUTIL_BIN" info -plist "$parent_whole" 2>/dev/null || true)"
+      fi
+    fi
+  fi
+
+  if [[ -z "$device_name" ]]; then
+    vendor="$(first_nonempty_display_value \
+      "$(plist_data_value "$whole_plist" DeviceVendor || true)" \
+      "$(plist_data_value "$physical_plist" DeviceVendor || true)" || true)"
+    model="$(first_nonempty_display_value \
+      "$(plist_data_value "$whole_plist" DeviceModel || true)" \
+      "$(plist_data_value "$physical_plist" DeviceModel || true)" || true)"
+    if [[ -n "$vendor" && -n "$model" ]]; then
+      vendor_lower="$(lowercase "$vendor")"
+      model_lower="$(lowercase "$model")"
+      if [[ "$model_lower" == "$vendor_lower"* ]]; then
+        device_name="$model"
+      else
+        device_name="$vendor $model"
+      fi
+    elif [[ -n "$model" ]]; then
+      device_name="$model"
+    elif [[ -n "$vendor" ]]; then
+      device_name="$vendor"
+    fi
+  fi
+
+  if [[ -z "$device_name" ]]; then
+    entry_name="$(first_nonempty_display_value \
+      "$(plist_data_value "$physical_plist" IORegistryEntryName || true)" \
+      "$(plist_data_value "$whole_plist" IORegistryEntryName || true)" || true)"
+    entry_name="${entry_name% Media}"
+    device_name="$entry_name"
+  fi
+  if [[ -z "$device_name" ]]; then
+    for media_name in \
+      "$(plist_data_value "$whole_plist" MediaName || true)" \
+      "$(plist_data_value "$physical_plist" MediaName || true)"; do
+      media_name="$(display_metadata_value "$media_name")"
+      case "$(lowercase "$media_name")" in
+        ""|media|external|external_usb|"external usb"|"storage device") ;;
+        *) device_name="$media_name"; break ;;
+      esac
+    done
+  fi
+  device_name="$(display_metadata_value "$device_name")"
+  if [[ -z "$device_name" || "$device_name" == "$volume_name" ]]; then
+    device_name="$(t external_disk)"
+  fi
+
+  size="$(first_valid_size_value \
+    "$(plist_data_value "$whole_plist" TotalSize || true)" \
+    "$physical_size" \
+    "$volume_size" || true)"
+  bus="$(first_nonempty_display_value \
+    "$(plist_data_value "$whole_plist" BusProtocol || true)" \
+    "$physical_bus" \
+    "$volume_bus" || true)"
+  capacity="$(decimal_capacity_label "$size")"
+
+  disk_detail="$(t disk_label): $device_name"
+  if [[ -n "$capacity" ]]; then
+    disk_detail+=" · $capacity"
+  fi
+  if [[ -n "$bus" ]]; then
+    disk_detail+=" · $bus"
+  fi
+  printf '%s\n%s: %s' "$disk_detail" "$(t volume_label)" "$volume_name"
+}
+
 confirm_prompt() {
   local title="$1"
   local detail="$2"
@@ -2308,6 +2672,9 @@ confirm_backup_target() {
     detail="$DEST_ROOT"
   else
     title="$(t use_volume)"
+    if [[ "$CONFIRM_BACKUP" != "0" && "${BACKUP_ASSUME_YES:-0}" != "1" ]]; then
+      detail="$(external_volume_confirmation_detail)"
+    fi
   fi
 
   if confirm_prompt "$title" "$detail" "$(t start_backup)"; then

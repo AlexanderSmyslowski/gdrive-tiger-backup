@@ -361,9 +361,19 @@ int main(void) {
         [@"label=My Drive\nphase=1/5\n"
             writeToFile:progressPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
         ReadProgressFile(progressDelegate);
-        if (richSnapshotApplied && progressView.progressPercent < 0.0 &&
+        BOOL phaseSnapshotApplied = richSnapshotApplied && progressView.progressPercent < 0.0 &&
             [progressView.progressTitle isEqualToString:@"1/5 · My Drive"] &&
-            progressView.progressDetail.length == 0 &&
+            [progressView.progressDetail isEqualToString:T(@"en", @"progressChecking")] &&
+            progressView.progressIndicator.indeterminate;
+
+        [@"label=My Drive\nphase=1/5\ntransferred=12.000 MiB\nspeed=1.500 MiB/s\n"
+            writeToFile:progressPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        ReadProgressFile(progressDelegate);
+        NSString *transferDetail = [NSString stringWithFormat:
+            T(@"en", @"progressTransferredFormat"), @"12.000 MiB", @"1.500 MiB/s"];
+        if (phaseSnapshotApplied && progressView.progressPercent < 0.0 &&
+            [progressView.progressTitle isEqualToString:@"1/5 · My Drive"] &&
+            [progressView.progressDetail isEqualToString:transferDetail] &&
             progressView.progressIndicator.indeterminate) {
             printf("ok - phase-only foreground snapshot clears stale rich progress\n");
         } else {

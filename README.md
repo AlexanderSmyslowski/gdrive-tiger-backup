@@ -4,7 +4,7 @@
 
 macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Mac OS X Tiger-inspired status window. “Tiger” describes the visual style; the app requires macOS 13 Ventura or later and does not run on Mac OS X 10.4 Tiger.
 
-Current release: `v2.4.4` with a truthful running state for automatic retries, private current-phase progress in the overview and menu bar, silent authenticated and guest SMB mounting, one current persistent automatic-failure alert, a safe retry for transient NAS read failures, passive handling of unknown external disks, verified APFS and NAS identity, one coherent Dock presence, optional end-to-end `rclone crypt` backups, retained versions, verified recovery, named profiles, diagnostics, and a persistent menu bar overview.
+Current release: `v2.4.5` with macOS-15-compatible physical-disk identity in external-backup confirmations, visible aggregate check activity when a byte total is unavailable, quiet recovery confirmations and opt-in routine success notifications, a truthful running state for automatic retries, private current-phase progress in the overview and menu bar, silent authenticated and guest SMB mounting, one current persistent automatic-failure alert, a safe retry for transient NAS read failures, passive handling of unknown external disks, verified APFS and NAS identity, one coherent Dock presence, optional end-to-end `rclone crypt` backups, retained versions, verified recovery, named profiles, diagnostics, and a persistent menu bar overview.
 
 It backs up:
 
@@ -25,21 +25,21 @@ the backup does not preserve Google Drive's native document revision history.
 - Automatic schedule and mount-triggered runs can be paused from the menu bar without changing the saved schedule; manual backups remain available.
 - The controller observes macOS mount events. When an APFS volume UUID is saved, a changed `/Volumes/… 2` suffix is resolved automatically and a merely same-name disk cannot trigger a backup. Older path-only profiles remain available for manual and scheduled use, but a mount event is treated as unknown until a human explicitly binds the disk's UUID.
 - A previously unknown directly attached physical disk produces at most one passive notification per attachment. Mounting it never opens a window, takes focus, formats or writes to the disk, or starts a backup. **Set up as backup destination** revalidates the same disk and only stages it in setup; **Save** registers the disk while leaving the currently selected primary target and schedule as shown, so a NAS target is never replaced silently. **Ignore** makes no change. A dismissal remains remembered if the controller restarts during the same attachment, while fully unplugging the disk clears the notice and makes a later attachment eligible again. UUIDs retained by any named profile suppress the unknown-disk notice for that whole physical disk.
-- The overview shows the last verified run, configured schedule, exact local destination, and available destination capacity.
+- The overview shows the last verified run, configured schedule, exact local destination, and capacity clearly labelled as destination free space rather than backup progress.
 - With notifications enabled, macOS reports a failed automatic run immediately and a daily 20:00 run that is still missing at 21:00. A transient NAS mount/readiness or fail-closed destination-read failure gets exactly one controller-managed retry after 30 minutes; after sleep it remains eligible until the next wake within 24 hours. When that retry starts, its truthful running state replaces the stale “retry in 30 minutes” alert. If the retry fails, its final alert replaces the running alert. The controller restarts after a crash, alerts are deduplicated per profile and run, and only a newer successful automatic backup removes the current delivered failure alert for that profile. Delayed cleanup removes only alerts whose issue origin is older than or equal to that success, so a newer persistent failure for the same profile cannot be erased. A successful automatic backup after an active issue sends one quiet recovery confirmation, even when routine success notices are disabled. Routine successful automatic-backup notifications are opt-in through `GDRIVE_BACKUP_NOTIFY_SUCCESSES=1`; they stay silent and never open or activate the app. During upgrades, installers add the explicit disabled default to the legacy configuration and the identity-validated active profile. Inactive profiles remain fail-closed until an explicit setup Save writes their preference.
-- Scheduled, retry, mount-triggered, and menu-bar-only runs stay headless and passive, including in full-screen Spaces. The overview and menu bar show private live progress for the current copy phase without opening a foreground window. The percentage describes only that phase, not the whole backup. When rclone has not reported a trustworthy total, the progress bar remains indeterminate and no stale or invented percentage is shown. Completion appears only after the durable terminal status has been published. Final state remains available through the menu bar, with a macOS notification for automatic failures.
+- Scheduled, retry, mount-triggered, and menu-bar-only runs stay headless and passive, including in full-screen Spaces. The overview and menu bar show private live progress for the current copy phase without opening a foreground window. The percentage describes only that phase, not the whole backup. When rclone has not reported a trustworthy total, the progress bar remains indeterminate and no stale or invented percentage is shown; transferred bytes and speed show active copying, while increasing aggregate checked/listed counters make active comparison work visible without exposing file names. Completion appears only after the durable terminal status has been published. Final state remains available through the menu bar, with a macOS notification for automatic failures.
 - Named profiles keep distinct destinations, schedules, encryption policies, and last-run histories while making the one active profile explicit in setup, the overview, and the menu bar.
 - On first use, if the backup volume does not exist yet, the helper can ask to create a dedicated APFS volume on the newly attached external APFS disk.
 - In parallel, the setup window can configure a mounted NAS share, for example SMB, AFP, or NFS under `/Volumes`. A writable directory alone never counts as a NAS: the setup check and backup engine both require a verified network file-system mount.
 - After macOS mounts a configured NAS automatically, the engine waits up to 60 seconds for the verified share to become writable. This avoids treating the short interval between “mounted” and “ready for I/O” as a permanent failure.
 - The setup window can select already mounted NAS shares, run a small Bonjour search, show the exact resolved destination, save a schedule, and start a backup manually. Its system check verifies the required tools, Google Drive access, and destination before a run. Backup actions never save edited form values implicitly.
 - A `flock` lock prevents two backup jobs from running at the same time.
-- Before a real mount-triggered backup starts, the Tiger helper asks whether this volume should be used. The question stays visible on its normal Space without activating the app or appearing over another application's fullscreen Space.
+- Before a real mount-triggered backup starts, the Tiger helper asks whether this volume should be used. It identifies the physical disk by its readable media label, capacity, and connection type, followed by the logical volume name; macOS mount suffixes such as `… 2`, UUIDs, serial numbers, and BSD device identifiers are not presented as the disk identity. The question stays visible on its normal Space without activating the app or appearing over another application's fullscreen Space.
 - External disks and NAS targets are independent: plugging in the configured external disk still opens the confirmation dialog even when NAS backups are configured.
 - A direct manual start from the visible overview or setup can open the native
   AppKit helper. It stays on its original Space, never joins another app's
   fullscreen Space, and hides when another app becomes active.
-- During each `rclone copy`, the helper shows live progress, transferred size, and—when rclone reports trustworthy values—percent, speed, and ETA. Without a trustworthy total, progress remains indeterminate.
+- During each `rclone copy`, the helper shows live progress, transferred size, and—when rclone reports trustworthy values—percent, speed, and ETA. Without a trustworthy total, progress remains indeterminate while aggregate checked/listed counters continue to show that the comparison is advancing.
 - Native close and minimize controls behave like standard macOS controls; closing the overview leaves its menu bar status available.
 - The overview and menu bar open a native restore browser that combines the live backup with every actually available retained per-file version.
 - A restored file is copied to a user-selected folder outside the backup, never silently overwrites an existing file, and is published only after its SHA-256 digest matches the selected backup copy.
@@ -87,7 +87,7 @@ rclone lsd gdrive:
 For most users, download the latest installer from the GitHub releases page:
 
 1. Open <https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/latest>
-2. Download `GDrive-Backup-Tiger-2.4.4.pkg` from `Assets`.
+2. Download `GDrive-Backup-Tiger-2.4.5.pkg` from `Assets`.
 3. Double-click the package and follow the macOS Installer.
 4. Open `/Applications/GDrive Backup Tiger.app` to choose language, external disk, NAS, and schedule settings.
 
@@ -104,13 +104,13 @@ The package is currently unsigned because the project does not yet have an Apple
 
 1. Click `Done`, not `Move to Trash`.
 2. Open `System Settings > Privacy & Security`.
-3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-2.4.4.pkg`.
+3. Scroll to `Security` and click `Open Anyway` for `GDrive-Backup-Tiger-2.4.5.pkg`.
 4. Confirm with `Open Anyway`, then install the package.
 
 Advanced users can also remove the download quarantine flag before opening:
 
 ```bash
-xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-2.4.4.pkg"
+xattr -d com.apple.quarantine "$HOME/Downloads/GDrive-Backup-Tiger-2.4.5.pkg"
 ```
 
 ### Install from source
@@ -434,7 +434,7 @@ Run manually:
 /usr/local/bin/backup-google-drive.sh --run
 ```
 
-The progress bar reflects the currently active copy phase, for example `My Drive`, `Shared with me`, or one Shared Drive. It also shows the phase count, such as `3/5`. A single global percentage across all Drive areas would require an expensive pre-scan of every source. When the current phase has no trustworthy total, the indicator stays indeterminate instead of reusing an old percentage or inventing one. A completed state appears only after the terminal result has been durably published.
+The progress bar reflects the currently active copy phase, for example `My Drive`, `Shared with me`, or one Shared Drive. It also shows the phase count, such as `3/5`. A single global percentage across all Drive areas would require an expensive pre-scan of every source. When the current phase has no trustworthy total, the indicator stays indeterminate instead of reusing an old percentage or inventing one. In that state, transferred bytes and speed identify active copying; otherwise increasing aggregate checked/listed counters distinguish active comparison from preparation without revealing file names. A completed state appears only after the terminal result has been durably published.
 
 Watch logs:
 
