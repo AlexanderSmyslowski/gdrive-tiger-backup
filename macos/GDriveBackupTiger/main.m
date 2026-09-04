@@ -389,12 +389,17 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     if (self.confirmMode) {
         status = self.confirmTitle ?: T(language, @"confirmTarget");
         detail = self.confirmDetail ?: @"";
-        self.detailLabel.frame = NSMakeRect(112, 98, 250, 16);
-        // Confirmation details are usually filesystem paths. Middle truncation
-        // preserves both the volume and final destination folder in the compact UI.
-        self.detailLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+        BOOL hasMultipleLines = [detail rangeOfString:@"\n"].location != NSNotFound;
+        self.detailLabel.frame = NSMakeRect(112, 98, 250, hasMultipleLines ? 32 : 16);
+        self.detailLabel.maximumNumberOfLines = hasMultipleLines ? 2 : 1;
+        self.detailLabel.cell.wraps = hasMultipleLines;
+        self.detailLabel.lineBreakMode = hasMultipleLines
+            ? NSLineBreakByTruncatingTail
+            : NSLineBreakByTruncatingMiddle;
     } else {
         self.detailLabel.frame = NSMakeRect(112, 133, 250, 16);
+        self.detailLabel.maximumNumberOfLines = 1;
+        self.detailLabel.cell.wraps = NO;
         self.detailLabel.lineBreakMode = NSLineBreakByTruncatingTail;
         if ([self.terminalStatus isEqualToString:@"success"]) {
             status = T(language, @"completed");
@@ -713,7 +718,9 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     [subtitle drawInRect:NSMakeRect(112, 76, 250, 18) withAttributes:subtitleAttributes];
 
     if (self.confirmMode) {
-        [hint drawInRect:NSMakeRect(112, 98, 250, 16) withAttributes:hintAttributes];
+        BOOL hasMultipleLines = [hint rangeOfString:@"\n"].location != NSNotFound;
+        [hint drawInRect:NSMakeRect(112, 98, 250, hasMultipleLines ? 32 : 16)
+          withAttributes:hintAttributes];
     } else {
         [hint drawInRect:NSMakeRect(112, 133, 250, 16) withAttributes:hintAttributes];
     }
@@ -807,11 +814,11 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 }
 
 - (NSRect)primaryButtonRect {
-    return NSMakeRect(232, 116, 130, 27);
+    return NSMakeRect(232, 137, 130, 27);
 }
 
 - (NSRect)secondaryButtonRect {
-    return NSMakeRect(112, 116, 110, 27);
+    return NSMakeRect(112, 137, 110, 27);
 }
 
 - (void)drawButtonWithTitle:(NSString *)title inRect:(NSRect)rect primary:(BOOL)primary {
@@ -6356,7 +6363,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     [NSApp setActivationPolicy:self.progressForegroundMode
         ? NSApplicationActivationPolicyRegular : NSApplicationActivationPolicyAccessory];
 
-    NSSize size = self.confirmMode ? NSMakeSize(392, 162) : NSMakeSize(392, 198);
+    NSSize size = self.confirmMode ? NSMakeSize(392, 180) : NSMakeSize(392, 198);
     NSRect screenFrame = NSScreen.mainScreen ? NSScreen.mainScreen.visibleFrame : NSMakeRect(0, 0, 1200, 800);
     NSPoint origin = NSMakePoint(NSMidX(screenFrame) - size.width / 2, NSMidY(screenFrame) - size.height / 2);
 

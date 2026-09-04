@@ -173,6 +173,16 @@ SH
 #!/bin/bash
 : "${FAKE_OPEN_LOG:?}"
 printf '%s\n' "$@" >"$FAKE_OPEN_LOG"
+if [[ -n "${FAKE_CONFIRM_DETAIL_LOG:-}" ]]; then
+  arguments=("$@")
+  for ((index = 0; index < ${#arguments[@]}; index++)); do
+    if [[ "${arguments[$index]}" == "--confirm" &&
+          $((index + 2)) -lt ${#arguments[@]} ]]; then
+      printf '%s' "${arguments[$((index + 2))]}" >"$FAKE_CONFIRM_DETAIL_LOG"
+      break
+    fi
+  done
+fi
 if [[ -n "${FAKE_CONFIRM_DECISION:-}" && " $* " == *" --confirm "* ]]; then
   response_path="${!#}"
   if [[ "$response_path" == "--foreground" ]]; then
@@ -254,17 +264,121 @@ for path in "$@"; do
 done
 SH
 
-  local tool
-  for tool in diskutil plutil; do
-    cat >"$FAKE_BIN/$tool" <<'SH'
+  cat >"$FAKE_BIN/diskutil" <<'SH'
+#!/bin/bash
+if [[ "${FAKE_DISKUTIL_MODE:-}" != "external-confirmation" ]]; then
+  exit 0
+fi
+
+reference="${3:-}"
+if [[ -n "${FAKE_DISKUTIL_LOG:-}" ]]; then
+  printf '%s\n' "$reference" >>"$FAKE_DISKUTIL_LOG"
+fi
+case "$reference" in
+  "${FAKE_APFS_UUID:?}"|"${FAKE_APFS_MOUNT:?}")
+    container_size="4000785104896"
+    if [[ "${FAKE_DISKUTIL_INVALID_SIZE:-0}" == "1" ]]; then
+      container_size="not-a-size"
+    fi
+    /bin/cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>FilesystemType</key><string>apfs</string>
+<key>MountPoint</key><string>${FAKE_APFS_MOUNT}</string>
+<key>VolumeUUID</key><string>${FAKE_APFS_UUID}</string>
+<key>VolumeName</key><string>GoogleDrive-Backup</string>
+<key>DeviceIdentifier</key><string>disk89s1</string>
+<key>WritableMedia</key><true/>
+<key>BusProtocol</key><string>USB</string>
+<key>APFSContainerSize</key><string>${container_size}</string>
+<key>APFSPhysicalStores</key><array><dict>
+<key>APFSPhysicalStore</key><string>${FAKE_PHYSICAL_STORE:-disk88s1}</string>
+</dict></array>
+</dict></plist>
+PLIST
+    ;;
+  disk88s1|/dev/disk88s1)
+    if [[ "${FAKE_DISKUTIL_PHYSICAL_STATUS:-0}" != "0" ]]; then
+      exit "$FAKE_DISKUTIL_PHYSICAL_STATUS"
+    fi
+    physical_name="TOSHIBA_4TB"
+    physical_size="4000785104896"
+    physical_bus="USB"
+    if [[ "${FAKE_DISKUTIL_EMPTY_PRIMARY_FIELDS:-0}" == "1" ]]; then
+      physical_name=""
+      physical_size=""
+      physical_bus=""
+    elif [[ "${FAKE_DISKUTIL_BIDI_NAME:-0}" == "1" ]]; then
+      physical_name="TOSHIBA$(printf '\342\200\256')BT4"
+    fi
+    if [[ "${FAKE_DISKUTIL_INVALID_SIZE:-0}" == "1" ]]; then
+      physical_size="not-a-size"
+    fi
+    /bin/cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>DeviceIdentifier</key><string>disk88s1</string>
+<key>ParentWholeDisk</key><string>disk88</string>
+<key>DeviceVendor</key><string></string>
+<key>DeviceModel</key><string></string>
+<key>IORegistryEntryName</key><string>${physical_name}</string>
+<key>TotalSize</key><string>${physical_size}</string>
+<key>BusProtocol</key><string>${physical_bus}</string>
+<key>SerialNumber</key><string>SECRET-SERIAL-PHYSICAL</string>
+</dict></plist>
+PLIST
+    ;;
+  disk88|/dev/disk88)
+    /bin/cat <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>DeviceIdentifier</key><string>disk88</string>
+<key>IORegistryEntryName</key><string>TOSHIBA EXTERNAL_USB Media</string>
+<key>MediaName</key><string>EXTERNAL_USB</string>
+<key>TotalSize</key><integer>4000787027968</integer>
+<key>BusProtocol</key><string>USB</string>
+<key>SerialNumber</key><string>SECRET-SERIAL-WHOLE</string>
+</dict></plist>
+PLIST
+    ;;
+  *) exit 1 ;;
+esac
+SH
+
+  cat >"$FAKE_BIN/ioreg" <<'SH'
+#!/bin/bash
+if [[ "${FAKE_DISKUTIL_MODE:-}" != "external-confirmation" ]]; then
+  exit 1
+fi
+if [[ "${FAKE_IOREG_SLEEP_SECONDS:-0}" != "0" ]]; then
+  /bin/sleep "$FAKE_IOREG_SLEEP_SECONDS"
+fi
+if [[ "${FAKE_IOREG_STATUS:-0}" != "0" ]]; then
+  exit "$FAKE_IOREG_STATUS"
+fi
+media_name="TOSHIBA_4TB"
+if [[ "${FAKE_DISKUTIL_EMPTY_PRIMARY_FIELDS:-0}" == "1" ]]; then
+  media_name=""
+elif [[ "${FAKE_DISKUTIL_BIDI_NAME:-0}" == "1" ]]; then
+  media_name="TOSHIBA$(printf '\342\200\256')BT4"
+fi
+/bin/cat <<IOREG
++-o ${media_name}@1  <class IOMedia, id 0x100000001, registered, matched, active, busy 0>
+  |   "BSD Name" = "${FAKE_PHYSICAL_STORE:-disk88s1}"
+IOREG
+SH
+
+  cat >"$FAKE_BIN/plutil" <<'SH'
 #!/bin/bash
 exit 0
 SH
-  done
   chmod +x "$FAKE_BIN/rclone" "$FAKE_BIN/jq" "$FAKE_BIN/open" "$FAKE_BIN/flock" \
     "$FAKE_BIN/mount" "$FAKE_BIN/osascript" "$FAKE_BIN/mount-helper" \
     "$FAKE_BIN/cmp" "$FAKE_BIN/trash" "$FAKE_BIN/date" \
-    "$FAKE_BIN/diskutil" "$FAKE_BIN/plutil"
+    "$FAKE_BIN/diskutil" "$FAKE_BIN/ioreg" "$FAKE_BIN/plutil"
 }
 
 enable_state_publish_order_spy() {
@@ -325,6 +439,8 @@ run_backup_with_mode() {
     GDRIVE_BACKUP_NAS_MOUNT_HELPER="$FAKE_BIN/mount-helper" \
     GDRIVE_BACKUP_OPEN_BIN="$FAKE_BIN/open" \
     GDRIVE_BACKUP_OSASCRIPT="${GDRIVE_BACKUP_OSASCRIPT:-$FAKE_BIN/osascript}" \
+    GDRIVE_BACKUP_DISKUTIL="${GDRIVE_BACKUP_DISKUTIL:-$FAKE_BIN/diskutil}" \
+    GDRIVE_BACKUP_IOREG="${GDRIVE_BACKUP_IOREG:-$FAKE_BIN/ioreg}" \
     GDRIVE_BACKUP_CMP_BIN="$FAKE_BIN/cmp" \
     GDRIVE_BACKUP_DEST_ROOT="$NAS_MOUNT/backup" \
     GDRIVE_BACKUP_CONFIRM="${GDRIVE_BACKUP_CONFIRM:-0}" \
@@ -381,6 +497,18 @@ run_backup_with_mode() {
     FAKE_OPEN_LOG="$OPEN_LOG" \
     FAKE_OPEN_STATUS="${FAKE_OPEN_STATUS:-0}" \
     FAKE_CONFIRM_DECISION="${FAKE_CONFIRM_DECISION:-}" \
+    FAKE_CONFIRM_DETAIL_LOG="${FAKE_CONFIRM_DETAIL_LOG:-}" \
+    FAKE_DISKUTIL_MODE="${FAKE_DISKUTIL_MODE:-}" \
+    FAKE_DISKUTIL_PHYSICAL_STATUS="${FAKE_DISKUTIL_PHYSICAL_STATUS:-0}" \
+    FAKE_DISKUTIL_EMPTY_PRIMARY_FIELDS="${FAKE_DISKUTIL_EMPTY_PRIMARY_FIELDS:-0}" \
+    FAKE_DISKUTIL_BIDI_NAME="${FAKE_DISKUTIL_BIDI_NAME:-0}" \
+    FAKE_DISKUTIL_INVALID_SIZE="${FAKE_DISKUTIL_INVALID_SIZE:-0}" \
+    FAKE_DISKUTIL_LOG="${FAKE_DISKUTIL_LOG:-}" \
+    FAKE_IOREG_SLEEP_SECONDS="${FAKE_IOREG_SLEEP_SECONDS:-0}" \
+    FAKE_IOREG_STATUS="${FAKE_IOREG_STATUS:-0}" \
+    FAKE_PHYSICAL_STORE="${FAKE_PHYSICAL_STORE:-disk88s1}" \
+    FAKE_APFS_UUID="${FAKE_APFS_UUID:-}" \
+    FAKE_APFS_MOUNT="${FAKE_APFS_MOUNT:-}" \
     GDRIVE_BACKUP_FAIL_TERMINAL_SUMMARY="${GDRIVE_BACKUP_FAIL_TERMINAL_SUMMARY:-0}" \
     GDRIVE_BACKUP_FAIL_RICH_PROGRESS_AT="${GDRIVE_BACKUP_FAIL_RICH_PROGRESS_AT:-0}" \
     GDRIVE_BACKUP_RICH_PROGRESS_COUNT_FILE="${GDRIVE_BACKUP_RICH_PROGRESS_COUNT_FILE:-}" \
@@ -1728,6 +1856,277 @@ test_confirmation_uses_injected_open_command() {
   fi
 }
 
+test_external_confirmation_identifies_physical_disk() {
+  local name="external confirmation names the physical disk without technical identifiers"
+  local app detail_file diskutil_log expected mount uuid status detail
+  prepare_test_environment
+  app="$TEST_HOME/GDrive Backup Tiger.app"
+  detail_file="$TEST_HOME/confirm-detail"
+  diskutil_log="$TEST_HOME/diskutil-calls"
+  mount="$TEST_HOME/GoogleDrive-Backup 2"
+  uuid="11111111-2222-3333-4444-555555555555"
+  mkdir -p "$app" "$mount"
+  expected=$'Festplatte: TOSHIBA_4TB · 4 TB · USB\nVolume: GoogleDrive-Backup'
+
+  GDRIVE_BACKUP_CONFIRM=1 \
+    FAKE_CONFIRM_DECISION=yes \
+    FAKE_CONFIRM_DETAIL_LOG="$detail_file" \
+    FAKE_DISKUTIL_MODE=external-confirmation \
+    FAKE_DISKUTIL_LOG="$diskutil_log" \
+    FAKE_APFS_UUID="$uuid" \
+    FAKE_APFS_MOUNT="$mount" \
+    run_backup \
+      "GDRIVE_BACKUP_TARGET=apfs" \
+      "GDRIVE_BACKUP_VOLUME=$mount" \
+      "GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup" \
+      "GDRIVE_BACKUP_VOLUME_UUID=$uuid" \
+      "GDRIVE_BACKUP_DEST_ROOT=$mount" \
+      "GDRIVE_BACKUP_LANG=de" \
+      "GDRIVE_BACKUP_ANIMATION_APP=$app"
+  status=$?
+  detail="$(cat "$detail_file" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" && "$detail" == "$expected" &&
+        "$detail" != *"$mount"* && "$detail" != *'/Volumes/'* &&
+        "$detail" != *'GoogleDrive-Backup 2'* && "$detail" != *'/dev/disk'* &&
+        ! "$detail" =~ disk[0-9]+ &&
+        ! "$detail" =~ [[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12} &&
+        "$detail" != *'SECRET-SERIAL'* ]] &&
+     ! /usr/bin/grep -Fxq 'disk88' "$diskutil_log"; then
+    pass "$name"
+  else
+    fail "$name (exit=$status detail=${detail//$'\n'/,})"
+  fi
+}
+
+test_external_confirmation_has_private_fallback() {
+  local name="external confirmation fallback stays useful and hides mount suffixes"
+  local app detail_file expected mount uuid status detail
+  prepare_test_environment
+  app="$TEST_HOME/GDrive Backup Tiger.app"
+  detail_file="$TEST_HOME/confirm-detail"
+  mount="$TEST_HOME/GoogleDrive-Backup 2"
+  uuid="11111111-2222-3333-4444-555555555555"
+  mkdir -p "$app" "$mount"
+  expected=$'Festplatte: Externe Festplatte · 4 TB · USB\nVolume: GoogleDrive-Backup'
+
+  GDRIVE_BACKUP_CONFIRM=1 \
+    FAKE_CONFIRM_DECISION=yes \
+    FAKE_CONFIRM_DETAIL_LOG="$detail_file" \
+    FAKE_DISKUTIL_MODE=external-confirmation \
+    FAKE_DISKUTIL_PHYSICAL_STATUS=1 \
+    FAKE_IOREG_STATUS=1 \
+    FAKE_APFS_UUID="$uuid" \
+    FAKE_APFS_MOUNT="$mount" \
+    run_backup \
+      "GDRIVE_BACKUP_TARGET=apfs" \
+      "GDRIVE_BACKUP_VOLUME=$mount" \
+      "GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup" \
+      "GDRIVE_BACKUP_VOLUME_UUID=$uuid" \
+      "GDRIVE_BACKUP_DEST_ROOT=$mount" \
+      "GDRIVE_BACKUP_LANG=de" \
+      "GDRIVE_BACKUP_ANIMATION_APP=$app"
+  status=$?
+  detail="$(cat "$detail_file" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" && "$detail" == "$expected" &&
+        "$detail" != *"$mount"* && "$detail" != *'/Volumes/'* &&
+        "$detail" != *'GoogleDrive-Backup 2'* && "$detail" != *'/dev/disk'* &&
+        ! "$detail" =~ disk[0-9]+ &&
+        ! "$detail" =~ [[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12} &&
+        "$detail" != *'SECRET-SERIAL'* ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status detail=${detail//$'\n'/,})"
+  fi
+}
+
+test_external_confirmation_uses_nonempty_metadata_fallbacks() {
+  local name="external confirmation skips empty disk metadata and uses whole-disk fallbacks"
+  local app detail_file expected mount uuid status detail
+  prepare_test_environment
+  app="$TEST_HOME/GDrive Backup Tiger.app"
+  detail_file="$TEST_HOME/confirm-detail"
+  mount="$TEST_HOME/GoogleDrive-Backup 2"
+  uuid="11111111-2222-3333-4444-555555555555"
+  mkdir -p "$app" "$mount"
+  expected=$'Festplatte: TOSHIBA EXTERNAL_USB · 4 TB · USB\nVolume: GoogleDrive-Backup'
+
+  GDRIVE_BACKUP_CONFIRM=1 \
+    FAKE_CONFIRM_DECISION=yes \
+    FAKE_CONFIRM_DETAIL_LOG="$detail_file" \
+    FAKE_DISKUTIL_MODE=external-confirmation \
+    FAKE_DISKUTIL_EMPTY_PRIMARY_FIELDS=1 \
+    FAKE_APFS_UUID="$uuid" \
+    FAKE_APFS_MOUNT="$mount" \
+    run_backup \
+      "GDRIVE_BACKUP_TARGET=apfs" \
+      "GDRIVE_BACKUP_VOLUME=$mount" \
+      "GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup" \
+      "GDRIVE_BACKUP_VOLUME_UUID=$uuid" \
+      "GDRIVE_BACKUP_DEST_ROOT=$mount" \
+      "GDRIVE_BACKUP_LANG=de" \
+      "GDRIVE_BACKUP_ANIMATION_APP=$app"
+  status=$?
+  detail="$(cat "$detail_file" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" && "$detail" == "$expected" &&
+        "$detail" != *'SECRET-SERIAL'* && ! "$detail" =~ disk[0-9]+ ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status detail=${detail//$'\n'/,})"
+  fi
+}
+
+test_external_confirmation_rejects_bidi_disk_metadata() {
+  local name="external confirmation rejects bidirectional disk labels"
+  local app detail_file expected mount uuid status detail
+  prepare_test_environment
+  app="$TEST_HOME/GDrive Backup Tiger.app"
+  detail_file="$TEST_HOME/confirm-detail"
+  mount="$TEST_HOME/GoogleDrive-Backup 2"
+  uuid="11111111-2222-3333-4444-555555555555"
+  mkdir -p "$app" "$mount"
+  expected=$'Festplatte: TOSHIBA EXTERNAL_USB · 4 TB · USB\nVolume: GoogleDrive-Backup'
+
+  GDRIVE_BACKUP_CONFIRM=1 \
+    FAKE_CONFIRM_DECISION=yes \
+    FAKE_CONFIRM_DETAIL_LOG="$detail_file" \
+    FAKE_DISKUTIL_MODE=external-confirmation \
+    FAKE_DISKUTIL_BIDI_NAME=1 \
+    FAKE_APFS_UUID="$uuid" \
+    FAKE_APFS_MOUNT="$mount" \
+    run_backup \
+      "GDRIVE_BACKUP_TARGET=apfs" \
+      "GDRIVE_BACKUP_VOLUME=$mount" \
+      "GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup" \
+      "GDRIVE_BACKUP_VOLUME_UUID=$uuid" \
+      "GDRIVE_BACKUP_DEST_ROOT=$mount" \
+      "GDRIVE_BACKUP_LANG=de" \
+      "GDRIVE_BACKUP_ANIMATION_APP=$app"
+  status=$?
+  detail="$(cat "$detail_file" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" && "$detail" == "$expected" ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status detail=${detail//$'\n'/,})"
+  fi
+}
+
+test_external_confirmation_rejects_invalid_physical_store_id() {
+  local name="external confirmation never queries an invalid physical-store identifier"
+  local app detail_file diskutil_log expected mount uuid status detail invalid_id
+  prepare_test_environment
+  app="$TEST_HOME/GDrive Backup Tiger.app"
+  detail_file="$TEST_HOME/confirm-detail"
+  diskutil_log="$TEST_HOME/diskutil-calls"
+  mount="$TEST_HOME/GoogleDrive-Backup 2"
+  uuid="11111111-2222-3333-4444-555555555555"
+  invalid_id='disk88s1-invalid'
+  mkdir -p "$app" "$mount"
+  expected=$'Festplatte: Externe Festplatte · 4 TB · USB\nVolume: GoogleDrive-Backup'
+
+  GDRIVE_BACKUP_CONFIRM=1 \
+    FAKE_CONFIRM_DECISION=yes \
+    FAKE_CONFIRM_DETAIL_LOG="$detail_file" \
+    FAKE_DISKUTIL_MODE=external-confirmation \
+    FAKE_DISKUTIL_LOG="$diskutil_log" \
+    FAKE_PHYSICAL_STORE="$invalid_id" \
+    FAKE_APFS_UUID="$uuid" \
+    FAKE_APFS_MOUNT="$mount" \
+    run_backup \
+      "GDRIVE_BACKUP_TARGET=apfs" \
+      "GDRIVE_BACKUP_VOLUME=$mount" \
+      "GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup" \
+      "GDRIVE_BACKUP_VOLUME_UUID=$uuid" \
+      "GDRIVE_BACKUP_DEST_ROOT=$mount" \
+      "GDRIVE_BACKUP_LANG=de" \
+      "GDRIVE_BACKUP_ANIMATION_APP=$app"
+  status=$?
+  detail="$(cat "$detail_file" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" && "$detail" == "$expected" ]] &&
+     ! /usr/bin/grep -Fxq "$invalid_id" "$diskutil_log"; then
+    pass "$name"
+  else
+    fail "$name (exit=$status detail=${detail//$'\n'/,})"
+  fi
+}
+
+test_external_confirmation_ignores_invalid_capacity() {
+  local name="external confirmation replaces an invalid physical-store capacity"
+  local app detail_file expected mount uuid status detail
+  prepare_test_environment
+  app="$TEST_HOME/GDrive Backup Tiger.app"
+  detail_file="$TEST_HOME/confirm-detail"
+  mount="$TEST_HOME/GoogleDrive-Backup 2"
+  uuid="11111111-2222-3333-4444-555555555555"
+  mkdir -p "$app" "$mount"
+  expected=$'Festplatte: TOSHIBA_4TB · 4 TB · USB\nVolume: GoogleDrive-Backup'
+
+  GDRIVE_BACKUP_CONFIRM=1 \
+    FAKE_CONFIRM_DECISION=yes \
+    FAKE_CONFIRM_DETAIL_LOG="$detail_file" \
+    FAKE_DISKUTIL_MODE=external-confirmation \
+    FAKE_DISKUTIL_INVALID_SIZE=1 \
+    FAKE_APFS_UUID="$uuid" \
+    FAKE_APFS_MOUNT="$mount" \
+    run_backup \
+      "GDRIVE_BACKUP_TARGET=apfs" \
+      "GDRIVE_BACKUP_VOLUME=$mount" \
+      "GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup" \
+      "GDRIVE_BACKUP_VOLUME_UUID=$uuid" \
+      "GDRIVE_BACKUP_DEST_ROOT=$mount" \
+      "GDRIVE_BACKUP_LANG=de" \
+      "GDRIVE_BACKUP_ANIMATION_APP=$app"
+  status=$?
+  detail="$(cat "$detail_file" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" && "$detail" == "$expected" ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status detail=${detail//$'\n'/,})"
+  fi
+}
+
+test_external_confirmation_waits_for_realistic_registry_lookup() {
+  local name="external confirmation tolerates a realistic delayed media lookup"
+  local app detail_file expected mount uuid status detail
+  prepare_test_environment
+  app="$TEST_HOME/GDrive Backup Tiger.app"
+  detail_file="$TEST_HOME/confirm-detail"
+  mount="$TEST_HOME/GoogleDrive-Backup 2"
+  uuid="11111111-2222-3333-4444-555555555555"
+  mkdir -p "$app" "$mount"
+  expected=$'Festplatte: TOSHIBA_4TB · 4 TB · USB\nVolume: GoogleDrive-Backup'
+
+  GDRIVE_BACKUP_CONFIRM=1 \
+    FAKE_CONFIRM_DECISION=yes \
+    FAKE_CONFIRM_DETAIL_LOG="$detail_file" \
+    FAKE_DISKUTIL_MODE=external-confirmation \
+    FAKE_DISKUTIL_PHYSICAL_STATUS=1 \
+    FAKE_IOREG_SLEEP_SECONDS=2 \
+    FAKE_APFS_UUID="$uuid" \
+    FAKE_APFS_MOUNT="$mount" \
+    run_backup \
+      "GDRIVE_BACKUP_TARGET=apfs" \
+      "GDRIVE_BACKUP_VOLUME=$mount" \
+      "GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup" \
+      "GDRIVE_BACKUP_VOLUME_UUID=$uuid" \
+      "GDRIVE_BACKUP_DEST_ROOT=$mount" \
+      "GDRIVE_BACKUP_LANG=de" \
+      "GDRIVE_BACKUP_ANIMATION_APP=$app"
+  status=$?
+  detail="$(cat "$detail_file" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" && "$detail" == "$expected" ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status detail=${detail//$'\n'/,})"
+  fi
+}
+
 test_declined_confirmation_is_skipped() {
   local name="declined destination confirmation is skipped without replacing backup history"
   local before after state status
@@ -2259,6 +2658,13 @@ test_unavailable_nas_mount_has_retryable_reason
 test_permanent_nas_permission_failure_is_not_retryable
 test_retry_metadata_is_published
 test_confirmation_uses_injected_open_command
+test_external_confirmation_identifies_physical_disk
+test_external_confirmation_has_private_fallback
+test_external_confirmation_uses_nonempty_metadata_fallbacks
+test_external_confirmation_rejects_bidi_disk_metadata
+test_external_confirmation_rejects_invalid_physical_store_id
+test_external_confirmation_ignores_invalid_capacity
+test_external_confirmation_waits_for_realistic_registry_lookup
 test_declined_confirmation_is_skipped
 test_term_signal_publishes_cancellation
 test_failed_ui_launch_cleans_internal_state

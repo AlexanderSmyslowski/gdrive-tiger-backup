@@ -7,7 +7,21 @@ VALIDATOR="$ROOT/scripts/validate-release.sh"
 NOTES_EXTRACTOR="$ROOT/scripts/changelog-release-notes.sh"
 WORKFLOW="$ROOT/.github/workflows/release.yml"
 PKG_VERIFIER="$ROOT/packaging/verify-pkg.sh"
+FIXTURE_ROOT="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/gdrive-release-workflow-test.XXXXXX")" || exit 1
+FIXTURE_VALIDATOR="$FIXTURE_ROOT/scripts/validate-release.sh"
 failures=0
+
+cleanup() {
+  local exit_status=$?
+  trap - EXIT
+  if [[ -d "$FIXTURE_ROOT" ]] && ! "$ROOT/scripts/trash-path.sh" "$FIXTURE_ROOT"; then
+    printf 'not ok - unable to move release-workflow fixture to Trash: %s\n' \
+      "$FIXTURE_ROOT" >&2
+    exit_status=1
+  fi
+  exit "$exit_status"
+}
+trap cleanup EXIT
 
 check_contains() {
   local file="$1"
@@ -35,29 +49,60 @@ check_executable() {
 version="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$INFO_PLIST")"
 tag="v${version}"
 
+write_fixture_changelog() {
+  local unreleased_entry="$1"
+  {
+    printf '# Changelog\n\n## Unreleased\n\n'
+    if [[ -n "$unreleased_entry" ]]; then
+      printf -- '- %s\n\n' "$unreleased_entry"
+    fi
+    printf '## %s - 2026-08-01\n\n- Fixture release notes.\n' "$tag"
+  } >"$FIXTURE_ROOT/CHANGELOG.md"
+}
+
 check_executable "$VALIDATOR" "release metadata validator is executable"
 check_executable "$NOTES_EXTRACTOR" "changelog release-note extractor is executable"
 
 if [[ -x "$VALIDATOR" ]]; then
-  if "$VALIDATOR" "$tag" >/dev/null; then
-    printf 'ok - matching release tag passes validation\n'
+  # The validator resolves metadata from its own location, so a copied
+  # production script can exercise release-ready inputs without mutating the
+  # active development tree.
+  /bin/mkdir -p "$FIXTURE_ROOT/scripts" "$FIXTURE_ROOT/macos/GDriveBackupTiger"
+  /bin/cp "$VALIDATOR" "$FIXTURE_VALIDATOR"
+  /bin/cp "$INFO_PLIST" "$FIXTURE_ROOT/macos/GDriveBackupTiger/Info.plist"
+  # Backticks are literal Markdown delimiters in the fixture README.
+  # shellcheck disable=SC2016
+  printf 'Current release: `%s`\nGDrive-Backup-Tiger-%s.pkg\n' \
+    "$tag" "$version" >"$FIXTURE_ROOT/README.md"
+  write_fixture_changelog ""
+
+  if "$FIXTURE_VALIDATOR" "$tag" >/dev/null; then
+    printf 'ok - matching release tag passes validation in a release-ready fixture\n'
   else
-    printf 'not ok - matching release tag passes validation\n'
+    printf 'not ok - matching release tag passes validation in a release-ready fixture\n'
     failures=$((failures + 1))
   fi
 
-  if "$VALIDATOR" "v999.0.0" >/dev/null 2>&1; then
-    printf 'not ok - mismatched release tag is rejected\n'
+  if "$FIXTURE_VALIDATOR" "v999.0.0" >/dev/null 2>&1; then
+    printf 'not ok - mismatched release tag is rejected in the fixture\n'
     failures=$((failures + 1))
   else
-    printf 'ok - mismatched release tag is rejected\n'
+    printf 'ok - mismatched release tag is rejected in the fixture\n'
   fi
 
-  if "$VALIDATOR" "$version" >/dev/null 2>&1; then
-    printf 'not ok - malformed release tag is rejected\n'
+  if "$FIXTURE_VALIDATOR" "$version" >/dev/null 2>&1; then
+    printf 'not ok - malformed release tag is rejected in the fixture\n'
     failures=$((failures + 1))
   else
-    printf 'ok - malformed release tag is rejected\n'
+    printf 'ok - malformed release tag is rejected in the fixture\n'
+  fi
+
+  write_fixture_changelog "Pending fixture work."
+  if "$FIXTURE_VALIDATOR" "$tag" >/dev/null 2>&1; then
+    printf 'not ok - fixture metadata with Unreleased entries is rejected\n'
+    failures=$((failures + 1))
+  else
+    printf 'ok - fixture metadata with Unreleased entries is rejected\n'
   fi
 fi
 

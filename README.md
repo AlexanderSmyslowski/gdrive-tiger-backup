@@ -34,7 +34,7 @@ the backup does not preserve Google Drive's native document revision history.
 - After macOS mounts a configured NAS automatically, the engine waits up to 60 seconds for the verified share to become writable. This avoids treating the short interval between “mounted” and “ready for I/O” as a permanent failure.
 - The setup window can select already mounted NAS shares, run a small Bonjour search, show the exact resolved destination, save a schedule, and start a backup manually. Its system check verifies the required tools, Google Drive access, and destination before a run. Backup actions never save edited form values implicitly.
 - A `flock` lock prevents two backup jobs from running at the same time.
-- Before a real mount-triggered backup starts, the Tiger helper asks whether this volume should be used. The question stays visible on its normal Space without activating the app or appearing over another application's fullscreen Space.
+- Before a real mount-triggered backup starts, the Tiger helper asks whether this volume should be used. It identifies the physical disk by its readable media label, capacity, and connection type, followed by the logical volume name; macOS mount suffixes such as `… 2`, UUIDs, serial numbers, and BSD device identifiers are not presented as the disk identity. The question stays visible on its normal Space without activating the app or appearing over another application's fullscreen Space.
 - External disks and NAS targets are independent: plugging in the configured external disk still opens the confirmation dialog even when NAS backups are configured.
 - A direct manual start from the visible overview or setup can open the native
   AppKit helper. It stays on its original Space, never joins another app's
