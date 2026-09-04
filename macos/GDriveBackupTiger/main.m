@@ -1593,6 +1593,9 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, strong) NSMutableSet<NSString *> *pendingBackupSuccessIdentifiers;
 - (void)processBackupSuccessNotificationDecision:
     (NSDictionary<NSString *, NSString *> *)decision;
+- (void)processBackupSuccessNotificationDecision:
+    (NSDictionary<NSString *, NSString *> *)decision
+         capturedActiveIssueTimestamp:(NSTimeInterval)capturedActiveIssueTimestamp;
 - (BOOL)isBackupSuccessDecisionCurrent:
     (NSDictionary<NSString *, NSString *> *)decision
          capturedActiveIssueTimestamp:(NSTimeInterval)capturedActiveIssueTimestamp;
@@ -2592,7 +2595,7 @@ static void GDTAdvanceBackupNotificationAcceptedState(
     NSTimeInterval newestIssueTimestamp = MAX(
         dismissedIssueTimestamp,
         MAX([defaults doubleForKey:activeIssueKey], latestAcceptedIssueTimestamp));
-    if (newestIssueTimestamp > eventTimestamp) return NO;
+    if (newestIssueTimestamp >= eventTimestamp) return NO;
 
     NSString *bodyKey = decision[@"bodyKey"] ?: @"";
     BOOL recovery = [@[@"backupNotificationRecoverySuccessBody",
@@ -2698,12 +2701,14 @@ static void GDTAdvanceBackupNotificationAcceptedState(
 - (void)reconcileBackupSuccessNotificationsForProfileID:(NSString *)profileID
                                               completion:(void (^)(NSTimeInterval))completion {
     __weak typeof(self) weakSelf = self;
-    [self enumerateDeliveredBackupNotificationsWithCompletion:
-        ^(NSArray<UNNotification *> *deliveredNotifications) {
+    // Requests move from pending to delivered. Reading pending first means a
+    // transition during reconciliation is visible in at least one snapshot.
+    [self enumeratePendingBackupNotificationRequestsWithCompletion:
+        ^(NSArray<UNNotificationRequest *> *pendingRequests) {
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf) return;
-        [strongSelf enumeratePendingBackupNotificationRequestsWithCompletion:
-            ^(NSArray<UNNotificationRequest *> *pendingRequests) {
+        [strongSelf enumerateDeliveredBackupNotificationsWithCompletion:
+            ^(NSArray<UNNotification *> *deliveredNotifications) {
             void (^finish)(void) = ^{
                 typeof(self) innerSelf = weakSelf;
                 if (!innerSelf) return;
@@ -2724,6 +2729,15 @@ static void GDTAdvanceBackupNotificationAcceptedState(
 
 - (void)processBackupSuccessNotificationDecision:
     (NSDictionary<NSString *, NSString *> *)decision {
+    // Direct callers have no refresh snapshot; production supplies one below
+    // so it can revalidate the current issue after asynchronous reconciliation.
+    [self processBackupSuccessNotificationDecision:decision
+                          capturedActiveIssueTimestamp:-1];
+}
+
+- (void)processBackupSuccessNotificationDecision:
+    (NSDictionary<NSString *, NSString *> *)decision
+         capturedActiveIssueTimestamp:(NSTimeInterval)capturedActiveIssueTimestamp {
     NSDictionary<NSString *, NSString *> *deliveryDecision = [decision copy];
     NSString *identifier = deliveryDecision[@"identifier"];
     NSString *profileID = deliveryDecision[@"profileID"];
@@ -2755,6 +2769,12 @@ static void GDTAdvanceBackupNotificationAcceptedState(
             [strongSelf.pendingBackupSuccessIdentifiers removeObject:identifier];
             return;
         }
+        if (capturedActiveIssueTimestamp >= 0 &&
+            ![strongSelf isBackupSuccessDecisionCurrent:deliveryDecision
+                               capturedActiveIssueTimestamp:capturedActiveIssueTimestamp]) {
+            [strongSelf.pendingBackupSuccessIdentifiers removeObject:identifier];
+            return;
+        }
 
         [strongSelf deliverBackupNotificationDecision:deliveryDecision
                                            completion:^(BOOL delivered) {
@@ -2775,10 +2795,9 @@ static void GDTAdvanceBackupNotificationAcceptedState(
                     backupNotificationDefaultsKeyForProfileID:profileID
                                                         suffix:@"lastDeliveredSuccessIdentifier"];
                 NSTimeInterval currentTimestamp = 0;
-                NSString *previousIdentifier = nil;
                 GDTBackupSuccessAcceptedState(
                     defaults, profileID, stateKey, timestampKey, identifierKey,
-                    &currentTimestamp, &previousIdentifier);
+                    &currentTimestamp, nil);
                 if (eventTimestamp <= currentTimestamp) {
                     [innerSelf removeDeliveredBackupNotificationIdentifiers:@[identifier]];
                     [innerSelf removePendingBackupNotificationIdentifiers:@[identifier]];
@@ -2790,12 +2809,8 @@ static void GDTAdvanceBackupNotificationAcceptedState(
                 GDTPersistBackupSuccessAcceptedState(
                     defaults, stateKey, timestampKey, identifierKey,
                     eventTimestamp, identifier);
-                NSTimeInterval previousTimestamp =
-                    GDTBackupSuccessIdentifierTimestamp(profileID, previousIdentifier);
-                if (previousTimestamp > 0 && previousTimestamp < eventTimestamp) {
-                    [innerSelf removeDeliveredBackupNotificationIdentifiers:@[previousIdentifier]];
-                    [innerSelf removePendingBackupNotificationIdentifiers:@[previousIdentifier]];
-                }
+                // Only Notification Center metadata can authorize retirement:
+                // a matching identifier alone may belong to a different kind.
                 [innerSelf reconcileBackupSuccessNotificationsForProfileID:profileID
                                                                   completion:nil];
             };
@@ -4133,7 +4148,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                                                         summary:summary
                                                          status:status];
             if (successDecisionCurrent) {
-                [innerSelf processBackupSuccessNotificationDecision:successDecision];
+                [innerSelf processBackupSuccessNotificationDecision:successDecision
+                                      capturedActiveIssueTimestamp:activeIssueTimestamp];
             }
             innerSelf.lastOverviewSnapshot = displaySnapshot;
             if ([innerSelf.window.contentView isKindOfClass:TigerOverviewView.class]) {
