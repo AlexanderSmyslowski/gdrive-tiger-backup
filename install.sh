@@ -53,6 +53,25 @@ APP_CONTENTS="$APP_DIR/Contents"
 AGENT_SRC="$ROOT/launchd/com.commcats.gdrivebackup.plist"
 AGENT_DST="$HOME/Library/LaunchAgents/com.commcats.gdrivebackup.plist"
 
+path_has_untrusted_component() {
+  local candidate="$1"
+  [[ -L "$candidate" || ( -e "$candidate" && ! -d "$candidate" ) ]]
+}
+
+require_trusted_config_store() {
+  local store="$1"
+  local config_parent="${store%/*}"
+  local user_home="${config_parent%/*}"
+  if [[ -L "$user_home" || ! -d "$user_home" ]] ||
+     path_has_untrusted_component "$config_parent" ||
+     path_has_untrusted_component "$store"; then
+    echo "The configuration store path is not trusted." >&2
+    return 73
+  fi
+}
+
+require_trusted_config_store "$CONFIG_DIR" || exit $?
+
 if [[ "${INSTALL_DEPS:-0}" == "1" ]]; then
   if ! command -v brew >/dev/null 2>&1; then
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
@@ -356,6 +375,7 @@ migrate_success_notification_preference() {
 
 ACTIVE_PROFILE_CONFIG=""
 migrate_notification_success_preferences() {
+  require_trusted_config_store "$CONFIG_DIR" || return
   if [[ ! -f "$CONFIG_FILE" || -L "$CONFIG_FILE" ]]; then
     echo "The legacy configuration is not a trusted regular file." >&2
     return 73

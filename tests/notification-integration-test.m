@@ -31,6 +31,9 @@ static UNUserNotificationCenter *GDTNotificationIntegrationCurrentCenter;
 - (BOOL)isBackupSuccessDecisionCurrent:
     (NSDictionary<NSString *, NSString *> *)decision
          capturedActiveIssueTimestamp:(NSTimeInterval)capturedActiveIssueTimestamp;
+- (BOOL)isBackupSuccessDecisionSourceCurrent:
+    (NSDictionary<NSString *, NSString *> *)decision
+         capturedActiveIssueTimestamp:(NSTimeInterval)capturedActiveIssueTimestamp;
 - (void)processAutomaticRetryDecision:(NSDictionary<NSString *, NSString *> *)decision;
 - (NSUserDefaults *)backupNotificationDefaultsStore;
 - (void)deliverBackupNotificationDecision:(NSDictionary<NSString *, NSString *> *)decision
@@ -101,6 +104,7 @@ static UNUserNotificationCenter *GDTNotificationIntegrationCurrentCenter;
 
 @interface NotificationTestDelegate : AppDelegate
 @property(nonatomic, strong) NSUserDefaults *testDefaults;
+@property(nonatomic) BOOL useRealSuccessSourceValidation;
 @property(nonatomic) NSInteger deliveryCalls;
 @property(nonatomic) BOOL deliverySucceeds;
 @property(nonatomic) BOOL testTimeSensitiveNotificationsEnabled;
@@ -152,6 +156,7 @@ static UNUserNotificationCenter *GDTNotificationIntegrationCurrentCenter;
 @interface BackupSuccessPreAddRaceTestDelegate : AppDelegate
 @property(nonatomic, strong) NSUserDefaults *testDefaults;
 @property(nonatomic, strong) BackupSuccessPreAddRaceCenter *testNotificationCenter;
+@property(nonatomic) BOOL useRealSuccessSourceValidation;
 @end
 
 @interface BackupNotificationAuthorizationSettings : NSObject
@@ -339,6 +344,14 @@ static UNUserNotificationCenter *GDTNotificationIntegrationCurrentCenter;
     return self.testTimeSensitiveNotificationsEnabled;
 }
 
+- (BOOL)isBackupSuccessDecisionSourceCurrent:
+    (NSDictionary<NSString *, NSString *> *)decision
+         capturedActiveIssueTimestamp:(NSTimeInterval)capturedActiveIssueTimestamp {
+    if (!self.useRealSuccessSourceValidation) return YES;
+    return [super isBackupSuccessDecisionSourceCurrent:decision
+                          capturedActiveIssueTimestamp:capturedActiveIssueTimestamp];
+}
+
 - (void)deliverBackupNotificationDecision:(NSDictionary<NSString *, NSString *> *)decision
                                 completion:(void (^)(BOOL delivered))completion {
     self.deliveryCalls++;
@@ -499,6 +512,14 @@ static UNUserNotificationCenter *GDTNotificationIntegrationCurrentCenter;
 
 - (UNUserNotificationCenter *)backupNotificationCenter {
     return (UNUserNotificationCenter *)(id)self.testNotificationCenter;
+}
+
+- (BOOL)isBackupSuccessDecisionSourceCurrent:
+    (NSDictionary<NSString *, NSString *> *)decision
+         capturedActiveIssueTimestamp:(NSTimeInterval)capturedActiveIssueTimestamp {
+    if (!self.useRealSuccessSourceValidation) return YES;
+    return [super isBackupSuccessDecisionSourceCurrent:decision
+                          capturedActiveIssueTimestamp:capturedActiveIssueTimestamp];
 }
 
 @end
@@ -920,6 +941,116 @@ int main(void) {
         Assert(currentGateAvailable && !equalRecoveryCurrent &&
                equalAcceptedIssue.deliveryCalls == 0,
                @"a recovery must be strictly newer than an accepted issue");
+
+        NSTimeInterval sourceNow = floor(NSDate.date.timeIntervalSince1970);
+        NSTimeInterval sourceStartedAt = sourceNow - 120;
+        NSTimeInterval sourceFinishedAt = sourceNow - 60;
+        NSString *sourceConfigPath = [NSTemporaryDirectory()
+            stringByAppendingPathComponent:[NSString stringWithFormat:
+                @"gdrive-success-source-config-%@", NSUUID.UUID.UUIDString]];
+        NSString *sourceSummaryPath = [NSTemporaryDirectory()
+            stringByAppendingPathComponent:[NSString stringWithFormat:
+                @"gdrive-success-source-summary-%@", NSUUID.UUID.UUIDString]];
+        NSString *enabledSuccessConfig =
+            @"GDRIVE_BACKUP_PROFILE_ID=office\n"
+             "GDRIVE_BACKUP_SCHEDULE=daily\n"
+             "GDRIVE_BACKUP_NOTIFY_FAILURES=1\n"
+             "GDRIVE_BACKUP_NOTIFY_SUCCESSES=1\n"
+             "GDRIVE_BACKUP_PAUSED=0\n";
+        NSString *disabledSuccessConfig =
+            @"GDRIVE_BACKUP_PROFILE_ID=office\n"
+             "GDRIVE_BACKUP_SCHEDULE=daily\n"
+             "GDRIVE_BACKUP_NOTIFY_FAILURES=1\n"
+             "GDRIVE_BACKUP_NOTIFY_SUCCESSES=0\n"
+             "GDRIVE_BACKUP_PAUSED=0\n";
+        NSString *currentSuccessSummary = [NSString stringWithFormat:
+            @"protocol=1\nstatus=success\npid=321\nstarted_at=%.0f\n"
+             "finished_at=%.0f\nlast_success_at=%.0f\nexit_code=0\ntrigger=schedule\n",
+            sourceStartedAt, sourceFinishedAt, sourceFinishedAt];
+        NSString *newerFailureSummary = [NSString stringWithFormat:
+            @"protocol=1\nstatus=failure\npid=322\nstarted_at=%.0f\n"
+             "finished_at=%.0f\nexit_code=1\ntrigger=schedule\nreason=test_failure\n",
+            sourceNow - 30, sourceNow - 20];
+        [enabledSuccessConfig writeToFile:sourceConfigPath atomically:YES
+                                  encoding:NSUTF8StringEncoding error:nil];
+        [currentSuccessSummary writeToFile:sourceSummaryPath atomically:YES
+                                   encoding:NSUTF8StringEncoding error:nil];
+        setenv("GDRIVE_BACKUP_CONFIG", sourceConfigPath.UTF8String, 1);
+        setenv("GDRIVE_BACKUP_SUMMARY_STATE_FILE", sourceSummaryPath.UTF8String, 1);
+
+        NSDictionary<NSString *, NSString *> *sourceRoutineSuccess = @{
+            @"identifier": [NSString stringWithFormat:
+                @"com.commcats.gdrivebackup.office.success.%.0f", sourceFinishedAt],
+            @"profileID": @"office",
+            @"kind": @"success",
+            @"eventTimestamp": [NSString stringWithFormat:@"%.0f", sourceFinishedAt],
+            @"titleKey": @"backupNotificationSuccessTitle",
+            @"bodyKey": @"backupNotificationSuccessBody"
+        };
+        BackupSuccessPreAddRaceTestDelegate *sourceCurrent =
+            [[BackupSuccessPreAddRaceTestDelegate alloc] init];
+        sourceCurrent.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+            [suiteName stringByAppendingString:@".success-source-current"]];
+        sourceCurrent.useRealSuccessSourceValidation = YES;
+        [sourceCurrent.testDefaults setDouble:sourceNow - 180 forKey:
+            @"GDTBackupNotification.office.successMonitorStartedAt"];
+        BOOL sourceInitiallyCurrent = [sourceCurrent
+            isBackupSuccessDecisionCurrent:sourceRoutineSuccess
+            capturedActiveIssueTimestamp:0];
+        [disabledSuccessConfig writeToFile:sourceConfigPath atomically:YES
+                                   encoding:NSUTF8StringEncoding error:nil];
+        BOOL sourceCurrentAfterOptOut = [sourceCurrent
+            isBackupSuccessDecisionCurrent:sourceRoutineSuccess
+            capturedActiveIssueTimestamp:0];
+        [enabledSuccessConfig writeToFile:sourceConfigPath atomically:YES
+                                  encoding:NSUTF8StringEncoding error:nil];
+        [sourceCurrent.testDefaults setDouble:sourceNow - 180 forKey:
+            @"GDTBackupNotification.office.successMonitorStartedAt"];
+        [newerFailureSummary writeToFile:sourceSummaryPath atomically:YES
+                                 encoding:NSUTF8StringEncoding error:nil];
+        BOOL sourceCurrentAfterNewerFailure = [sourceCurrent
+            isBackupSuccessDecisionCurrent:sourceRoutineSuccess
+            capturedActiveIssueTimestamp:0];
+        Assert(sourceInitiallyCurrent && !sourceCurrentAfterOptOut &&
+               !sourceCurrentAfterNewerFailure,
+               @"success delivery revalidates current preferences and durable run state");
+
+        [enabledSuccessConfig writeToFile:sourceConfigPath atomically:YES
+                                  encoding:NSUTF8StringEncoding error:nil];
+        [currentSuccessSummary writeToFile:sourceSummaryPath atomically:YES
+                                   encoding:NSUTF8StringEncoding error:nil];
+        NotificationTestDelegate *sourceChangedAfterAcceptance =
+            [[NotificationTestDelegate alloc] init];
+        sourceChangedAfterAcceptance.testDefaults = [[NSUserDefaults alloc]
+            initWithSuiteName:[suiteName stringByAppendingString:
+                @".success-source-post-acceptance"]];
+        sourceChangedAfterAcceptance.useRealSuccessSourceValidation = YES;
+        sourceChangedAfterAcceptance.deliverySucceeds = YES;
+        sourceChangedAfterAcceptance.deferBackupDelivery = YES;
+        [sourceChangedAfterAcceptance.testDefaults setDouble:sourceNow - 180 forKey:
+            @"GDTBackupNotification.office.successMonitorStartedAt"];
+        BOOL sourcePostAcceptanceProcessorAvailable = NO;
+        ProcessSuccessWithCapturedIssue(sourceChangedAfterAcceptance,
+            sourceRoutineSuccess, 0, &sourcePostAcceptanceProcessorAvailable);
+        void (^finishSourceChangedDelivery)(BOOL) =
+            sourceChangedAfterAcceptance.deferredBackupDeliveryCompletions.firstObject;
+        [newerFailureSummary writeToFile:sourceSummaryPath atomically:YES
+                                 encoding:NSUTF8StringEncoding error:nil];
+        if (finishSourceChangedDelivery) finishSourceChangedDelivery(YES);
+        Assert(sourcePostAcceptanceProcessorAvailable && finishSourceChangedDelivery &&
+               [sourceChangedAfterAcceptance.testDefaults doubleForKey:
+                   @"GDTBackupNotification.office.lastDeliveredSuccessAt"] == 0 &&
+               [sourceChangedAfterAcceptance.removedDeliveredNotificationIdentifiers
+                   isEqualToArray:@[sourceRoutineSuccess[@"identifier"]]] &&
+               [sourceChangedAfterAcceptance.removedPendingNotificationIdentifiers
+                   isEqualToArray:@[sourceRoutineSuccess[@"identifier"]]],
+               @"a durable state change after acceptance retracts success without a watermark");
+        unsetenv("GDRIVE_BACKUP_CONFIG");
+        unsetenv("GDRIVE_BACKUP_SUMMARY_STATE_FILE");
+        [NSFileManager.defaultManager trashItemAtURL:
+            [NSURL fileURLWithPath:sourceConfigPath] resultingItemURL:nil error:nil];
+        [NSFileManager.defaultManager trashItemAtURL:
+            [NSURL fileURLWithPath:sourceSummaryPath] resultingItemURL:nil error:nil];
 
         NotificationTestDelegate *newIssueDuringSuccessReconciliation =
             [[NotificationTestDelegate alloc] init];

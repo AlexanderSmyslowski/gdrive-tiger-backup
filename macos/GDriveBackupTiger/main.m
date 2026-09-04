@@ -1600,6 +1600,9 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 - (BOOL)isBackupSuccessDecisionCurrent:
     (NSDictionary<NSString *, NSString *> *)decision
          capturedActiveIssueTimestamp:(NSTimeInterval)capturedActiveIssueTimestamp;
+- (BOOL)isBackupSuccessDecisionSourceCurrent:
+    (NSDictionary<NSString *, NSString *> *)decision
+         capturedActiveIssueTimestamp:(NSTimeInterval)capturedActiveIssueTimestamp;
 - (BOOL)launchAutomaticRetryDecision:(NSDictionary<NSString *, NSString *> *)decision;
 - (void)removeExactBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers
                                       forProfileID:(NSString *)profileID;
@@ -2611,6 +2614,32 @@ static void GDTAdvanceBackupNotificationAcceptedState(
     }];
 }
 
+- (BOOL)isBackupSuccessDecisionSourceCurrent:
+    (NSDictionary<NSString *, NSString *> *)decision
+         capturedActiveIssueTimestamp:(NSTimeInterval)capturedActiveIssueTimestamp {
+    NSDictionary<NSString *, NSString *> *baseConfig = GDTReadConfigDictionary();
+    NSString *profileID = decision[@"profileID"] ?: @"";
+    NSString *currentProfileID = baseConfig[@"GDRIVE_BACKUP_PROFILE_ID"] ?: @"legacy";
+    if (!profileID.length || ![profileID isEqualToString:currentProfileID]) {
+        return NO;
+    }
+
+    NSDate *now = [NSDate date];
+    NSDictionary<NSString *, NSString *> *config =
+        [self notificationMonitoringConfigForConfig:baseConfig now:now];
+    NSString *summaryPath = GDTBackupSummaryPathForConfig(config);
+    NSDictionary<NSString *, NSString *> *summary =
+        GDTReadBackupSummaryAtPath(summaryPath);
+    NSString *status = GDTBackupSummaryStatusForValues(summary);
+    NSDictionary<NSString *, NSString *> *currentDecision =
+        [GDTBackupNotificationPolicy successDecisionForConfig:config
+                                                      summary:summary
+                                                       status:status
+                                         activeIssueTimestamp:capturedActiveIssueTimestamp
+                                                          now:now];
+    return currentDecision && [currentDecision isEqualToDictionary:decision];
+}
+
 - (BOOL)isBackupSuccessDecisionCurrent:
     (NSDictionary<NSString *, NSString *> *)decision
          capturedActiveIssueTimestamp:(NSTimeInterval)capturedActiveIssueTimestamp {
@@ -2648,12 +2677,18 @@ static void GDTAdvanceBackupNotificationAcceptedState(
     NSString *bodyKey = decision[@"bodyKey"] ?: @"";
     BOOL recovery = [@[@"backupNotificationRecoverySuccessBody",
                        @"backupNotificationRetrySuccessBody"] containsObject:bodyKey];
-    if (!recovery) return YES;
+    if (recovery && (capturedActiveIssueTimestamp <= 0 ||
+                     dismissedIssueTimestamp >= capturedActiveIssueTimestamp)) {
+        // A recovery refers to the issue captured before the background read.
+        // A later acknowledgement must not be overwritten by that stale snapshot.
+        return NO;
+    }
 
-    // A recovery refers to the issue captured before the background read. A
-    // later acknowledgement must not be overwritten by that stale snapshot.
-    return capturedActiveIssueTimestamp > 0 &&
-        dismissedIssueTimestamp < capturedActiveIssueTimestamp;
+    // Settings and the durable summary can change while Notification Center
+    // callbacks are pending. Recreate the policy decision from those sources
+    // at every delivery boundary instead of accepting an obsolete snapshot.
+    return [self isBackupSuccessDecisionSourceCurrent:decision
+                          capturedActiveIssueTimestamp:capturedActiveIssueTimestamp];
 }
 
 - (NSTimeInterval)reconcileBackupSuccessNotificationsForProfileID:

@@ -190,13 +190,19 @@ run_success_notification_migration_fixture() {
   local installer="$1"
   local installer_label="$2"
   local trusted_function
+  local path_guard_function
+  local config_store_guard_function
   local migration_function
   local orchestration_function
   local runner
+  path_guard_function="$(extract_shell_function "$installer" path_has_untrusted_component)"
+  config_store_guard_function="$(extract_shell_function "$installer" require_trusted_config_store)"
   trusted_function="$(extract_shell_function "$installer" trusted_active_profile_config)"
   migration_function="$(extract_shell_function "$installer" migrate_success_notification_preference)"
   orchestration_function="$(extract_shell_function "$installer" migrate_notification_success_preferences)"
-  if [[ -z "$trusted_function" || -z "$migration_function" || -z "$orchestration_function" ]]; then
+  if [[ -z "$path_guard_function" || -z "$config_store_guard_function" ||
+        -z "$trusted_function" || -z "$migration_function" ||
+        -z "$orchestration_function" ]]; then
     printf 'not ok - %s exposes executable success-preference migration helpers\n' \
       "$installer_label"
     failures=$((failures + 1))
@@ -206,7 +212,8 @@ run_success_notification_migration_fixture() {
   local fixture_root
   fixture_root="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/gdrive-success-preference-fixture.XXXXXX")"
   runner="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/gdrive-success-preference-runner.XXXXXX")"
-  printf '%s\n' "$trusted_function" "$migration_function" "$orchestration_function" >"$runner"
+  printf '%s\n' "$path_guard_function" "$config_store_guard_function" \
+    "$trusted_function" "$migration_function" "$orchestration_function" >"$runner"
   if (
     set -u
     # Run the exact installer helpers in a fresh shell without evaluating a
@@ -241,10 +248,12 @@ run_success_notification_migration_fixture() {
     set_fixture_paths() {
       local directory="$1"
       CONFIG_FILE="$directory/config"
+      CONFIG_DIR="$directory"
       ACTIVE_PROFILE_FILE="$directory/active-profile"
       PROFILES_DIR="$directory/profiles"
       # Extracted source and package helpers use different variable names.
       export config_file="$CONFIG_FILE"
+      export config_dir="$CONFIG_DIR"
       export active_profile_file="$ACTIVE_PROFILE_FILE"
       export profiles_dir="$PROFILES_DIR"
     }
@@ -295,9 +304,74 @@ run_success_notification_migration_fixture() {
     run_valid_fixture "existing-one" "1" "1" "1"
     run_valid_fixture "existing-malformed" "malformed" "malformed" "malformed"
 
+    symlink_ancestor_root="$fixture_root/symlink-ancestor"
+    symlink_ancestor_external="$fixture_root/symlink-ancestor-external/.config/gdrive-tiger-backup"
+    /bin/mkdir -p "$symlink_ancestor_root/home" "$symlink_ancestor_external"
+    create_valid_fixture "$symlink_ancestor_external" "" ""
+    /bin/ln -s "$fixture_root/symlink-ancestor-external/.config" \
+      "$symlink_ancestor_root/home/.config"
+    set_fixture_paths "$symlink_ancestor_root/home/.config/gdrive-tiger-backup"
+    if migrate_notification_success_preferences >/dev/null 2>&1; then
+      ancestor_status=0
+    else
+      ancestor_status=$?
+    fi
+    expect_fixture "a symlinked config-store ancestor fails closed" \
+      test "$ancestor_status" = "73"
+    expect_fixture "a symlinked config-store ancestor leaves legacy config untouched" \
+      preference_is_absent "$symlink_ancestor_external/config"
+    expect_fixture "a symlinked config-store ancestor leaves profile untouched" \
+      preference_is_absent "$symlink_ancestor_external/profiles/office.conf"
+
+    missing_store_root="$fixture_root/symlink-ancestor-missing-store"
+    missing_store_external="$fixture_root/symlink-ancestor-missing-store-external/.config"
+    /bin/mkdir -p "$missing_store_root/home" "$missing_store_external"
+    /bin/ln -s "$missing_store_external" "$missing_store_root/home/.config"
+    missing_store="$missing_store_root/home/.config/gdrive-tiger-backup"
+    if require_trusted_config_store "$missing_store" && /bin/mkdir -p "$missing_store"; then
+      missing_store_status=0
+    else
+      missing_store_status=$?
+    fi
+    expect_fixture "the pre-mkdir guard rejects a symlinked config ancestor" \
+      test "$missing_store_status" = "73"
+    expect_fixture "the pre-mkdir guard creates nothing through a symlink" \
+      test ! -e "$missing_store_external/gdrive-tiger-backup"
+
+    symlink_home_root="$fixture_root/symlink-home"
+    symlink_home_external="$fixture_root/symlink-home-external"
+    /bin/mkdir -p "$symlink_home_external"
+    /bin/ln -s "$symlink_home_external" "$symlink_home_root"
+    if require_trusted_config_store "$symlink_home_root/.config/gdrive-tiger-backup"; then
+      symlink_home_status=0
+    else
+      symlink_home_status=$?
+    fi
+    expect_fixture "a symlinked configured home fails closed" \
+      test "$symlink_home_status" = "73"
+
+    symlink_root_parent="$fixture_root/symlink-config-root"
+    symlink_root_external="$fixture_root/symlink-config-root-external"
+    /bin/mkdir -p "$symlink_root_parent" "$symlink_root_external"
+    create_valid_fixture "$symlink_root_external" "" ""
+    /bin/ln -s "$symlink_root_external" "$symlink_root_parent/gdrive-tiger-backup"
+    set_fixture_paths "$symlink_root_parent/gdrive-tiger-backup"
+    if migrate_notification_success_preferences >/dev/null 2>&1; then
+      config_root_status=0
+    else
+      config_root_status=$?
+    fi
+    expect_fixture "a symlinked config-store root fails closed" \
+      test "$config_root_status" = "73"
+    expect_fixture "a symlinked config-store root leaves legacy config untouched" \
+      preference_is_absent "$symlink_root_external/config"
+    expect_fixture "a symlinked config-store root leaves profile untouched" \
+      preference_is_absent "$symlink_root_external/profiles/office.conf"
+
     pointer_directory="$fixture_root/symlink-pointer"
     create_valid_fixture "$pointer_directory" "" ""
-    /usr/bin/trash "$pointer_directory/active-profile"
+    /bin/mv "$pointer_directory/active-profile" \
+      "$pointer_directory/active-profile.original"
     printf 'office\n' >"$pointer_directory/outside-pointer"
     /bin/ln -s "$pointer_directory/outside-pointer" \
       "$pointer_directory/active-profile"
