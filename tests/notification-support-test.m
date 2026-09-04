@@ -36,12 +36,41 @@ static NSDictionary<NSString *, NSString *> *Decision(
     return method(policyClass, selector, config, summary, status, now, calendar);
 }
 
+static NSDictionary<NSString *, NSString *> *SuccessDecision(
+    Class policyClass,
+    NSDictionary<NSString *, NSString *> *config,
+    NSDictionary<NSString *, NSString *> *summary,
+    NSString *status,
+    NSTimeInterval activeIssueTimestamp,
+    NSDate *now) {
+    SEL selector = NSSelectorFromString(
+        @"successDecisionForConfig:summary:status:activeIssueTimestamp:now:");
+    if (!policyClass || ![policyClass respondsToSelector:selector]) return nil;
+    typedef NSDictionary<NSString *, NSString *> *(*SuccessDecisionMethod)(
+        id, SEL, NSDictionary *, NSDictionary *, NSString *, NSTimeInterval, NSDate *);
+    SuccessDecisionMethod method =
+        (SuccessDecisionMethod)[policyClass methodForSelector:selector];
+    return method(policyClass, selector, config, summary, status, activeIssueTimestamp, now);
+}
+
 static NSArray<NSString *> *ProfileFailureIdentifiers(
     Class policyClass,
     NSString *profileID,
     NSArray<NSString *> *candidates) {
     SEL selector = NSSelectorFromString(
         @"failureNotificationIdentifiersForProfileID:candidateIdentifiers:");
+    if (!policyClass || ![policyClass respondsToSelector:selector]) return nil;
+    typedef NSArray<NSString *> *(*FilterMethod)(id, SEL, NSString *, NSArray<NSString *> *);
+    FilterMethod method = (FilterMethod)[policyClass methodForSelector:selector];
+    return method(policyClass, selector, profileID, candidates);
+}
+
+static NSArray<NSString *> *ProfileSuccessIdentifiers(
+    Class policyClass,
+    NSString *profileID,
+    NSArray<NSString *> *candidates) {
+    SEL selector = NSSelectorFromString(
+        @"successNotificationIdentifiersForProfileID:candidateIdentifiers:");
     if (!policyClass || ![policyClass respondsToSelector:selector]) return nil;
     typedef NSArray<NSString *> *(*FilterMethod)(id, SEL, NSString *, NSArray<NSString *> *);
     FilterMethod method = (FilterMethod)[policyClass methodForSelector:selector];
@@ -91,6 +120,121 @@ int main(void) {
             @"trigger": @"schedule",
             @"reason": @"destination_permission_denied"
         };
+
+        NSDictionary<NSString *, NSString *> *recoveredScheduledSummary = @{
+            @"protocol": @"1",
+            @"status": @"success",
+            @"started_at": @"1788550000",
+            @"finished_at": @"1788550200",
+            @"last_success_at": @"1788550200",
+            @"exit_code": @"0",
+            @"trigger": @"schedule"
+        };
+        NSDate *successNow = [NSDate dateWithTimeIntervalSince1970:1788550260];
+        NSDictionary<NSString *, NSString *> *scheduledRecovery = SuccessDecision(
+            policyClass, daily, recoveredScheduledSummary, @"success", 1788549000, successNow);
+        Assert([scheduledRecovery isEqualToDictionary:@{
+                   @"identifier": @"com.commcats.gdrivebackup.office.success.1788550200",
+                   @"kind": @"success",
+                   @"profileID": @"office",
+                   @"eventTimestamp": @"1788550200",
+                   @"titleKey": @"backupNotificationSuccessTitle",
+                   @"bodyKey": @"backupNotificationRecoverySuccessBody"
+               }],
+               @"a scheduled success newer than an active failure confirms recovery");
+
+        NSMutableDictionary<NSString *, NSString *> *recoveredRetrySummary =
+            [recoveredScheduledSummary mutableCopy];
+        recoveredRetrySummary[@"trigger"] = @"schedule-retry";
+        recoveredRetrySummary[@"retry_origin_started_at"] = @"1788549000";
+        recoveredRetrySummary[@"retry_attempt"] = @"1";
+        NSDictionary<NSString *, NSString *> *retryRecovery = SuccessDecision(
+            policyClass, daily, recoveredRetrySummary, @"success", 1788549000, successNow);
+        Assert([retryRecovery isEqualToDictionary:@{
+                   @"identifier": @"com.commcats.gdrivebackup.office.success.1788550200",
+                   @"kind": @"success",
+                   @"profileID": @"office",
+                   @"eventTimestamp": @"1788550200",
+                   @"titleKey": @"backupNotificationSuccessTitle",
+                   @"bodyKey": @"backupNotificationRetrySuccessBody"
+               }],
+               @"a structurally valid first retry confirms that the automatic retry recovered");
+
+        NSMutableDictionary<NSString *, NSString *> *routineSuccessConfig = [daily mutableCopy];
+        routineSuccessConfig[@"GDRIVE_BACKUP_NOTIFY_SUCCESSES"] = @"1";
+        routineSuccessConfig[@"GDRIVE_BACKUP_SUCCESS_NOTIFICATION_MONITOR_STARTED_AT"] =
+            @"1788540000";
+        NSDictionary<NSString *, NSString *> *routineSuccess = SuccessDecision(
+            policyClass, routineSuccessConfig, recoveredScheduledSummary, @"success", 0, successNow);
+        Assert([routineSuccess isEqualToDictionary:@{
+                   @"identifier": @"com.commcats.gdrivebackup.office.success.1788550200",
+                   @"kind": @"success",
+                   @"profileID": @"office",
+                   @"eventTimestamp": @"1788550200",
+                   @"titleKey": @"backupNotificationSuccessTitle",
+                   @"bodyKey": @"backupNotificationSuccessBody"
+               }] &&
+               SuccessDecision(policyClass, daily, recoveredScheduledSummary,
+                               @"success", 0, successNow) == nil,
+               @"routine success reporting requires the explicit preference before the run");
+
+        NSMutableDictionary<NSString *, NSString *> *equalMonitorSuccessConfig =
+            [routineSuccessConfig mutableCopy];
+        equalMonitorSuccessConfig[@"GDRIVE_BACKUP_SUCCESS_NOTIFICATION_MONITOR_STARTED_AT"] =
+            @"1788550200";
+        NSMutableDictionary<NSString *, NSString *> *laterMonitorSuccessConfig =
+            [routineSuccessConfig mutableCopy];
+        laterMonitorSuccessConfig[@"GDRIVE_BACKUP_SUCCESS_NOTIFICATION_MONITOR_STARTED_AT"] =
+            @"1788550201";
+        Assert(SuccessDecision(policyClass, equalMonitorSuccessConfig,
+                               recoveredScheduledSummary, @"success", 0, successNow) == nil &&
+               SuccessDecision(policyClass, laterMonitorSuccessConfig,
+                               recoveredScheduledSummary, @"success", 0, successNow) == nil,
+               @"routine success reporting requires opt-in strictly before completion");
+
+        NSMutableDictionary<NSString *, NSString *> *manualSuccess =
+            [recoveredScheduledSummary mutableCopy];
+        manualSuccess[@"trigger"] = @"manual";
+        NSMutableDictionary<NSString *, NSString *> *staleSuccess =
+            [recoveredScheduledSummary mutableCopy];
+        staleSuccess[@"started_at"] = @"1788463700";
+        staleSuccess[@"finished_at"] = @"1788463859";
+        staleSuccess[@"last_success_at"] = @"1788463859";
+        NSMutableDictionary<NSString *, NSString *> *futureSuccess =
+            [recoveredScheduledSummary mutableCopy];
+        futureSuccess[@"finished_at"] = @"1788550261";
+        futureSuccess[@"last_success_at"] = @"1788550261";
+        NSMutableDictionary<NSString *, NSString *> *malformedSuccess =
+            [recoveredScheduledSummary mutableCopy];
+        malformedSuccess[@"started_at"] = @"01788550000";
+        NSMutableDictionary<NSString *, NSString *> *wrongAttemptSuccess =
+            [recoveredRetrySummary mutableCopy];
+        wrongAttemptSuccess[@"retry_attempt"] = @"2";
+        NSMutableDictionary<NSString *, NSString *> *nonAdvancingRetrySuccess =
+            [recoveredRetrySummary mutableCopy];
+        nonAdvancingRetrySuccess[@"retry_origin_started_at"] = @"1788550000";
+        NSMutableDictionary<NSString *, NSString *> *pausedSuccessConfig = [daily mutableCopy];
+        pausedSuccessConfig[@"GDRIVE_BACKUP_PAUSED"] = @"1";
+        NSMutableDictionary<NSString *, NSString *> *disabledRecoveryConfig = [daily mutableCopy];
+        disabledRecoveryConfig[@"GDRIVE_BACKUP_NOTIFY_FAILURES"] = @"0";
+        Assert(SuccessDecision(policyClass, daily, manualSuccess,
+                               @"success", 1788549000, successNow) == nil &&
+               SuccessDecision(policyClass, daily, staleSuccess,
+                               @"success", 1788460000, successNow) == nil &&
+               SuccessDecision(policyClass, daily, futureSuccess,
+                               @"success", 1788549000, successNow) == nil &&
+               SuccessDecision(policyClass, daily, malformedSuccess,
+                               @"success", 1788549000, successNow) == nil &&
+               SuccessDecision(policyClass, pausedSuccessConfig, recoveredScheduledSummary,
+                               @"success", 1788549000, successNow) == nil &&
+               SuccessDecision(policyClass, disabledRecoveryConfig, recoveredScheduledSummary,
+                               @"success", 1788549000, successNow) == nil &&
+               SuccessDecision(policyClass, daily, wrongAttemptSuccess,
+                               @"success", 1788549000, successNow) == nil &&
+               SuccessDecision(policyClass, daily, nonAdvancingRetrySuccess,
+                               @"success", 1788549000, successNow) == nil,
+               @"manual, stale, future, malformed, paused, disabled, and invalid retries stay silent");
+
         NSDictionary<NSString *, NSString *> *failure = Decision(
             policyClass, daily, failedSummary, @"failure", Date(calendar, 21, 20, 26), calendar);
         Assert([failure[@"kind"] isEqualToString:@"failure"] &&
@@ -397,6 +541,19 @@ int main(void) {
                    @"com.commcats.gdrivebackup.office.missed.200"
                ]],
                @"notification cleanup accepts only exact safe failure IDs for one profile");
+
+        NSArray<NSString *> *profileSuccesses = ProfileSuccessIdentifiers(
+            policyClass, @"office", @[
+                @"com.commcats.gdrivebackup.office.success.100",
+                @"com.commcats.gdrivebackup.archive.success.200",
+                @"com.commcats.gdrivebackup.office.failure.300",
+                @"com.commcats.gdrivebackup.office.success.0300",
+                @"com.commcats.gdrivebackup.office.success.not-a-time"
+            ]);
+        Assert([profileSuccesses isEqualToArray:@[
+                   @"com.commcats.gdrivebackup.office.success.100"
+               ]],
+               @"success retirement accepts only canonical identifiers for its own profile");
 
         NSArray<NSString *> *cutoffFailures =
             ProfileFailureIdentifiersThroughOrigin(policyClass, @"office", 500, @[
