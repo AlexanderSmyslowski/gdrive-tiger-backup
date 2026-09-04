@@ -277,8 +277,12 @@ fi
 case "$reference" in
   "${FAKE_APFS_UUID:?}"|"${FAKE_APFS_MOUNT:?}")
     container_size="4000785104896"
+    second_physical_store=""
     if [[ "${FAKE_DISKUTIL_INVALID_SIZE:-0}" == "1" ]]; then
       container_size="not-a-size"
+    fi
+    if [[ -n "${FAKE_SECOND_PHYSICAL_STORE:-}" ]]; then
+      second_physical_store="<dict><key>APFSPhysicalStore</key><string>${FAKE_SECOND_PHYSICAL_STORE}</string></dict>"
     fi
     /bin/cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -294,7 +298,7 @@ case "$reference" in
 <key>APFSContainerSize</key><string>${container_size}</string>
 <key>APFSPhysicalStores</key><array><dict>
 <key>APFSPhysicalStore</key><string>${FAKE_PHYSICAL_STORE:-disk88s1}</string>
-</dict></array>
+</dict>${second_physical_store}</array>
 </dict></plist>
 PLIST
     ;;
@@ -410,6 +414,10 @@ if [[ "$destination" == */current-progress.status &&
     exit 92
   fi
 fi
+if [[ -n "${GDRIVE_BACKUP_FOREGROUND_PROGRESS_MODE_FILE:-}" &&
+      "$destination" == */gdrive-backup-progress.* ]]; then
+  /usr/bin/stat -f '%Lp' "$source_path" >"$GDRIVE_BACKUP_FOREGROUND_PROGRESS_MODE_FILE"
+fi
 if [[ -n "${GDRIVE_BACKUP_FOREGROUND_PROGRESS_SNAPSHOT_FILE:-}" &&
       ! -e "$GDRIVE_BACKUP_FOREGROUND_PROGRESS_SNAPSHOT_FILE" &&
       "$destination" == */gdrive-backup-progress.* ]] &&
@@ -507,12 +515,14 @@ run_backup_with_mode() {
     FAKE_IOREG_SLEEP_SECONDS="${FAKE_IOREG_SLEEP_SECONDS:-0}" \
     FAKE_IOREG_STATUS="${FAKE_IOREG_STATUS:-0}" \
     FAKE_PHYSICAL_STORE="${FAKE_PHYSICAL_STORE:-disk88s1}" \
+    FAKE_SECOND_PHYSICAL_STORE="${FAKE_SECOND_PHYSICAL_STORE:-}" \
     FAKE_APFS_UUID="${FAKE_APFS_UUID:-}" \
     FAKE_APFS_MOUNT="${FAKE_APFS_MOUNT:-}" \
     GDRIVE_BACKUP_FAIL_TERMINAL_SUMMARY="${GDRIVE_BACKUP_FAIL_TERMINAL_SUMMARY:-0}" \
     GDRIVE_BACKUP_FAIL_RICH_PROGRESS_AT="${GDRIVE_BACKUP_FAIL_RICH_PROGRESS_AT:-0}" \
     GDRIVE_BACKUP_RICH_PROGRESS_COUNT_FILE="${GDRIVE_BACKUP_RICH_PROGRESS_COUNT_FILE:-}" \
     GDRIVE_BACKUP_FOREGROUND_PROGRESS_SNAPSHOT_FILE="${GDRIVE_BACKUP_FOREGROUND_PROGRESS_SNAPSHOT_FILE:-}" \
+    GDRIVE_BACKUP_FOREGROUND_PROGRESS_MODE_FILE="${GDRIVE_BACKUP_FOREGROUND_PROGRESS_MODE_FILE:-}" \
     RCLONE_REMOTE=tdd-remote \
     "$@" \
     "$BACKUP_SCRIPT" "$mode"
@@ -743,16 +753,18 @@ test_existing_backup_is_skipped_not_successful() {
 
 test_state_is_versioned_and_identifies_the_process() {
   local name="run state is versioned and identifies its process"
-  local state
+  local state mode
   prepare_test_environment
 
   run_backup
   state="$(cat "$RUN_STATE_FILE" 2>/dev/null || true)"
+  mode="$(stat -f '%Lp' "$RUN_STATE_FILE" 2>/dev/null || true)"
 
-  if [[ "$state" == *$'protocol=1\n'* && "$state" =~ (^|$'\n')pid=[0-9]+($|$'\n') ]]; then
+  if [[ "$state" == *$'protocol=1\n'* &&
+        "$state" =~ (^|$'\n')pid=[0-9]+($|$'\n') && "$mode" == "600" ]]; then
     pass "$name"
   else
-    fail "$name (state=${state//$'\n'/,})"
+    fail "$name (mode=$mode state=${state//$'\n'/,})"
   fi
 }
 
@@ -1774,7 +1786,10 @@ test_hung_nas_mount_command_is_bounded() {
   finished="$(date +%s)"
   summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
 
-  if [[ "$status" == "69" && $((finished - started)) -lt 3 &&
+  # macOS date reports whole seconds, so a roughly two-second bounded path can
+  # span three wall-clock ticks under CI load. It must still beat the helper's
+  # unbounded four-second completion.
+  if [[ "$status" == "69" && $((finished - started)) -lt 4 &&
         "$summary" == *$'status=failure\n'* &&
         "$summary" == *$'reason=nas_mount_unavailable\n'* ]]; then
     pass "$name"
@@ -1856,6 +1871,20 @@ test_confirmation_uses_injected_open_command() {
   fi
 }
 
+test_external_confirmation_counts_stores_without_an_out_of_range_probe() {
+  local name="external confirmation counts physical stores without probing past the array"
+  # macOS 15 can emit non-empty output for an out-of-range numeric key path.
+  # Cardinality is therefore the portable way to distinguish one disk from a set.
+  # The second grep deliberately matches literal shell source.
+  # shellcheck disable=SC2016
+  if ! /usr/bin/grep -Fq 'APFSPhysicalStores.1.APFSPhysicalStore' "$BACKUP_SCRIPT" &&
+     /usr/bin/grep -Fq 'plist_data_value "$volume_plist" APFSPhysicalStores' "$BACKUP_SCRIPT"; then
+    pass "$name"
+  else
+    fail "$name"
+  fi
+}
+
 test_external_confirmation_identifies_physical_disk() {
   local name="external confirmation names the physical disk without technical identifiers"
   local app detail_file diskutil_log expected mount uuid status detail
@@ -1893,6 +1922,43 @@ test_external_confirmation_identifies_physical_disk() {
         ! "$detail" =~ [[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12} &&
         "$detail" != *'SECRET-SERIAL'* ]] &&
      ! /usr/bin/grep -Fxq 'disk88' "$diskutil_log"; then
+    pass "$name"
+  else
+    fail "$name (exit=$status detail=${detail//$'\n'/,})"
+  fi
+}
+
+test_external_confirmation_identifies_multiple_physical_stores_as_a_set() {
+  local name="external confirmation identifies a real multi-disk store as a storage set"
+  local app detail_file expected mount uuid status detail
+  prepare_test_environment
+  app="$TEST_HOME/GDrive Backup Tiger.app"
+  detail_file="$TEST_HOME/confirm-detail"
+  mount="$TEST_HOME/GoogleDrive-Backup 2"
+  uuid="11111111-2222-3333-4444-555555555555"
+  mkdir -p "$app" "$mount"
+  expected=$'Festplatte: Speicherverbund · 4 TB · USB\nVolume: GoogleDrive-Backup'
+
+  GDRIVE_BACKUP_CONFIRM=1 \
+    FAKE_CONFIRM_DECISION=yes \
+    FAKE_CONFIRM_DETAIL_LOG="$detail_file" \
+    FAKE_DISKUTIL_MODE=external-confirmation \
+    FAKE_SECOND_PHYSICAL_STORE=disk87s1 \
+    FAKE_APFS_UUID="$uuid" \
+    FAKE_APFS_MOUNT="$mount" \
+    run_backup \
+      "GDRIVE_BACKUP_TARGET=apfs" \
+      "GDRIVE_BACKUP_VOLUME=$mount" \
+      "GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup" \
+      "GDRIVE_BACKUP_VOLUME_UUID=$uuid" \
+      "GDRIVE_BACKUP_DEST_ROOT=$mount" \
+      "GDRIVE_BACKUP_LANG=de" \
+      "GDRIVE_BACKUP_ANIMATION_APP=$app"
+  status=$?
+  detail="$(cat "$detail_file" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" && "$detail" == "$expected" &&
+        ! "$detail" =~ disk[0-9]+ && "$detail" != *'SECRET-SERIAL'* ]]; then
     pass "$name"
   else
     fail "$name (exit=$status detail=${detail//$'\n'/,})"
@@ -2313,8 +2379,8 @@ test_terminal_summary_publish_failure_keeps_progress_live() {
   fi
 }
 
-test_unknown_total_refreshes_indeterminate_progress() {
-  local name="unknown-total aggregate refreshes private phase-only progress"
+test_unknown_total_publishes_check_activity() {
+  local name="unknown-total aggregate publishes private check activity"
   local progress epoch_file content status backup_pid attempt
   prepare_test_environment
   progress="$TEST_HOME/profiles/default/current-progress.status"
@@ -2322,7 +2388,7 @@ test_unknown_total_refreshes_indeterminate_progress() {
   mkdir -p "${progress%/*}"
   printf '1783790000\n' >"$epoch_file"
 
-  FAKE_RCLONE_COPY_OUTPUT='Transferred: 12.000 MiB / 0 B, -, 1.500 MiB/s, ETA -' \
+  FAKE_RCLONE_COPY_OUTPUT=$'Transferred: 12.000 MiB / 0 B, -, 1.500 MiB/s, ETA -\nChecks: 43129 / 43129, 100%, Listed 103256' \
   FAKE_RCLONE_ADVANCE_EPOCH_TO=1783790121 \
   FAKE_RCLONE_SLEEP_SECONDS=2 \
     run_backup \
@@ -2335,7 +2401,9 @@ test_unknown_total_refreshes_indeterminate_progress() {
   for attempt in {1..200}; do
     : "$attempt"
     content="$(cat "$progress" 2>/dev/null || true)"
-    [[ "$content" == *'updated_at=1783790121'* ]] && break
+    [[ "$content" == *$'checked=43129\n'* &&
+       "$content" == *$'listed=103256\n'* &&
+       "$content" == *'updated_at=1783790121'* ]] && break
     /bin/sleep 0.02
   done
   kill -TERM "$backup_pid" 2>/dev/null || true
@@ -2345,6 +2413,10 @@ test_unknown_total_refreshes_indeterminate_progress() {
   if [[ "$status" == "143" &&
         "$content" == *$'label=My Drive\n'* &&
         "$content" == *$'phase=1/2\n'* &&
+        "$content" == *$'checked=43129\n'* &&
+        "$content" == *$'listed=103256\n'* &&
+        "$content" == *$'transferred=12.000 MiB\n'* &&
+        "$content" == *$'speed=1.500 MiB/s\n'* &&
         "$content" == *'updated_at=1783790121'* &&
         "$content" != *$'percent='* &&
         "$content" != *$'detail='* &&
@@ -2356,7 +2428,7 @@ test_unknown_total_refreshes_indeterminate_progress() {
 }
 
 test_off_total_refreshes_indeterminate_progress() {
-  local name="canonical off-total aggregate refreshes phase-only progress"
+  local name="canonical off-total aggregate publishes dash-percent check activity"
   local progress epoch_file content status backup_pid attempt
   prepare_test_environment
   progress="$TEST_HOME/profiles/default/current-progress.status"
@@ -2364,7 +2436,7 @@ test_off_total_refreshes_indeterminate_progress() {
   mkdir -p "${progress%/*}"
   printf '1783790200\n' >"$epoch_file"
 
-  FAKE_RCLONE_COPY_OUTPUT='Transferred: 12.000 MiB / off, -, 1.500 MiB/s, ETA -' \
+  FAKE_RCLONE_COPY_OUTPUT=$'Transferred: 0 B / off, -, 0 B/s, ETA -\nChecks: 0 / 0, -, Listed 1' \
   FAKE_RCLONE_ADVANCE_EPOCH_TO=1783790321 \
   FAKE_RCLONE_SLEEP_SECONDS=2 \
     run_backup \
@@ -2377,7 +2449,9 @@ test_off_total_refreshes_indeterminate_progress() {
   for attempt in {1..200}; do
     : "$attempt"
     content="$(cat "$progress" 2>/dev/null || true)"
-    [[ "$content" == *'updated_at=1783790321'* ]] && break
+    [[ "$content" == *$'checked=0\n'* &&
+       "$content" == *$'listed=1\n'* &&
+       "$content" == *'updated_at=1783790321'* ]] && break
     /bin/sleep 0.02
   done
   kill -TERM "$backup_pid" 2>/dev/null || true
@@ -2387,6 +2461,10 @@ test_off_total_refreshes_indeterminate_progress() {
   if [[ "$status" == "143" &&
         "$content" == *$'label=My Drive\n'* &&
         "$content" == *$'phase=1/2\n'* &&
+        "$content" == *$'checked=0\n'* &&
+        "$content" == *$'listed=1\n'* &&
+        "$content" == *$'transferred=0 B\n'* &&
+        "$content" == *$'speed=0 B/s\n'* &&
         "$content" == *'updated_at=1783790321'* &&
         "$content" != *$'percent='* &&
         "$content" != *$'detail='* ]]; then
@@ -2443,26 +2521,29 @@ test_rich_progress_failure_falls_back_to_phase_only() {
 
 test_foreground_copy_starts_indeterminate() {
   local name="foreground copy phase starts indeterminate without invented zero"
-  local content snapshot_file status
+  local content snapshot_file mode_file mode status
   prepare_test_environment
   enable_state_publish_order_spy
   mkdir -p "$TEST_HOME/GDrive Backup Tiger.app"
   snapshot_file="$TEST_HOME/copy-start-progress.status"
+  mode_file="$TEST_HOME/copy-start-progress.mode"
 
   BACKUP_DISABLE_ANIMATION=0 \
   GDRIVE_BACKUP_FOREGROUND_PROGRESS_SNAPSHOT_FILE="$snapshot_file" \
+  GDRIVE_BACKUP_FOREGROUND_PROGRESS_MODE_FILE="$mode_file" \
     run_backup \
       "GDRIVE_BACKUP_ANIMATION_APP=$TEST_HOME/GDrive Backup Tiger.app" \
       "GDRIVE_BACKUP_OPEN_BIN=$FAKE_BIN/open" \
       "BACKUP_PROGRESS_FOREGROUND=1"
   status=$?
   content="$(cat "$snapshot_file" 2>/dev/null || true)"
+  mode="$(cat "$mode_file" 2>/dev/null || true)"
 
   if [[ "$status" == "0" &&
-        "$content" == $'label=My Drive\nphase=1/2' ]]; then
+        "$content" == $'label=My Drive\nphase=1/2' && "$mode" == "600" ]]; then
     pass "$name"
   else
-    fail "$name (exit=$status progress=${content//$'\n'/,})"
+    fail "$name (exit=$status mode=$mode progress=${content//$'\n'/,})"
   fi
 }
 
@@ -2658,7 +2739,9 @@ test_unavailable_nas_mount_has_retryable_reason
 test_permanent_nas_permission_failure_is_not_retryable
 test_retry_metadata_is_published
 test_confirmation_uses_injected_open_command
+test_external_confirmation_counts_stores_without_an_out_of_range_probe
 test_external_confirmation_identifies_physical_disk
+test_external_confirmation_identifies_multiple_physical_stores_as_a_set
 test_external_confirmation_has_private_fallback
 test_external_confirmation_uses_nonempty_metadata_fallbacks
 test_external_confirmation_rejects_bidi_disk_metadata
@@ -2674,7 +2757,7 @@ test_later_failure_preserves_last_success_marker
 test_concurrent_start_preserves_previous_summary
 test_lock_loser_preserves_owner_progress
 test_terminal_summary_publish_failure_keeps_progress_live
-test_unknown_total_refreshes_indeterminate_progress
+test_unknown_total_publishes_check_activity
 test_off_total_refreshes_indeterminate_progress
 test_rich_progress_failure_falls_back_to_phase_only
 test_foreground_copy_starts_indeterminate

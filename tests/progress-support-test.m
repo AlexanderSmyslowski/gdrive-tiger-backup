@@ -165,6 +165,61 @@ int main(void) {
                acceptedPhaseOnly[@"detail"] == nil,
                @"a fresh copy-phase heartbeat remains valid and indeterminate");
 
+        NSMutableDictionary *transferring = [phaseOnly mutableCopy];
+        transferring[@"transferred"] = @"12.000 MiB";
+        transferring[@"speed"] = @"1.500 MiB/s";
+        NSDictionary *acceptedTransferring = GDTValidatedBackupProgressForValues(
+            transferring, summary, @"running", @"default", now);
+        Assert([acceptedTransferring[@"transferred"] isEqualToString:@"12.000 MiB"] &&
+               [acceptedTransferring[@"speed"] isEqualToString:@"1.500 MiB/s"],
+               @"bounded unknown-total transfer telemetry is accepted");
+
+        NSMutableDictionary *malformedTransferring = [transferring mutableCopy];
+        malformedTransferring[@"transferred"] = @"secret-file.pdf";
+        Assert(GDTValidatedBackupProgressForValues(
+                   malformedTransferring, summary, @"running", @"default", now) == nil,
+               @"non-aggregate transfer telemetry is rejected");
+
+        NSMutableDictionary *partialTransferring = [transferring mutableCopy];
+        [partialTransferring removeObjectForKey:@"speed"];
+        Assert(GDTValidatedBackupProgressForValues(
+                   partialTransferring, summary, @"running", @"default", now) == nil,
+               @"partial unknown-total transfer telemetry is rejected");
+
+        NSMutableDictionary *preparingWithTransfer = [preparing mutableCopy];
+        preparingWithTransfer[@"transferred"] = @"12.000 MiB";
+        preparingWithTransfer[@"speed"] = @"1.500 MiB/s";
+        Assert(GDTValidatedBackupProgressForValues(
+                   preparingWithTransfer, summary, @"running", @"default", now) == nil,
+               @"preparation records cannot claim transfer activity");
+
+        NSMutableDictionary *checking = [phaseOnly mutableCopy];
+        checking[@"checked"] = @"43129";
+        checking[@"listed"] = @"103256";
+        NSDictionary *acceptedChecking = GDTValidatedBackupProgressForValues(
+            checking, summary, @"running", @"default", now);
+        Assert([acceptedChecking[@"checked"] isEqualToString:@"43129"] &&
+               [acceptedChecking[@"listed"] isEqualToString:@"103256"],
+               @"bounded aggregate check counters are accepted");
+
+        NSMutableDictionary *invalidChecking = [checking mutableCopy];
+        invalidChecking[@"checked"] = @"43k";
+        Assert(GDTValidatedBackupProgressForValues(
+                   invalidChecking, summary, @"running", @"default", now) == nil,
+               @"non-numeric aggregate check counters are rejected");
+
+        NSMutableDictionary *oversizedChecking = [checking mutableCopy];
+        oversizedChecking[@"listed"] = @"1234567890123456789";
+        Assert(GDTValidatedBackupProgressForValues(
+                   oversizedChecking, summary, @"running", @"default", now) == nil,
+               @"oversized aggregate check counters are rejected");
+
+        NSMutableDictionary *partialChecking = [checking mutableCopy];
+        [partialChecking removeObjectForKey:@"listed"];
+        Assert(GDTValidatedBackupProgressForValues(
+                   partialChecking, summary, @"running", @"default", now) == nil,
+               @"partial aggregate check telemetry is rejected");
+
         NSString *fixtureRoot = NSProcessInfo.processInfo.environment[
             @"GDRIVE_PROGRESS_TEST_DIR"];
         NSString *validPath = [fixtureRoot

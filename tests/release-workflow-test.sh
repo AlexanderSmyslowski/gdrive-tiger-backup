@@ -138,6 +138,15 @@ if [[ -x "$NOTES_EXTRACTOR" ]]; then
     printf 'not ok - v2.4.5 notes describe quiet successful-backup notifications\n'
     failures=$((failures + 1))
   fi
+
+  if [[ "$notes" == *"macOS 15"* &&
+        "$notes" == *"checked/listed counters"* &&
+        "$notes" == *"destination free space"* ]]; then
+    printf 'ok - v2.4.5 notes describe portable disk identity and truthful aggregate activity\n'
+  else
+    printf 'not ok - v2.4.5 notes describe portable disk identity and truthful aggregate activity\n'
+    failures=$((failures + 1))
+  fi
 fi
 
 check_contains "$WORKFLOW" "tags:" "release workflow is triggered by version tags"

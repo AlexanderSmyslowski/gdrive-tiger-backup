@@ -1798,15 +1798,31 @@ write_progress() {
   local percent="${2:-}"
   local detail="${3:-}"
   local phase="${4:-}"
-  local tmp="${PROGRESS_FILE}.$$"
+  local checked="${5:-}"
+  local listed="${6:-}"
+  local transferred="${7:-}"
+  local speed="${8:-}"
+  local tmp
 
-  {
+  tmp="$(umask 077; mktemp "${PROGRESS_FILE}.tmp.XXXXXX")" || return 1
+  if ! (umask 077; {
     printf 'label=%s\n' "$(progress_escape "$label")"
     [[ -n "$phase" ]] && printf 'phase=%s\n' "$(progress_escape "$phase")"
     [[ -n "$percent" ]] && printf 'percent=%s\n' "$(progress_escape "$percent")"
     [[ -n "$detail" ]] && printf 'detail=%s\n' "$(progress_escape "$detail")"
+    [[ -n "$checked" ]] && printf 'checked=%s\n' "$checked"
+    [[ -n "$listed" ]] && printf 'listed=%s\n' "$listed"
+    [[ -n "$transferred" ]] && printf 'transferred=%s\n' "$(progress_escape "$transferred")"
+    [[ -n "$speed" ]] && printf 'speed=%s\n' "$(progress_escape "$speed")"
     :
-  } >"$tmp" && mv -f "$tmp" "$PROGRESS_FILE"
+  } >"$tmp" && chmod 600 "$tmp"); then
+    cleanup_temp_file "$tmp"
+    return 1
+  fi
+  if ! mv -f "$tmp" "$PROGRESS_FILE"; then
+    cleanup_temp_file "$tmp"
+    return 1
+  fi
 }
 
 public_progress_label() {
@@ -1817,16 +1833,19 @@ public_progress_label() {
   esac
 }
 
-parse_rclone_progress_fields() {
-  local line="$1"
-  local pattern='^Transferred:[[:space:]]*([0-9][0-9.]*[[:space:]]+([KMGTPE]i)?B)[[:space:]]+/[[:space:]]+([0-9][0-9.]*[[:space:]]+([KMGTPE]i)?B),[[:space:]]+([0-9]{1,3})%,[[:space:]]+([0-9][0-9.]*[[:space:]]+([KMGTPE]i)?B/s),[[:space:]]+ETA[[:space:]]+(-|([0-9]+[dhms])+)$'
-  local transferred total percent speed eta
+reset_rclone_transfer_progress() {
   RCLONE_PROGRESS_TRANSFERRED=""
   RCLONE_PROGRESS_TOTAL=""
   RCLONE_PROGRESS_PERCENT=""
   RCLONE_PROGRESS_SPEED=""
   RCLONE_PROGRESS_ETA=""
   RCLONE_PROGRESS_DETAIL=""
+}
+
+parse_rclone_progress_fields() {
+  local line="$1"
+  local pattern='^Transferred:[[:space:]]*([0-9][0-9.]*[[:space:]]+([KMGTPE]i)?B)[[:space:]]+/[[:space:]]+([0-9][0-9.]*[[:space:]]+([KMGTPE]i)?B),[[:space:]]+([0-9]{1,3})%,[[:space:]]+([0-9][0-9.]*[[:space:]]+([KMGTPE]i)?B/s),[[:space:]]+ETA[[:space:]]+(-|([0-9]+[dhms])+)$'
+  local transferred total percent speed eta
   [[ "$line" =~ $pattern ]] || return 1
   transferred="${BASH_REMATCH[1]}"
   total="${BASH_REMATCH[3]}"
@@ -1854,10 +1873,32 @@ parse_rclone_unknown_total_progress() {
   speed="${BASH_REMATCH[4]}"
   [[ "${transferred%% *}" =~ ^[0-9]+([.][0-9]+)?$ &&
      "${speed%% *}" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+  RCLONE_PROGRESS_TRANSFERRED="$transferred"
+  RCLONE_PROGRESS_TOTAL=""
+  RCLONE_PROGRESS_PERCENT=""
+  RCLONE_PROGRESS_SPEED="$speed"
+  RCLONE_PROGRESS_ETA=""
+  RCLONE_PROGRESS_DETAIL=""
+}
+
+parse_rclone_check_progress() {
+  local line="$1"
+  local pattern='^Checks:[[:space:]]*([0-9]{1,18})[[:space:]]*/[[:space:]]*[0-9]{1,18},[[:space:]]*(-|[0-9]{1,3}%)[[:space:]]*,[[:space:]]*Listed[[:space:]]+([0-9]{1,18})$'
+  local check_percent
+  [[ "$line" =~ $pattern ]] || return 1
+  check_percent="${BASH_REMATCH[2]}"
+  if [[ "$check_percent" != "-" ]]; then
+    check_percent="${check_percent%%%}"
+    (( 10#$check_percent <= 100 )) || return 1
+  fi
+  RCLONE_PROGRESS_CHECKED="${BASH_REMATCH[1]}"
+  RCLONE_PROGRESS_LISTED="${BASH_REMATCH[3]}"
 }
 
 write_durable_progress() {
   local label="${1:-preparing}" percent="${2:-}" detail="${3:-}" phase="${4:-}"
+  local checked="${5:-}" listed="${6:-}"
+  local transferred="${7:-}" speed="${8:-}"
   local directory temporary existing_owner phase_current phase_total
   [[ -n "$DURABLE_PROGRESS_FILE" ]] || return 0
   case "$label" in preparing|"My Drive"|"Shared with me"|"Shared Drive") ;; *) return 1 ;; esac
@@ -1869,6 +1910,15 @@ write_durable_progress() {
   fi
   [[ -z "$percent" || ( "$percent" =~ ^[0-9]+$ && "$percent" -le 100 ) ]] || return 1
   if [[ -n "$detail" && "$detail" != "${RCLONE_PROGRESS_DETAIL:-}" ]]; then return 1; fi
+  if [[ -n "$checked" || -n "$listed" ]]; then
+    [[ "$checked" =~ ^[0-9]{1,18}$ && "$listed" =~ ^[0-9]{1,18}$ ]] || return 1
+  fi
+  if [[ -n "$transferred" || -n "$speed" ]]; then
+    [[ "$label" != "preparing" &&
+       ${#transferred} -le 32 && ${#speed} -le 34 &&
+       "$transferred" =~ ^[0-9]+([.][0-9]+)?[[:space:]]+([KMGTPE]i)?B$ &&
+       "$speed" =~ ^[0-9]+([.][0-9]+)?[[:space:]]+([KMGTPE]i)?B/s$ ]] || return 1
+  fi
   [[ ! -L "$DURABLE_PROGRESS_FILE" ]] || return 1
   [[ ! -e "$DURABLE_PROGRESS_FILE" || -f "$DURABLE_PROGRESS_FILE" ]] || return 1
   if [[ -e "$DURABLE_PROGRESS_FILE" ]]; then
@@ -1886,6 +1936,10 @@ write_durable_progress() {
       [[ -n "$phase" ]] && printf 'phase=%s\n' "$phase"
       [[ -n "$percent" ]] && printf 'percent=%s\n' "$percent"
       [[ -n "$detail" ]] && printf 'detail=%s\n' "$detail"
+      [[ -n "$checked" ]] && printf 'checked=%s\n' "$checked"
+      [[ -n "$listed" ]] && printf 'listed=%s\n' "$listed"
+      [[ -n "$transferred" ]] && printf 'transferred=%s\n' "$transferred"
+      [[ -n "$speed" ]] && printf 'speed=%s\n' "$speed"
       printf 'updated_at=%s\n' "$(date +%s)"
     } >"$temporary" && chmod 600 "$temporary"); then
     cleanup_temp_file "$temporary"
@@ -1948,8 +2002,11 @@ write_run_state() {
 
   local status="$1"
   local exit_code="${2:-}"
-  local tmp="${RUN_STATE_FILE}.$$"
-  {
+  local tmp
+  [[ ! -L "$RUN_STATE_FILE" ]] || return 1
+  [[ ! -e "$RUN_STATE_FILE" || ( -f "$RUN_STATE_FILE" && -O "$RUN_STATE_FILE" ) ]] || return 1
+  tmp="$(umask 077; mktemp "${RUN_STATE_FILE}.tmp.XXXXXX")" || return 1
+  if ! (umask 077; {
     printf 'protocol=1\n'
     printf 'status=%s\n' "$status"
     printf 'pid=%s\n' "$$"
@@ -1959,7 +2016,14 @@ write_run_state() {
       printf 'retry_origin_started_at=%s\n' "$RETRY_ORIGIN_STARTED_AT"
     [[ -n "$RETRY_ATTEMPT" ]] && printf 'retry_attempt=%s\n' "$RETRY_ATTEMPT"
     [[ -n "$exit_code" ]] && printf 'exit_code=%s\n' "$exit_code"
-  } >"$tmp" && mv -f "$tmp" "$RUN_STATE_FILE"
+  } >"$tmp" && chmod 600 "$tmp"); then
+    cleanup_temp_file "$tmp"
+    return 1
+  fi
+  if ! mv -f "$tmp" "$RUN_STATE_FILE"; then
+    cleanup_temp_file "$tmp"
+    return 1
+  fi
 }
 
 write_last_run_summary() {
@@ -2029,17 +2093,40 @@ update_progress_from_rclone_line() {
   local phase="$2"
   local line="$3"
 
+  # Keep check counters across each stats block, but never pair them with a
+  # stale transfer percentage if rclone changes or emits an unknown format.
+  if [[ "$line" == Transferred:* ]]; then
+    reset_rclone_transfer_progress
+  fi
   if parse_rclone_progress_fields "$line"; then
-    write_progress "$label" "$RCLONE_PROGRESS_PERCENT" "$RCLONE_PROGRESS_DETAIL" "$phase"
+    write_progress "$label" "$RCLONE_PROGRESS_PERCENT" "$RCLONE_PROGRESS_DETAIL" \
+      "$phase" "$RCLONE_PROGRESS_CHECKED" "$RCLONE_PROGRESS_LISTED" \
+      "$RCLONE_PROGRESS_TRANSFERRED" "$RCLONE_PROGRESS_SPEED"
     if ! write_durable_progress "$(public_progress_label "$label")" \
-        "$RCLONE_PROGRESS_PERCENT" "$RCLONE_PROGRESS_DETAIL" "$phase"; then
+        "$RCLONE_PROGRESS_PERCENT" "$RCLONE_PROGRESS_DETAIL" "$phase" \
+        "$RCLONE_PROGRESS_CHECKED" "$RCLONE_PROGRESS_LISTED" \
+        "$RCLONE_PROGRESS_TRANSFERRED" "$RCLONE_PROGRESS_SPEED"; then
       warn_progress_unavailable
       write_progress "$label" "" "" "$phase"
       write_durable_progress "$(public_progress_label "$label")" "" "" "$phase" || true
     fi
   elif parse_rclone_unknown_total_progress "$line"; then
-    write_progress "$label" "" "" "$phase"
-    if ! write_durable_progress "$(public_progress_label "$label")" "" "" "$phase"; then
+    write_progress "$label" "" "" "$phase" \
+      "$RCLONE_PROGRESS_CHECKED" "$RCLONE_PROGRESS_LISTED" \
+      "$RCLONE_PROGRESS_TRANSFERRED" "$RCLONE_PROGRESS_SPEED"
+    if ! write_durable_progress "$(public_progress_label "$label")" "" "" "$phase" \
+        "$RCLONE_PROGRESS_CHECKED" "$RCLONE_PROGRESS_LISTED" \
+        "$RCLONE_PROGRESS_TRANSFERRED" "$RCLONE_PROGRESS_SPEED"; then
+      warn_progress_unavailable
+    fi
+  elif parse_rclone_check_progress "$line"; then
+    write_progress "$label" "$RCLONE_PROGRESS_PERCENT" "$RCLONE_PROGRESS_DETAIL" \
+      "$phase" "$RCLONE_PROGRESS_CHECKED" "$RCLONE_PROGRESS_LISTED" \
+      "$RCLONE_PROGRESS_TRANSFERRED" "$RCLONE_PROGRESS_SPEED"
+    if ! write_durable_progress "$(public_progress_label "$label")" \
+        "$RCLONE_PROGRESS_PERCENT" "$RCLONE_PROGRESS_DETAIL" "$phase" \
+        "$RCLONE_PROGRESS_CHECKED" "$RCLONE_PROGRESS_LISTED" \
+        "$RCLONE_PROGRESS_TRANSFERRED" "$RCLONE_PROGRESS_SPEED"; then
       warn_progress_unavailable
     fi
   fi
@@ -2053,6 +2140,9 @@ run_rclone_with_progress() {
   local line status error_class_file="" collision_report="" collision_path=""
   local collision_prefix="" collision_kind=""
   local detected_count=0 parsed_count=0 unhandled_count=0
+  reset_rclone_transfer_progress
+  RCLONE_PROGRESS_CHECKED=""
+  RCLONE_PROGRESS_LISTED=""
   LAST_RCLONE_COLLISION_REPORT=""
   if ! error_class_file="$(mktemp "${TMPDIR:-/tmp}/gdrive-backup-error-class.XXXXXX")"; then
     log "FEHLER: Die rclone-Auswertung konnte nicht sicher vorbereitet werden."
@@ -2381,7 +2471,7 @@ decimal_capacity_label() {
 external_volume_confirmation_detail() {
   local volume_reference="$VOLUME"
   local volume_plist="" physical_plist="" whole_plist=""
-  local volume_name="" physical_store="" second_physical_store="" parent_whole=""
+  local volume_name="" physical_store="" physical_store_count="" parent_whole=""
   local vendor="" model="" device_name="" entry_name="" media_name=""
   local physical_name_hint="" physical_size="" physical_bus=""
   local volume_size="" volume_bus=""
@@ -2405,14 +2495,18 @@ external_volume_confirmation_detail() {
   fi
 
   physical_store="$(plist_data_value "$volume_plist" APFSPhysicalStores.0.APFSPhysicalStore || true)"
-  second_physical_store="$(plist_data_value "$volume_plist" APFSPhysicalStores.1.APFSPhysicalStore || true)"
+  # Ask plutil for the array cardinality. Probing a missing numeric key path is
+  # not portable: macOS 15 can return non-empty output for an out-of-range item.
+  physical_store_count="$(plist_data_value "$volume_plist" APFSPhysicalStores || true)"
   volume_size="$(first_valid_size_value \
     "$(plist_data_value "$volume_plist" APFSContainerSize || true)" \
     "$(plist_data_value "$volume_plist" TotalSize || true)" || true)"
   volume_bus="$(display_metadata_value "$(plist_data_value "$volume_plist" BusProtocol || true)")"
-  if [[ -n "$second_physical_store" ]]; then
+  if [[ "$physical_store_count" =~ ^[0-9]+$ ]] &&
+     (( physical_store_count > 1 )); then
     device_name="$(t storage_set)"
-  elif [[ "$physical_store" =~ ^disk[0-9]+s[0-9]+$ ]]; then
+  elif [[ "$physical_store_count" == "1" &&
+          "$physical_store" =~ ^disk[0-9]+s[0-9]+$ ]]; then
     device_name="$(ioreg_media_name_for_bsd_id "$physical_store" || true)"
     if [[ -z "$device_name" || -z "$volume_size" || -z "$volume_bus" ]]; then
       physical_plist="$(run_with_timeout 8 "$DISKUTIL_BIN" info -plist "$physical_store" 2>/dev/null || true)"

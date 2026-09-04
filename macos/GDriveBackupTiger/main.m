@@ -1267,10 +1267,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
                                                      font:valueFont color:ink];
     [self addSubview:self.targetValueLabel];
 
-    self.storageCaptionLabel = [self overviewLabelWithFrame:NSMakeRect(48, 314, 132, 19)
+    self.storageCaptionLabel = [self overviewLabelWithFrame:NSMakeRect(48, 314, 180, 19)
                                                         font:captionFont color:muted];
     [self addSubview:self.storageCaptionLabel];
-    self.storageValueLabel = [self overviewLabelWithFrame:NSMakeRect(190, 312, 374, 22)
+    self.storageValueLabel = [self overviewLabelWithFrame:NSMakeRect(238, 312, 326, 22)
                                                       font:valueFont color:ink];
     [self addSubview:self.storageValueLabel];
 
@@ -1708,6 +1708,76 @@ static NSString *GDTLocalizedProgressPhase(NSString *phase, NSString *language) 
     }
     return [NSString stringWithFormat:T(language, @"progressAreaFormat"),
         parts[0], parts[1]];
+}
+
+static NSString *GDTLocalizedProgressCount(NSString *rawCount, NSString *language) {
+    if (![rawCount isKindOfClass:NSString.class] || !rawCount.length || rawCount.length > 18 ||
+        [rawCount rangeOfCharacterFromSet:NSCharacterSet.decimalDigitCharacterSet.invertedSet].location
+            != NSNotFound) {
+        return nil;
+    }
+    NSDictionary<NSString *, NSString *> *localeIdentifiers = @{
+        @"de": @"de_DE", @"en": @"en_US", @"fr": @"fr_FR", @"es": @"es_ES",
+        @"ja": @"ja_JP", @"yue": @"zh_HK", @"ko": @"ko_KR"
+    };
+    NSNumberFormatter *formatter = [[NSNumberFormatter alloc] init];
+    formatter.numberStyle = NSNumberFormatterDecimalStyle;
+    formatter.maximumFractionDigits = 0;
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:
+        localeIdentifiers[language ?: @"en"] ?: @"en_US"];
+    NSDecimalNumber *number = [NSDecimalNumber decimalNumberWithString:rawCount];
+    return [formatter stringFromNumber:number];
+}
+
+static BOOL GDTProgressMetricMatches(NSString *value, NSString *pattern,
+                                     NSUInteger maximumLength) {
+    if (![value isKindOfClass:NSString.class] || !value.length ||
+        value.length > maximumLength) {
+        return NO;
+    }
+    NSRegularExpression *expression = [NSRegularExpression
+        regularExpressionWithPattern:pattern options:0 error:nil];
+    return [expression firstMatchInString:value options:0
+        range:NSMakeRange(0, value.length)] != nil;
+}
+
+static BOOL GDTProgressTransferPairIsSafe(NSString *transferred, NSString *speed) {
+    return GDTProgressMetricMatches(transferred,
+        @"^[0-9]+([.][0-9]+)? ([KMGTPE]i)?B$", 32) &&
+        GDTProgressMetricMatches(speed,
+        @"^[0-9]+([.][0-9]+)? ([KMGTPE]i)?B/s$", 34);
+}
+
+static BOOL GDTProgressTransferIsPositive(NSString *transferred) {
+    NSRange separator = [transferred rangeOfString:@" "];
+    if (separator.location == NSNotFound) return NO;
+    NSDecimalNumber *number = [NSDecimalNumber decimalNumberWithString:
+        [transferred substringToIndex:separator.location]];
+    return ![number isEqualToNumber:NSDecimalNumber.notANumber] &&
+        [number compare:NSDecimalNumber.zero] == NSOrderedDescending;
+}
+
+static NSString *GDTLocalizedProgressDetail(
+    NSDictionary<NSString *, NSString *> *progress, NSString *language) {
+    NSString *detail = progress[@"detail"];
+    if (detail.length) return detail;
+
+    NSString *transferred = progress[@"transferred"];
+    NSString *speed = progress[@"speed"];
+    if (GDTProgressTransferPairIsSafe(transferred, speed) &&
+        GDTProgressTransferIsPositive(transferred)) {
+        return [NSString stringWithFormat:T(language, @"progressTransferredFormat"),
+            transferred, speed];
+    }
+
+    NSString *checked = GDTLocalizedProgressCount(progress[@"checked"], language);
+    NSString *listed = GDTLocalizedProgressCount(progress[@"listed"], language);
+    if (checked.length && listed.length) {
+        return [NSString stringWithFormat:T(language, @"progressCheckedListedFormat"),
+            checked, listed];
+    }
+    return progress[@"phase"].length
+        ? T(language, @"progressChecking") : T(language, @"progressPreparing");
 }
 
 static NSTimeInterval GDTBackupNotificationTimestamp(id value) {
@@ -3971,7 +4041,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             ? GDTLocalizedProgressPhase(progress[@"phase"], language) : @"",
         @"progressPercent": retryRunning ? (progress[@"percent"] ?: @"") : @"",
         @"progressDetail": retryRunning
-            ? (progress[@"detail"] ?: T(language, @"progressPreparing")) : @"",
+            ? GDTLocalizedProgressDetail(progress, language) : @"",
         @"lastRun": lastRun ?: @"",
         @"lastRunDetail": lastRunDetail,
         @"nextRun": nextRun ?: T(language, @"overviewUnavailable"),
@@ -4034,9 +4104,13 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         if ([snapshot[@"progressPhase"] length]) {
             [progressParts addObject:snapshot[@"progressPhase"]];
         }
-        if ([snapshot[@"progressPercent"] length]) {
+        NSString *progressPercent = snapshot[@"progressPercent"] ?: @"";
+        NSString *progressDetail = snapshot[@"progressDetail"] ?: @"";
+        if (progressPercent.length) {
             [progressParts addObject:[NSString stringWithFormat:@"%@ %%",
-                snapshot[@"progressPercent"]]];
+                progressPercent]];
+        } else if (progressDetail.length) {
+            [progressParts addObject:progressDetail];
         }
         NSMenuItem *retryProgressItem = [[NSMenuItem alloc]
             initWithTitle:[progressParts componentsJoinedByString:@" · "]
@@ -7368,7 +7442,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         contentView.progressTitle = nil;
     }
 
-    contentView.progressDetail = values[@"detail"];
+    contentView.progressDetail = GDTLocalizedProgressDetail(values, self.language ?: @"en");
 
     NSString *percent = values[@"percent"];
     contentView.progressPercent = percent.length

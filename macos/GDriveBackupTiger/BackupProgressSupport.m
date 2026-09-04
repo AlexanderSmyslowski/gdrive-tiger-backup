@@ -58,6 +58,16 @@ static BOOL GDTValidProgressDetail(NSString *detail) {
         @"^[0-9]+([.][0-9]+)? ([KMGTPE]i)?B / [0-9]+([.][0-9]+)? ([KMGTPE]i)?B, [0-9]+([.][0-9]+)? ([KMGTPE]i)?B/s, ETA (-|[0-9]+[dhms]([0-9]+[dhms])*)$");
 }
 
+static BOOL GDTValidProgressTransferred(NSString *transferred) {
+    return GDTProgressValueIsSafe(transferred, 32) && GDTMatchesPattern(transferred,
+        @"^[0-9]+([.][0-9]+)? ([KMGTPE]i)?B$");
+}
+
+static BOOL GDTValidProgressSpeed(NSString *speed) {
+    return GDTProgressValueIsSafe(speed, 34) && GDTMatchesPattern(speed,
+        @"^[0-9]+([.][0-9]+)? ([KMGTPE]i)?B/s$");
+}
+
 static NSData *GDTReadPrivateProgressData(NSString *path) {
     if (!path.length) return nil;
     int descriptor = open(path.fileSystemRepresentation, O_RDONLY | O_NOFOLLOW);
@@ -129,7 +139,9 @@ NSDictionary<NSString *, NSString *> *GDTReadBackupProgressAtPath(NSString *path
     NSString *status = values[@"status"];
     if (status) {
         if (![status isEqualToString:@"finished"] || values[@"label"] ||
-            values[@"phase"] || values[@"percent"] || values[@"detail"]) {
+            values[@"phase"] || values[@"percent"] || values[@"detail"] ||
+            values[@"checked"] || values[@"listed"] || values[@"transferred"] ||
+            values[@"speed"]) {
             return nil;
         }
     } else if (!values[@"label"]) {
@@ -207,5 +219,27 @@ NSDictionary<NSString *, NSString *> *GDTValidatedBackupProgressForValues(
     }
     NSString *detail = progress[@"detail"];
     if (detail && !GDTValidProgressDetail(detail)) return nil;
+    NSString *checked = progress[@"checked"];
+    NSString *listed = progress[@"listed"];
+    if (checked || listed) {
+        unsigned long long checkedCount = 0;
+        unsigned long long listedCount = 0;
+        if ([label isEqualToString:@"preparing"] ||
+            !GDTProgressValueIsSafe(checked, 18) ||
+            !GDTProgressValueIsSafe(listed, 18) ||
+            !GDTParseUnsignedInteger(checked, &checkedCount) ||
+            !GDTParseUnsignedInteger(listed, &listedCount)) {
+            return nil;
+        }
+    }
+    NSString *transferred = progress[@"transferred"];
+    NSString *speed = progress[@"speed"];
+    if (transferred || speed) {
+        if ([label isEqualToString:@"preparing"] ||
+            !GDTValidProgressTransferred(transferred) ||
+            !GDTValidProgressSpeed(speed)) {
+            return nil;
+        }
+    }
     return progress;
 }

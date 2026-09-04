@@ -79,6 +79,12 @@ check_contains "$ROOT/README.md" \
   "the progress bar remains indeterminate and no stale or invented percentage is shown" \
   "README documents truthful unknown-total progress"
 check_contains "$ROOT/README.md" \
+  "increasing aggregate checked/listed counters" \
+  "README documents visible aggregate progress without file names"
+check_contains "$ROOT/README.md" \
+  "capacity clearly labelled as destination free space rather than backup progress" \
+  "README distinguishes target capacity from live backup progress"
+check_contains "$ROOT/README.md" \
   "Completion appears only after the durable terminal status has been published." \
   "README ties completion to durable terminal status"
 check_contains "$ROOT/CHANGELOG.md" "## v${version} " \
