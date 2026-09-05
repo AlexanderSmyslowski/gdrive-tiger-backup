@@ -162,9 +162,9 @@ if [[ -x "$NOTES_EXTRACTOR" ]]; then
 
   if [[ "$notes" == *"every successful APFS run to be UUID-bound"* &&
         "$notes" == *"Legacy path-only targets fail closed outside setup"* &&
-        "$notes" == *"rediscover the sole source container and exact-name UUID inventory"* &&
+        "$notes" == *"Rediscover the sole eligible source container and exact-name UUID inventory"* &&
         "$notes" == *"multiple eligible containers"* &&
-        "$notes" == *"prefix-renamed volumes fail closed"* &&
+        "$notes" == *"numeric-family names such as \`GoogleDrive-Backup 1\` fail closed"* &&
         "$notes" == *"never deletes, erases, repartitions, renames, or unmounts volumes"* ]]; then
     printf 'ok - v2.4.6 notes describe fail-closed APFS identity and non-destructive boundaries\n'
   else
