@@ -34,12 +34,12 @@ launch_method="$(/usr/bin/awk '
 ' "$MAIN_SOURCE")"
 
 if [[ "$backup_method" == *'self.statusField.stringValue = T(self.language, @"statusBackupPreparing");'* &&
-      "$backup_method" == *'if (![self launchBackupWithArgument:@"--run" assumeYes:YES]) {'* &&
+      "$backup_method" == *'if (![self launchBackupWithArgument:@"--run" trigger:@"setup" assumeYes:YES]) {'* &&
       "$backup_method" == *'[self dismissSetupAfterBackupLaunch];'* &&
       "$backup_method" != *'statusBackupStarted'* ]]; then
-  printf '%s\n' 'ok - manual backup preserves launch errors and dismisses setup only after launch'
+  printf '%s\n' 'ok - setup backup uses the setup trigger and dismisses only after launch'
 else
-  printf '%s\n' 'not ok - manual backup overwrites a launch failure'
+  printf '%s\n' 'not ok - setup backup does not use its exclusive trigger'
   failures=$((failures + 1))
 fi
 

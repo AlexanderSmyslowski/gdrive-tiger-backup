@@ -11,6 +11,7 @@
 @property(nonatomic) NSInteger launchCalls;
 @property(nonatomic) NSInteger dismissCalls;
 @property(nonatomic) BOOL launchSucceeds;
+@property(nonatomic, copy) NSString *lastTrigger;
 @property(nonatomic, copy) void (^dryRunCompletion)(NSInteger status);
 @end
 
@@ -33,6 +34,16 @@
     (void)argument;
     (void)assumeYes;
     self.launchCalls++;
+    return self.launchSucceeds;
+}
+
+- (BOOL)launchBackupWithArgument:(NSString *)argument
+                         trigger:(NSString *)trigger
+                       assumeYes:(BOOL)assumeYes {
+    (void)argument;
+    (void)assumeYes;
+    self.launchCalls++;
+    self.lastTrigger = trigger;
     return self.launchSucceeds;
 }
 
@@ -194,8 +205,9 @@ int main(void) {
         [savedDelegate startBackupNow:nil];
         Assert(savedDelegate.saveCalls == 0 && savedDelegate.launchCalls == 1 &&
                savedDelegate.dismissCalls == 1 &&
+               [savedDelegate.lastTrigger isEqualToString:@"setup"] &&
                [savedDelegate.statusField.stringValue isEqualToString:T(@"en", @"statusBackupPreparing")],
-               @"Backup now launches once, reports preparation, and dismisses setup once");
+               @"Backup now launches once with setup authority, reports preparation, and dismisses setup once");
 
         EmbeddedSetupDismissDelegate *embeddedDismiss =
             [[EmbeddedSetupDismissDelegate alloc] init];

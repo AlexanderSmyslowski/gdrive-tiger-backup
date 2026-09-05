@@ -1501,6 +1501,24 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 
 @end
 
+@interface GDTExplicitPopUpChoiceController : NSObject
+@property(nonatomic, weak) NSPopUpButton *popup;
+@property(nonatomic, weak) NSButton *confirmationButton;
+@property(nonatomic) BOOL hasExplicitSelection;
+- (void)choiceDidChange:(id)sender;
+@end
+
+@implementation GDTExplicitPopUpChoiceController
+
+- (void)choiceDidChange:(id)sender {
+    (void)sender;
+    self.hasExplicitSelection =
+        [self.popup.selectedItem.representedObject isKindOfClass:NSDictionary.class];
+    self.confirmationButton.enabled = self.hasExplicitSelection;
+}
+
+@end
+
 @interface AppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, NSTextFieldDelegate, UNUserNotificationCenterDelegate>
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, copy) NSString *sentinelPath;
@@ -3330,15 +3348,29 @@ static void GDTAdvanceBackupNotificationAcceptedState(
         UNNotificationPresentationOptionSound;
 }
 
-- (void)revalidateUnknownExternalVolumeUserInfo:(NSDictionary *)userInfo
-                                      completion:
-    (void (^)(NSDictionary<NSString *, id> *descriptor))completion {
+- (BOOL)isWritableExternalAPFSDescriptor:
+    (NSDictionary<NSString *, id> *)descriptor {
+    NSString *path = [descriptor[@"path"] isKindOfClass:NSString.class]
+        ? [descriptor[@"path"] stringByStandardizingPath] : @"";
+    BOOL safeMountRoot = [path hasPrefix:@"/Volumes/"] &&
+        path.pathComponents.count == 3;
+    return [self isUnknownExternalVolumeDescriptorEligible:descriptor] &&
+        safeMountRoot &&
+        [descriptor[@"isWritable"] boolValue] &&
+        [descriptor[@"filesystem"] isKindOfClass:NSString.class] &&
+        [descriptor[@"filesystem"] caseInsensitiveCompare:@"apfs"] ==
+            NSOrderedSame;
+}
+
+- (void)revalidateUnknownExternalVolumeCandidatesForUserInfo:(NSDictionary *)userInfo
+                                                  completion:
+    (void (^)(NSArray<NSDictionary<NSString *, id> *> *descriptors))completion {
     NSString *diskID = [userInfo[@"diskID"] isKindOfClass:NSString.class]
         ? userInfo[@"diskID"] : @"";
     NSString *volumeUUID = [userInfo[@"volumeUUID"] isKindOfClass:NSString.class]
         ? [userInfo[@"volumeUUID"] uppercaseString] : @"";
     if (!diskID.length || !volumeUUID.length) {
-        completion(nil);
+        completion(@[]);
         return;
     }
     NSMutableSet<NSString *> *attachmentVolumeUUIDs =
@@ -3354,7 +3386,8 @@ static void GDTAdvanceBackupNotificationAcceptedState(
     [attachmentVolumeUUIDs unionSet:
         [self rememberedUnknownExternalVolumeUUIDsForDiskID:diskID]];
 
-    NSMutableArray<NSString *> *candidatePaths = [NSMutableArray array];
+    NSMutableOrderedSet<NSString *> *candidatePaths =
+        [NSMutableOrderedSet orderedSet];
     for (NSDictionary<NSString *, id> *descriptor in
          self.mountedExternalVolumeDescriptorsByPath.allValues ?: @[]) {
         if ([descriptor[@"diskID"] isEqualToString:diskID] &&
@@ -3362,21 +3395,21 @@ static void GDTAdvanceBackupNotificationAcceptedState(
                 [descriptor[@"volumeUUID"] uppercaseString]]) {
             NSString *path = descriptor[@"path"];
             if (path.length) {
-                [candidatePaths addObject:path];
+                [candidatePaths addObject:path.stringByStandardizingPath];
             }
         }
     }
     for (NSString *path in
          [self mountedVolumePathsForUnknownExternalVolumeRevalidation]) {
-        if (path.length && ![candidatePaths containsObject:path]) {
-            [candidatePaths addObject:path];
+        if (path.length) {
+            [candidatePaths addObject:path.stringByStandardizingPath];
         }
     }
-    [self revalidateUnknownExternalVolumePaths:candidatePaths
+    [self revalidateUnknownExternalVolumePaths:candidatePaths.array
                                        atIndex:0
                                 matchingDiskID:diskID
                                    volumeUUIDs:attachmentVolumeUUIDs
-                          preferredVolumeUUID:volumeUUID
+                           offeredVolumeUUID:volumeUUID
                               validDescriptors:[NSMutableArray array]
                                     completion:completion];
 }
@@ -3627,33 +3660,34 @@ static void GDTAdvanceBackupNotificationAcceptedState(
                                      atIndex:(NSUInteger)index
                               matchingDiskID:(NSString *)diskID
                                  volumeUUIDs:(NSSet<NSString *> *)volumeUUIDs
-                       preferredVolumeUUID:(NSString *)preferredVolumeUUID
+                          offeredVolumeUUID:(NSString *)offeredVolumeUUID
                            validDescriptors:
     (NSMutableArray<NSDictionary<NSString *, id> *> *)validDescriptors
                                   completion:
-    (void (^)(NSDictionary<NSString *, id> *descriptor))completion {
+    (void (^)(NSArray<NSDictionary<NSString *, id> *> *descriptors))completion {
     if (index >= paths.count) {
         [validDescriptors sortUsingComparator:
             ^NSComparisonResult(NSDictionary<NSString *, id> *left,
                                 NSDictionary<NSString *, id> *right) {
-            BOOL leftPrimary = [[left[@"volumeUUID"] uppercaseString]
-                isEqualToString:preferredVolumeUUID];
-            BOOL rightPrimary = [[right[@"volumeUUID"] uppercaseString]
-                isEqualToString:preferredVolumeUUID];
-            BOOL leftWritableAPFS = [left[@"isWritable"] boolValue] &&
-                [left[@"filesystem"] isEqualToString:@"apfs"];
-            BOOL rightWritableAPFS = [right[@"isWritable"] boolValue] &&
-                [right[@"filesystem"] isEqualToString:@"apfs"];
-            NSInteger leftRank = leftWritableAPFS ? (leftPrimary ? 0 : 1)
-                                                   : (leftPrimary ? 2 : 3);
-            NSInteger rightRank = rightWritableAPFS ? (rightPrimary ? 0 : 1)
-                                                     : (rightPrimary ? 2 : 3);
-            if (leftRank < rightRank) return NSOrderedAscending;
-            if (leftRank > rightRank) return NSOrderedDescending;
+            NSString *leftName = GDTSafeDestinationLabelComponent(left[@"name"]);
+            NSString *rightName = GDTSafeDestinationLabelComponent(right[@"name"]);
+            NSComparisonResult nameOrder = [leftName compare:rightName
+                                                       options:NSCaseInsensitiveSearch];
+            if (nameOrder != NSOrderedSame) return nameOrder;
             return [left[@"path"] compare:right[@"path"]
                                    options:NSCaseInsensitiveSearch];
         }];
-        completion(validDescriptors.firstObject);
+        BOOL offeredVolumeStillAvailable = NO;
+        for (NSDictionary<NSString *, id> *descriptor in validDescriptors) {
+            if ([[descriptor[@"volumeUUID"] uppercaseString]
+                    isEqualToString:offeredVolumeUUID]) {
+                offeredVolumeStillAvailable = YES;
+                break;
+            }
+        }
+        // The notification is a capability for one observed attachment. If the
+        // offered volume vanished, a sibling must never inherit that click.
+        completion(offeredVolumeStillAvailable ? validDescriptors.copy : @[]);
         return;
     }
     NSString *path = paths[index];
@@ -3666,7 +3700,7 @@ static void GDTAdvanceBackupNotificationAcceptedState(
             return;
         }
         BOOL matches =
-            [strongSelf isUnknownExternalVolumeDescriptorEligible:current] &&
+            [strongSelf isWritableExternalAPFSDescriptor:current] &&
             [current[@"diskID"] isEqualToString:diskID] &&
             [volumeUUIDs containsObject:
                 [current[@"volumeUUID"] uppercaseString]];
@@ -3677,10 +3711,108 @@ static void GDTAdvanceBackupNotificationAcceptedState(
                                                  atIndex:index + 1
                                           matchingDiskID:diskID
                                              volumeUUIDs:volumeUUIDs
-                                    preferredVolumeUUID:preferredVolumeUUID
+                                     offeredVolumeUUID:offeredVolumeUUID
                                         validDescriptors:validDescriptors
                                               completion:completion];
     }];
+}
+
+- (void)revalidateSelectedUnknownExternalVolumeDescriptor:
+    (NSDictionary<NSString *, id> *)descriptor
+                                               completion:
+    (void (^)(NSDictionary<NSString *, id> *descriptor))completion {
+    NSString *expectedPath = [descriptor[@"path"] isKindOfClass:NSString.class]
+        ? [descriptor[@"path"] stringByStandardizingPath] : @"";
+    NSString *expectedDiskID = [descriptor[@"diskID"] isKindOfClass:NSString.class]
+        ? descriptor[@"diskID"] : @"";
+    NSString *expectedVolumeUUID =
+        [descriptor[@"volumeUUID"] isKindOfClass:NSString.class]
+            ? [descriptor[@"volumeUUID"] uppercaseString] : @"";
+    BOOL safeIdentity = expectedPath.length && expectedDiskID.length &&
+        expectedVolumeUUID.length && [expectedPath hasPrefix:@"/Volumes/"] &&
+        expectedPath.pathComponents.count == 3;
+    if (!safeIdentity) {
+        completion(nil);
+        return;
+    }
+
+    [self inspectMountedVolumeAtPath:expectedPath
+                         completion:^(NSDictionary<NSString *, id> *current) {
+        NSString *currentPath = [current[@"path"] isKindOfClass:NSString.class]
+            ? [current[@"path"] stringByStandardizingPath] : @"";
+        BOOL exactIdentity = [self isWritableExternalAPFSDescriptor:current] &&
+            [currentPath isEqualToString:expectedPath] &&
+            [current[@"diskID"] isEqualToString:expectedDiskID] &&
+            [[current[@"volumeUUID"] uppercaseString]
+                isEqualToString:expectedVolumeUUID];
+        completion(exactIdentity ? current : nil);
+    }];
+}
+
+- (NSArray<NSString *> *)unknownExternalVolumeChoiceLabelsForDescriptors:
+    (NSArray<NSDictionary<NSString *, id> *> *)descriptors {
+    NSMutableArray<NSString *> *labels = [NSMutableArray array];
+    for (NSDictionary<NSString *, id> *descriptor in descriptors) {
+        NSString *name = GDTSafeDestinationLabelComponent(descriptor[@"name"]);
+        NSString *path = [descriptor[@"path"] isKindOfClass:NSString.class]
+            ? [descriptor[@"path"] stringByStandardizingPath] : @"";
+        NSString *mountLabel = GDTSafeDestinationLabelComponent(path.lastPathComponent);
+        if (!name.length) name = T(self.language ?: @"en", @"externalVolume");
+        if (!mountLabel.length) mountLabel = name;
+        [labels addObject:[NSString stringWithFormat:
+            T(self.language ?: @"en", @"unknownExternalVolumeChoiceLabelFormat"),
+            name, mountLabel]];
+    }
+    return labels;
+}
+
+- (void)chooseUnknownExternalVolumeFromDescriptors:
+    (NSArray<NSDictionary<NSString *, id> *> *)descriptors
+                                         completion:
+    (void (^)(NSDictionary<NSString *, id> *descriptor))completion {
+    if (descriptors.count < 2) {
+        completion(nil);
+        return;
+    }
+
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = T(self.language ?: @"en", @"unknownExternalVolumeChooseTitle");
+    alert.informativeText = T(self.language ?: @"en", @"unknownExternalVolumeChooseBody");
+    NSPopUpButton *popup = [[NSPopUpButton alloc]
+        initWithFrame:NSMakeRect(0, 0, 420, 28) pullsDown:NO];
+    NSArray<NSString *> *labels =
+        [self unknownExternalVolumeChoiceLabelsForDescriptors:descriptors];
+    [popup addItemWithTitle:
+        T(self.language ?: @"en", @"unknownExternalVolumeChoosePlaceholder")];
+    popup.lastItem.representedObject = nil;
+    for (NSUInteger index = 0; index < descriptors.count; index++) {
+        [popup addItemWithTitle:labels[index]];
+        popup.lastItem.representedObject = descriptors[index];
+    }
+    [popup selectItemAtIndex:0];
+    alert.accessoryView = popup;
+    [alert addButtonWithTitle:
+        T(self.language ?: @"en", @"unknownExternalVolumeChooseAction")];
+    [alert addButtonWithTitle:T(self.language ?: @"en", @"cancel")];
+    NSButton *confirmationButton = alert.buttons.firstObject;
+    confirmationButton.enabled = NO;
+    GDTExplicitPopUpChoiceController *choiceController =
+        [[GDTExplicitPopUpChoiceController alloc] init];
+    choiceController.popup = popup;
+    choiceController.confirmationButton = confirmationButton;
+    popup.target = choiceController;
+    popup.action = @selector(choiceDidChange:);
+    [NSApp activateIgnoringOtherApps:YES];
+    if ([alert runModal] != NSAlertFirstButtonReturn ||
+        !choiceController.hasExplicitSelection ||
+        !confirmationButton.enabled) {
+        completion(nil);
+        return;
+    }
+    NSDictionary<NSString *, id> *selected =
+        [popup.selectedItem.representedObject isKindOfClass:NSDictionary.class]
+            ? popup.selectedItem.representedObject : nil;
+    completion(selected);
 }
 
 - (void)presentSetupForUnknownExternalVolumeDescriptor:
@@ -3691,12 +3823,7 @@ static void GDTAdvanceBackupNotificationAcceptedState(
     NSString *volumeUUID = [descriptor[@"volumeUUID"] isKindOfClass:NSString.class]
         ? [descriptor[@"volumeUUID"] uppercaseString] : @"";
     NSString *name = GDTSafeDestinationLabelComponent(descriptor[@"name"]);
-    BOOL safeMountRoot = [path hasPrefix:@"/Volumes/"] &&
-        [path.pathComponents count] == 3;
-    BOOL supported = [self isUnknownExternalVolumeDescriptorEligible:descriptor] &&
-        safeMountRoot &&
-        [descriptor[@"isWritable"] boolValue] &&
-        [descriptor[@"filesystem"] isEqualToString:@"apfs"] &&
+    BOOL supported = [self isWritableExternalAPFSDescriptor:descriptor] &&
         volumeUUID.length;
     if (!supported) {
         self.setupContextStatusText =
@@ -3734,14 +3861,34 @@ static void GDTAdvanceBackupNotificationAcceptedState(
     __weak typeof(self) weakSelf = self;
     void (^processAction)(void) = ^{
         typeof(self) strongSelf = weakSelf;
-        [strongSelf revalidateUnknownExternalVolumeUserInfo:userInfo
-                                                completion:
-            ^(NSDictionary<NSString *, id> *descriptor) {
-            if (!descriptor) {
+        [strongSelf revalidateUnknownExternalVolumeCandidatesForUserInfo:userInfo
+                                                              completion:
+            ^(NSArray<NSDictionary<NSString *, id> *> *descriptors) {
+            if (!descriptors.count) {
                 [strongSelf presentUnknownExternalVolumeUnavailable];
                 return;
             }
-            [strongSelf presentSetupForUnknownExternalVolumeDescriptor:descriptor];
+            if (descriptors.count == 1) {
+                [strongSelf presentSetupForUnknownExternalVolumeDescriptor:
+                    descriptors[0]];
+                return;
+            }
+            [strongSelf chooseUnknownExternalVolumeFromDescriptors:descriptors
+                                                        completion:
+                ^(NSDictionary<NSString *, id> *selectedDescriptor) {
+                if (!selectedDescriptor) return;
+                [strongSelf
+                    revalidateSelectedUnknownExternalVolumeDescriptor:
+                        selectedDescriptor
+                    completion:^(NSDictionary<NSString *, id> *currentDescriptor) {
+                    if (!currentDescriptor) {
+                        [strongSelf presentUnknownExternalVolumeUnavailable];
+                        return;
+                    }
+                    [strongSelf presentSetupForUnknownExternalVolumeDescriptor:
+                        currentDescriptor];
+                }];
+            }];
         }];
     };
     if (NSThread.isMainThread) {
@@ -4578,13 +4725,13 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         }
     }
     for (NSDictionary<NSString *, id> *descriptor in descriptors) {
-        BOOL isWritableAPFS = [descriptor[@"isWritable"] boolValue] &&
-            [descriptor[@"filesystem"] isEqualToString:@"apfs"];
-        if (!preferred || isWritableAPFS) {
+        if ([self isWritableExternalAPFSDescriptor:descriptor]) {
             preferred = descriptor;
+            break;
         }
-        if (isWritableAPFS) break;
     }
+    // Unsupported media are remembered in the passive mount cache only. They
+    // never open UI, request permission, or advertise an unusable target.
     if (!preferred) return;
     if (!self.pendingUnknownExternalDiskIDs) {
         self.pendingUnknownExternalDiskIDs = [NSMutableSet set];
@@ -5550,7 +5697,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 
 - (BOOL)shouldShowProgressForTrigger:(NSString *)trigger
                    fromVisibleWindow:(BOOL)visibleWindow {
-    if (![trigger isEqualToString:@"manual"] || !visibleWindow) {
+    BOOL foregroundTrigger = [trigger isEqualToString:@"manual"] ||
+        [trigger isEqualToString:@"setup"];
+    if (!foregroundTrigger || !visibleWindow) {
         return NO;
     }
     return self.setupMode || self.setupWindow.isVisible ||
@@ -6626,7 +6775,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     self.manualLaunchPending = YES;
     [self updateSetupActionAvailability];
     self.statusField.stringValue = T(self.language, @"statusBackupPreparing");
-    if (![self launchBackupWithArgument:@"--run" assumeYes:YES]) {
+    if (![self launchBackupWithArgument:@"--run" trigger:@"setup" assumeYes:YES]) {
         self.manualLaunchPending = NO;
         [self updateSetupActionAvailability];
         return;

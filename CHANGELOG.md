@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## v2.4.6 - 2026-09-05
+
+- Make the process-supplied `setup` trigger the only authority that can create or bind an APFS volume. `GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1` is a narrow process-only authorization for one setup invocation; config files cannot persist it or forge setup authority, and `BACKUP_ASSUME_YES` never authorizes `diskutil apfs addVolume`.
+- Reject overview/manual, scheduled, retry, mount-triggered, menu-bar-only, and unknown creation attempts before confirmation UI, privileged helpers, disk mutation, or copy. Pausing automatic backups does not block a visible setup action.
+- Require every successful APFS run to be UUID-bound. Legacy path-only targets fail closed outside setup; setup validates the exact name, UUID, container, mount, device, media safety and required encryption before and after human confirmation, then atomically persists the complete resolved identity and nested destination.
+- Rediscover the sole eligible source container and exact-name UUID inventory immediately before creation and, after administrator authorization, once more inside the privileged operation immediately before `addVolume`. Recover one valid exact-name volume that appeared earlier, while multiple eligible containers, duplicate requested-container records, multiple or malformed exact-name UUID records, and numeric-family names such as `GoogleDrive-Backup 1` fail closed without mutation or copy; matching names in unrelated containers do not affect the requested container.
+- Reject nested APFS destinations with any existing symbolic-link component before creating directories, copying data, or persisting the resolved destination, including links that remain on the same volume.
+- Keep the setup window's backup action on its distinct foreground trigger while overview and menu-bar starts remain manual. The routine never deletes, erases, repartitions, renames, or unmounts volumes.
+
 ## v2.4.5 - 2026-09-04
 
 - Identify an external backup destination in the confirmation dialog by its physical disk name, decimal capacity, connection type, and logical volume name instead of showing an ambiguous macOS mount-path suffix.

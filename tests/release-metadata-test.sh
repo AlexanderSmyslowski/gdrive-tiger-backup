@@ -3,8 +3,8 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INFO_PLIST="$ROOT/macos/GDriveBackupTiger/Info.plist"
-EXPECTED_VERSION="2.4.5"
-EXPECTED_BUILD="29"
+EXPECTED_VERSION="2.4.6"
+EXPECTED_BUILD="30"
 failures=0
 
 check_contains() {
@@ -61,6 +61,27 @@ check_contains "$ROOT/README.md" \
   "Scheduled, retry, mount-triggered, and menu-bar-only runs stay headless and passive, including in full-screen Spaces." \
   "README explicitly keeps automatic retries passive in full-screen Spaces"
 check_contains "$ROOT/README.md" \
+  "\`GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1\` is a narrow process-only authorization for one setup invocation; it is ignored when stored in a config file." \
+  "README documents process-only APFS creation authorization"
+check_contains "$ROOT/README.md" \
+  "BACKUP_ASSUME_YES approves backup start only and never authorizes \`diskutil apfs addVolume\`." \
+  "README keeps automatic backup approval separate from APFS creation"
+check_contains "$ROOT/README.md" \
+  "Overview/manual, scheduled, retry, mount-triggered, menu-bar-only, and unknown triggers cannot create or bind a volume or open volume-creation UI." \
+  "README reserves APFS creation and binding for setup"
+check_contains "$ROOT/README.md" \
+  "one exact-name candidate in one eligible external APFS container" \
+  "README documents unique APFS candidate and container selection"
+check_contains "$ROOT/README.md" \
+  "independently validates it, binds its UUID, resolves its current mount point and nested destination, and atomically persists the complete identity." \
+  "README documents APFS identity validation and atomic persistence"
+check_contains "$ROOT/README.md" \
+  "Multiple named candidates or multiple eligible containers abort without mutation or copy, and prefix-renamed volumes are never guessed." \
+  "README documents APFS ambiguity and prefix-name fail-closed behavior"
+check_contains "$ROOT/README.md" \
+  "The routine never deletes, erases, repartitions, renames, or unmounts volumes." \
+  "README documents the non-destructive APFS safety boundary"
+check_contains "$ROOT/README.md" \
   "silent authenticated and guest SMB mounting" \
   "README release summary covers authenticated and guest SMB mounting"
 check_contains "$ROOT/README.md" \
@@ -94,6 +115,9 @@ check_contains "$ROOT/docs/version-history.md" "| v${version} | ${build} |" \
 check_contains "$ROOT/docs/version-history.md" \
   "The v2.4.3, v2.4.4, and v2.4.5 installers are built and verified from their exact tags" \
   "publication history explains the exact-tag installer builds"
+check_contains "$ROOT/docs/version-history.md" \
+  "v2.4.6 is the current release." \
+  "publication history identifies v2.4.6 as the current release"
 check_contains "$ROOT/docs/version-history.md" \
   "No retrospectively built installer is presented as an original historical artifact." \
   "publication history labels retrospectively built installers honestly"
