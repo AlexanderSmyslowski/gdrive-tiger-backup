@@ -67,6 +67,13 @@ test doubles, Objective-C release application.
 - [ ] Add a RED race test in which an exact-name volume appears while macOS is
       waiting for administrator authorization. The privileged path must recheck
       after the dialog and avoid a second `addVolume`.
+- [ ] Add a RED identity-reuse test in which another physical store receives
+      the same `diskN` identifiers during confirmation or authorization. Bind
+      approval to source-volume, container, and physical-store UUIDs and prove
+      that the replacement disk receives no mutation.
+- [ ] Add a production-picker test requiring a neutral placeholder, disabled
+      confirmation until a deliberate choice, and no staging on Return or
+      cancellation before selection.
 - [ ] Implement deterministic single-container discovery, pre-create UUID-set
       evaluation and refresh, UUID-based recovery/persistence for one
       candidate, fail-closed ambiguity handling, and setup-only authorization.

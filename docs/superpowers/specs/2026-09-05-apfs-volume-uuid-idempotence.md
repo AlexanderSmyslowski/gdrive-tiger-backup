@@ -39,13 +39,20 @@ APFS volumes named `GoogleDrive-Backup`, followed by Time Machine error
   context; manual overview/menu-bar, mount, schedule, retry, and unknown
   triggers cannot create a volume or open creation UI.
 - Immediately after any human confirmation and before `addVolume`, rediscover
-  the eligible container and refresh the exact-name UUID inventory. Recover a
-  newly appeared unique candidate, abort on ambiguity, and mutate only while
-  that fresh inventory is empty.
+  the eligible container and refresh the exact-name UUID inventory. Bind the
+  authorization to the source volume UUID, APFS container UUID, and sorted
+  physical-store UUID set rather than the reusable `diskN` identifier. Recover
+  a newly appeared unique candidate, abort on any identity change or ambiguity,
+  and mutate only while that fresh inventory is empty.
 - If `addVolume` needs macOS administrator authorization, repeat the container
-  and exact-name checks inside the authorized command after the password dialog
-  and immediately before the privileged mutation. A pre-dialog snapshot is not
+  identity, physical-store identity, source-volume, and exact-name checks inside
+  the authorized command after the password dialog and immediately before the
+  privileged mutation. A pre-dialog snapshot or matching `diskN` string is not
   sufficient.
+- When one physical disk exposes multiple suitable APFS volumes, the app must
+  begin with no selection and keep confirmation disabled until the user chooses
+  one explicitly. Cancelling, pressing Return before a choice, or losing the
+  selected UUID changes no configuration and never falls through to a sibling.
 - Invocation trigger and one-run creation approval are captured before profile
   configuration is loaded. A profile cannot turn an automatic/menu-bar run
   into setup or persist creation authority, and unknown trigger or approval
@@ -63,6 +70,7 @@ APFS volumes named `GoogleDrive-Backup`, followed by Time Machine error
   existing volumes, multiple source containers, path-only profiles, creation
   authorization, missing and malformed inventory UUIDs, foreign or duplicated
   container records, pre-create and administrator-dialog inventory races,
+  `diskN` reuse by a different physical store, explicit multi-volume selection,
   nested destinations, and two consecutive runs.
 - Ambiguity tests preserve configuration and canary files and prove that no
   `addVolume`, delete/erase command, privileged helper, or rclone copy ran.
