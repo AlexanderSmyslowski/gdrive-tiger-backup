@@ -1,4 +1,5 @@
 #import "UpdateSupport.h"
+#import <math.h>
 
 static NSString * const GDTUpdateAPIURLString =
     @"https://api.github.com/repos/AlexanderSmyslowski/gdrive-tiger-backup/releases/latest";
@@ -45,6 +46,136 @@ static BOOL GDTTrustedUpdateResponseURL(NSURL *url) {
 
 @interface GDTUpdateChecker ()
 @property(nonatomic, strong) NSURLSession *session;
+@end
+
+@interface GDTAutomaticUpdatePolicy ()
+@property(nonatomic, strong) NSUserDefaults *defaults;
+@property(nonatomic, strong) GDTUpdateChecker *checker;
+@property(nonatomic, copy) NSString *currentVersion;
+@property(nonatomic) BOOL inFlight;
+@end
+
+@implementation GDTAutomaticUpdatePolicy
+
+- (instancetype)initWithDefaults:(NSUserDefaults *)defaults checker:(GDTUpdateChecker *)checker
+                   currentVersion:(NSString *)version {
+    self = [super init];
+    if (!self) return nil;
+    _defaults = defaults;
+    _checker = checker;
+    _currentVersion = [version copy];
+    _clock = ^{ return [NSDate date]; };
+    return self;
+}
+
+- (BOOL)answered {
+    id value = [self.defaults objectForKey:@"GDTUpdates.enabled"];
+    return [value isKindOfClass:NSNumber.class] &&
+        ([value isEqual:@YES] || [value isEqual:@NO]);
+}
+
+- (BOOL)enabled {
+    return self.answered && [self.defaults boolForKey:@"GDTUpdates.enabled"];
+}
+
+- (NSString *)generation {
+    return [self.defaults stringForKey:@"GDTUpdates.generation"] ?: @"";
+}
+
+- (void)setEnabled:(BOOL)enabled {
+    if (self.answered && self.enabled == enabled) return;
+    [self.defaults setBool:enabled forKey:@"GDTUpdates.enabled"];
+    [self.defaults setObject:NSUUID.UUID.UUIDString forKey:@"GDTUpdates.generation"];
+    if (!enabled) [self.defaults removeObjectForKey:@"GDTUpdates.availableVersion"];
+    if (self.stateChanged) self.stateChanged();
+}
+
+- (NSString *)availableVersion {
+    if (!self.enabled) return nil;
+    NSString *version = [self.defaults stringForKey:@"GDTUpdates.availableVersion"];
+    NSArray *latest = GDTVersionComponents(version);
+    NSArray *current = GDTVersionComponents(self.currentVersion);
+    if (!latest || !current || GDTCompareVersions(latest, current) != NSOrderedDescending) return nil;
+    return [NSString stringWithFormat:@"%@.%@.%@", latest[0], latest[1], latest[2]];
+}
+
+- (void)checkIfDue {
+    if (!self.enabled || self.inFlight) return;
+    NSTimeInterval now = self.clock().timeIntervalSince1970;
+    if (!isfinite(now) || now <= 0) return;
+    id attempt = [self.defaults objectForKey:@"GDTUpdates.lastAttempt"];
+    if (attempt) {
+        NSTimeInterval last = [attempt isKindOfClass:NSNumber.class] ? [attempt doubleValue] : NAN;
+        // A damaged date or a backwards wall-clock jump gets one bounded wait,
+        // not repeated requests or an indefinitely future next-check date.
+        if (!isfinite(last) || last <= 0 || last > now) {
+            [self.defaults setDouble:now forKey:@"GDTUpdates.lastAttempt"];
+            return;
+        }
+        if (now - last < 86400) return;
+    }
+    if (!self.generation.length) {
+        [self.defaults setObject:NSUUID.UUID.UUIDString forKey:@"GDTUpdates.generation"];
+    }
+    NSString *generation = self.generation;
+    [self.defaults setDouble:now forKey:@"GDTUpdates.lastAttempt"];
+    self.inFlight = YES;
+    __weak typeof(self) weakSelf = self;
+    [self.checker checkCurrentVersion:self.currentVersion completion:^(NSDictionary *result) {
+        void (^finish)(void) = ^{
+            typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            strongSelf.inFlight = NO;
+            if (!strongSelf.enabled || ![strongSelf.generation isEqual:generation]) return;
+            if ([result[@"status"] isEqual:@"updateAvailable"] && GDTVersionComponents(result[@"version"])) {
+                [strongSelf.defaults setObject:result[@"version"] forKey:@"GDTUpdates.availableVersion"];
+            } else if ([result[@"status"] isEqual:@"current"]) {
+                [strongSelf.defaults removeObjectForKey:@"GDTUpdates.availableVersion"];
+            }
+            if (strongSelf.stateChanged) strongSelf.stateChanged();
+        };
+        if (NSThread.isMainThread) finish();
+        else dispatch_async(dispatch_get_main_queue(), finish);
+    }];
+}
+
+- (NSString *)claimNoticeVersion {
+    NSString *version = self.availableVersion;
+    if (!version.length) return nil;
+    NSArray *claimed = [self.defaults stringArrayForKey:@"GDTUpdates.noticedVersions"] ?: @[];
+    if ([claimed containsObject:version]) return nil;
+    // Reserve before asynchronous permission/delivery callbacks; a failed notice
+    // keeps its passive menu entry and never becomes a repeated background prompt.
+    [self.defaults setObject:[claimed arrayByAddingObject:version] forKey:@"GDTUpdates.noticedVersions"];
+    NSArray *notices = [self.defaults arrayForKey:@"GDTUpdates.notices"] ?: @[];
+    [self.defaults setObject:[notices arrayByAddingObject:@{@"version": version, @"generation": self.generation}]
+                     forKey:@"GDTUpdates.notices"];
+    return version;
+}
+
+- (NSArray<NSString *> *)takeObsoleteNoticeIdentifiers {
+    NSMutableArray *obsolete = [NSMutableArray array];
+    NSMutableArray *current = [NSMutableArray array];
+    NSArray *records = [self.defaults arrayForKey:@"GDTUpdates.notices"] ?: @[];
+    for (id record in records) {
+        if (![record isKindOfClass:NSDictionary.class]) continue;
+        NSString *version = record[@"version"];
+        NSString *generation = record[@"generation"];
+        if (!GDTVersionComponents(version) || ![generation isKindOfClass:NSString.class] ||
+            ![[NSUUID alloc] initWithUUIDString:generation]) continue;
+        if ([self acceptsNoticeVersion:version generation:generation]) [current addObject:record];
+        else [obsolete addObject:[NSString stringWithFormat:@"com.commcats.gdrivebackup.update.%@.%@", generation, version]];
+    }
+    if (![records isEqual:current]) [self.defaults setObject:current forKey:@"GDTUpdates.notices"];
+    return obsolete;
+}
+
+- (BOOL)acceptsNoticeVersion:(NSString *)version generation:(NSString *)generation {
+    return self.enabled && generation.length && [self.generation isEqual:generation] &&
+        version.length && [self.availableVersion isEqual:version] &&
+        [[self.defaults stringArrayForKey:@"GDTUpdates.noticedVersions"] containsObject:version];
+}
+
 @end
 
 @implementation GDTUpdateChecker

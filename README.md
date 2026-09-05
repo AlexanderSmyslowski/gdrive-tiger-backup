@@ -422,7 +422,7 @@ It excludes local and NAS paths, URLs, account names, credentials, remote names,
 file names, provider output, and log contents. Saved reports use owner-only
 permissions (`0600`).
 
-## Manual update checks
+## Update checks
 
 Choose **Check for Updates…** in the application menu or menu bar. The app makes
 one unauthenticated request to the fixed GitHub API endpoint for this repository
@@ -430,10 +430,33 @@ and accepts only a stable numeric release version from that exact endpoint.
 Cookies, cached responses, stored web credentials, foreign redirects, oversized
 responses, prereleases, and malformed version strings are rejected.
 
-The app never checks automatically at launch, downloads no package, and never
-opens macOS Installer. If a newer version exists, the result offers one explicit
+Without your consent, the app makes no automatic update requests. It downloads
+no package and never opens macOS Installer. If a newer version exists, a manual check offers one explicit
 button to open the fixed official GitHub releases page in the browser. Download
 and installation remain separate manual user actions.
+
+After manually installing a release that includes automatic update checks, open
+the visible overview to make the one-time choice. Hidden login startup never
+asks. The choice waits while a backup runs or another sheet is open; accepting
+or declining is remembered for the whole app, independently of backup profiles.
+Closing the choice is not consent. Existing installations must first be updated
+manually; this feature cannot update an older installed app by itself.
+
+Use **Update Settings…** (**Update-Einstellungen …**) beside the manual check in
+either menu to enable or disable **Check for updates automatically**. When enabled,
+the running controller checks at startup, wake, and periodically, at most once
+every 24 hours across restarts. Offline attempts also count toward that interval.
+Manual checks remain available regardless of this setting or interval.
+
+A newer stable version gets one quiet macOS notice per version, without sound,
+focus changes, downloads, or installation. **Later** dismisses that notice without
+repeating it. Clicking the notice or **Open Release Page** opens only the official
+GitHub release page. Notification permission is requested only after explicit
+opt-in. If permission is denied or delivery fails, **Update … Available** remains
+in both menus. Disabling automatic checks clears this passive entry and any
+update-owned notices; backup notification preferences remain unchanged. The
+installer remains unsigned: follow the existing manual installation instructions
+and macOS security prompts when you choose to install a release.
 
 ## Encryption
 
