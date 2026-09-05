@@ -121,6 +121,7 @@ if [[ -x "$NOTES_EXTRACTOR" ]]; then
   notes="$("$NOTES_EXTRACTOR" "$tag" 2>/dev/null)"
   previous_notes="$("$NOTES_EXTRACTOR" "v2.4.5" 2>/dev/null)"
   identity_notes="$("$NOTES_EXTRACTOR" "v2.4.6" 2>/dev/null)"
+  destination_notes="$("$NOTES_EXTRACTOR" "v2.5.1" 2>/dev/null)"
   heading_count="$(printf '%s\n' "$notes" | /usr/bin/grep -Ec '^## v')"
   if [[ "$notes" == *"## v${version} "* && "$heading_count" == "1" ]]; then
     printf 'ok - extractor returns only the requested changelog section\n'
@@ -134,6 +135,18 @@ if [[ -x "$NOTES_EXTRACTOR" ]]; then
     printf 'ok - v2.4.5 historical notes describe readable physical and logical disk identity\n'
   else
     printf 'not ok - v2.4.5 historical notes describe readable physical and logical disk identity\n'
+    failures=$((failures + 1))
+  fi
+
+  if [[ "$destination_notes" == *"single manual backup directly in the main window"* &&
+        "$destination_notes" == *"volume UUID"* &&
+        "$destination_notes" == *"manual results separately"* &&
+        "$destination_notes" == *"compact manual-destination dialog"* &&
+        "$destination_notes" == *"Defer automatic NAS retries"* &&
+        "$destination_notes" == *"unpublished v2.5.0"* ]]; then
+    printf 'ok - v2.5.1 public notes include the unpublished destination picker and retry fix\n'
+  else
+    printf 'not ok - v2.5.1 public notes include the unpublished destination picker and retry fix\n'
     failures=$((failures + 1))
   fi
 

@@ -43,12 +43,12 @@ else
   printf 'ok - app version and build match the release plan\n'
 fi
 
-check_contains "$ROOT/README.md" "Current release candidate: \`v${version}\`" \
-  "README candidate matches the app version without claiming publication"
-check_not_contains "$ROOT/README.md" "Current release: \`v${version}\`" \
-  "README does not present the candidate as a published release"
+check_contains "$ROOT/README.md" "Current release: \`v${version}\`" \
+  "README release matches the app version"
+check_not_contains "$ROOT/README.md" "Current release candidate: \`v${version}\`" \
+  "README no longer presents the release as a candidate"
 check_contains "$ROOT/README.md" "GDrive-Backup-Tiger-${EXPECTED_VERSION}.pkg" \
-  "README names the exact candidate build artifact"
+  "README names the exact release installer"
 installer_names="$(
   /usr/bin/grep -Eo 'GDrive-Backup-Tiger-[0-9]+\.[0-9]+\.[0-9]+\.pkg' \
     "$ROOT/README.md" | /usr/bin/sort -u
@@ -118,8 +118,11 @@ check_contains "$ROOT/docs/version-history.md" \
   "The v2.4.3, v2.4.4, and v2.4.5 installers are built and verified from their exact tags" \
   "publication history explains the exact-tag installer builds"
 check_contains "$ROOT/docs/version-history.md" \
-  "v2.5.1 is the current release candidate." \
-  "publication history identifies v2.5.1 as the current candidate"
+  "v2.5.1 is the current release." \
+  "publication history identifies v2.5.1 as the current release"
+check_contains "$ROOT/docs/version-history.md" \
+  "Unpublished intermediate milestone; destination selection first ships publicly in v2.5.1" \
+  "publication history does not invent a public v2.5.0 release"
 check_contains "$ROOT/docs/version-history.md" \
   "No retrospectively built installer is presented as an original historical artifact." \
   "publication history labels retrospectively built installers honestly"
