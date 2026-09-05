@@ -170,6 +170,12 @@ if [[ "${1:-}" == "info" && "${2:-}" == "-plist" ]]; then
     count="$(( $(<"$FAKE_DISKUTIL_COUNT_FILE") + 1 ))"
   fi
   printf '%s\n' "$count" >"$FAKE_DISKUTIL_COUNT_FILE"
+  if (( ${FAKE_APFS_APPEAR_AFTER_INFO_COUNT:-0} > 0 &&
+        count >= ${FAKE_APFS_APPEAR_AFTER_INFO_COUNT:-0} )) &&
+     [[ ! -e "${FAKE_APFS_APPEARED_MARKER:-/missing-appeared-marker}" ]]; then
+    : >"$FAKE_APFS_APPEARED_MARKER"
+    mkdir -p "${FAKE_APPEARED_MOUNT:?}"
+  fi
   if [[ "${FAKE_PLIST_MODE:-valid}" == "malformed" ]]; then
     printf '%s\n' 'not a plist'
     exit 0
@@ -182,6 +188,7 @@ if [[ "${1:-}" == "info" && "${2:-}" == "-plist" ]]; then
   external_value="${FAKE_EXTERNAL_VALUE:-true}"
   writable_value="${FAKE_WRITABLE_VALUE:-true}"
   system_image_value="${FAKE_SYSTEM_IMAGE_VALUE:-false}"
+  omit_volume_uuid=0
   requested_identifier="$(printf '%s' "${3:-}" | /usr/bin/tr '[:upper:]' '[:lower:]')"
   new_identifier="$(printf '%s' "${FAKE_NEW_APFS_UUID:-/missing-new-uuid}" | /usr/bin/tr '[:upper:]' '[:lower:]')"
   named_identifier="$(printf '%s' "${FAKE_NAMED_UUID:-/missing-named-uuid}" | /usr/bin/tr '[:upper:]' '[:lower:]')"
@@ -191,6 +198,7 @@ if [[ "${1:-}" == "info" && "${2:-}" == "-plist" ]]; then
     volume_uuid="${FAKE_CANDIDATE_UUID:-99999999-9999-4999-8999-999999999999}"
     volume_name="${FAKE_CANDIDATE_NAME:-TOSHIBA_4TB}"
     container_reference="${FAKE_CANDIDATE_CONTAINER:-$container_reference}"
+    omit_volume_uuid="${FAKE_CANDIDATE_OMIT_VOLUME_UUID:-0}"
   elif [[ "${3:-}" == "${FAKE_SECOND_CANDIDATE_MOUNT:-/missing-second-candidate}" ]]; then
     mount_point="$FAKE_SECOND_CANDIDATE_MOUNT"
     volume_uuid="${FAKE_SECOND_CANDIDATE_UUID:-dddddddd-dddd-dddd-dddd-dddddddddddd}"
@@ -221,8 +229,10 @@ if [[ "${1:-}" == "info" && "${2:-}" == "-plist" ]]; then
   if [[ -f "${FAKE_IDENTITY_SWAP_MARKER:-/missing-identity-swap-marker}" ]]; then
     volume_uuid="${FAKE_VOLUME_UUID_AFTER_MARKER:-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}"
   fi
-  if [[ "${3:-}" == "${FAKE_CANDIDATE_MOUNT:-/missing-candidate}" &&
-        -f "${FAKE_SETUP_SOURCE_SWAP_MARKER:-/missing-setup-source-swap-marker}" ]]; then
+  if [[ "${3:-}" == "${FAKE_CANDIDATE_MOUNT:-/missing-candidate}" ]] &&
+     { [[ -f "${FAKE_SETUP_SOURCE_SWAP_MARKER:-/missing-setup-source-swap-marker}" ]] ||
+       { [[ "${FAKE_SETUP_SOURCE_SWAP_AFTER_CREATE:-0}" == "1" ]] &&
+         [[ -f "${FAKE_APFS_CREATED_MARKER:-/missing-created-marker}" ]]; }; }; then
     volume_uuid="${FAKE_CANDIDATE_UUID_AFTER_SOURCE_SWAP:-44444444-4444-4444-8444-444444444444}"
   fi
   cat <<PLIST
@@ -238,7 +248,9 @@ if [[ "${1:-}" == "info" && "${2:-}" == "-plist" ]]; then
       printf '<key>Encryption</key><%s/>' "$encryption_value"
     fi)
   <key>Locked</key><${FAKE_LOCKED_VALUE:-false}/>
-  <key>VolumeUUID</key><string>${volume_uuid}</string>
+  $(if [[ "$omit_volume_uuid" != "1" ]]; then
+      printf '<key>VolumeUUID</key><string>%s</string>' "$volume_uuid"
+    fi)
   <key>VolumeName</key><string>${volume_name}</string>
   <key>APFSContainerReference</key><string>${container_reference}</string>
   <key>SystemImage</key><${system_image_value}/>
@@ -259,6 +271,9 @@ if [[ "${1:-}" == "apfs" && "${2:-}" == "list" && "${3:-}" == "-plist" ]]; then
      [[ ! -e "${FAKE_APFS_APPEARED_MARKER:-/missing-appeared-marker}" ]]; then
     : >"$FAKE_APFS_APPEARED_MARKER"
     mkdir -p "${FAKE_APPEARED_MOUNT:?}"
+    if [[ "${FAKE_APFS_SWAP_SOURCE_WHEN_TARGET_APPEARS:-0}" == "1" ]]; then
+      : >"${FAKE_SETUP_SOURCE_SWAP_MARKER:?}"
+    fi
   fi
   emit_volume() {
     local uuid="$1"
@@ -274,10 +289,23 @@ if [[ "${1:-}" == "apfs" && "${2:-}" == "list" && "${3:-}" == "-plist" ]]; then
   source_volume_uuid="${FAKE_CANDIDATE_UUID:-99999999-9999-4999-8999-999999999999}"
   container_uuid="${FAKE_APFS_CONTAINER_UUID:-22222222-2222-4222-8222-222222222222}"
   physical_store_uuid="${FAKE_APFS_PHYSICAL_STORE_UUID:-33333333-3333-4333-8333-333333333333}"
-  if [[ -f "${FAKE_SETUP_SOURCE_SWAP_MARKER:-/missing-setup-source-swap-marker}" ]]; then
+  second_physical_store_uuid="${FAKE_APFS_SECOND_PHYSICAL_STORE_UUID:-}"
+  if [[ -f "${FAKE_SETUP_SOURCE_SWAP_MARKER:-/missing-setup-source-swap-marker}" ]] ||
+     { [[ "${FAKE_SETUP_SOURCE_SWAP_AFTER_CREATE:-0}" == "1" ]] &&
+       [[ -f "${FAKE_APFS_CREATED_MARKER:-/missing-created-marker}" ]]; }; then
     source_volume_uuid="${FAKE_CANDIDATE_UUID_AFTER_SOURCE_SWAP:-44444444-4444-4444-8444-444444444444}"
     container_uuid="${FAKE_APFS_CONTAINER_UUID_AFTER_SOURCE_SWAP:-55555555-5555-4555-8555-555555555555}"
     physical_store_uuid="${FAKE_APFS_PHYSICAL_STORE_UUID_AFTER_SOURCE_SWAP:-66666666-6666-4666-8666-666666666666}"
+    second_physical_store_uuid="${FAKE_APFS_SECOND_PHYSICAL_STORE_UUID_AFTER_SOURCE_SWAP-$second_physical_store_uuid}"
+  fi
+  if [[ "${FAKE_APFS_DUPLICATE_PHYSICAL_STORE_UUID:-0}" == "1" ]]; then
+    second_physical_store_uuid="$(printf '%s' "$physical_store_uuid" | /usr/bin/tr '[:upper:]' '[:lower:]')"
+  fi
+  if [[ -n "$second_physical_store_uuid" &&
+        -f "${FAKE_APFS_REVERSE_STORES_MARKER:-/missing-store-reorder-marker}" ]]; then
+    reordered_store_uuid="$physical_store_uuid"
+    physical_store_uuid="$second_physical_store_uuid"
+    second_physical_store_uuid="$reordered_store_uuid"
   fi
   cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -297,11 +325,27 @@ PLIST
   cat <<PLIST
 <dict>
 <key>ContainerReference</key><string>${4:-disk99}</string>
-<key>APFSContainerUUID</key><string>${container_uuid}</string>
-<key>PhysicalStores</key><array><dict>
-<key>DeviceIdentifier</key><string>${FAKE_APFS_PHYSICAL_STORE_IDENTIFIER:-disk9s2}</string>
-<key>DiskUUID</key><string>${physical_store_uuid}</string>
-</dict></array>
+$(if [[ "${FAKE_APFS_OMIT_CONTAINER_UUID:-0}" != "1" ]]; then
+    printf '<key>APFSContainerUUID</key><string>%s</string>\n' "$container_uuid"
+  fi)
+$(if [[ "${FAKE_APFS_OMIT_PHYSICAL_STORES:-0}" != "1" ]]; then
+    printf '<key>PhysicalStores</key><array>\n'
+    if [[ "${FAKE_APFS_EMPTY_PHYSICAL_STORES:-0}" != "1" ]]; then
+      printf '<dict>\n'
+      printf '<key>DeviceIdentifier</key><string>%s</string>\n' "${FAKE_APFS_PHYSICAL_STORE_IDENTIFIER:-disk9s2}"
+      if [[ "${FAKE_APFS_OMIT_PHYSICAL_STORE_UUID:-0}" != "1" ]]; then
+        printf '<key>DiskUUID</key><string>%s</string>\n' "$physical_store_uuid"
+      fi
+      printf '</dict>\n'
+      if [[ -n "$second_physical_store_uuid" ]]; then
+        printf '<dict>\n'
+        printf '<key>DeviceIdentifier</key><string>%s</string>\n' "${FAKE_APFS_SECOND_PHYSICAL_STORE_IDENTIFIER:-disk10s2}"
+        printf '<key>DiskUUID</key><string>%s</string>\n' "$second_physical_store_uuid"
+        printf '</dict>\n'
+      fi
+    fi
+    printf '</array>\n'
+  fi)
 <key>Volumes</key><array>
 PLIST
   emit_volume "$source_volume_uuid" "${FAKE_CANDIDATE_NAME:-TOSHIBA_4TB}"
@@ -373,6 +417,9 @@ if [[ -n "${FAKE_CONFIRMATION_APPEAR_MARKER:-}" ]]; then
 fi
 if [[ -n "${FAKE_CONFIRMATION_SOURCE_SWAP_MARKER:-}" ]]; then
   : >"$FAKE_CONFIRMATION_SOURCE_SWAP_MARKER"
+fi
+if [[ -n "${FAKE_CONFIRMATION_STORE_REORDER_MARKER:-}" ]]; then
+  : >"$FAKE_CONFIRMATION_STORE_REORDER_MARKER"
 fi
 if [[ -n "${FAKE_CONFIRMATION_APPEAR_MOUNT:-}" ]]; then
   mkdir -p "$FAKE_CONFIRMATION_APPEAR_MOUNT"
@@ -1351,6 +1398,63 @@ CONFIG
   fi
 }
 
+test_existing_named_apfs_recovery_rechecks_late_ambiguity() {
+  local name="automatic APFS recovery rejects a second exact name appearing before persistence"
+  local volumes_root configured_volume source_mount recovered_mount appeared_mount
+  local config marker appeared_marker before_hash after_hash status add_count
+  prepare_test_environment
+  volumes_root="$TEST_HOME/Volumes"
+  configured_volume="$volumes_root/Stale Backup Path"
+  source_mount="$volumes_root/TOSHIBA_4TB"
+  recovered_mount="$volumes_root/GoogleDrive-Backup 2"
+  appeared_mount="$volumes_root/GoogleDrive-Backup 3"
+  config="$TEST_HOME/late-recovery-ambiguity.conf"
+  marker="$TEST_HOME/apfs-created"
+  appeared_marker="$TEST_HOME/apfs-appeared"
+  mkdir -p "$source_mount" "$recovered_mount"
+  printf '%s\n' 'source-canary' >"$source_mount/canary"
+  printf '%s\n' 'target-canary' >"$recovered_mount/canary"
+  cat >"$config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$configured_volume'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+  before_hash="$(/usr/bin/shasum "$config" "$source_mount/canary" "$recovered_mount/canary")"
+
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
+    GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1 \
+    FAKE_APFS_CREATED_MARKER="$marker" \
+    FAKE_CANDIDATE_MOUNT="$source_mount" \
+    FAKE_CANDIDATE_UUID=11111111-2222-4333-8444-555555555555 \
+    FAKE_NAMED_UUID=cccccccc-cccc-4ccc-8ccc-cccccccccccc \
+    FAKE_NAMED_MOUNT="$recovered_mount" \
+    FAKE_NAMED_CONTAINER=disk99 \
+    FAKE_EXISTING_APFS_UUID_1=cccccccc-cccc-4ccc-8ccc-cccccccccccc \
+    FAKE_APFS_APPEAR_AFTER_INFO_COUNT=6 \
+    FAKE_APFS_APPEARED_MARKER="$appeared_marker" \
+    FAKE_APPEARED_MOUNT="$appeared_mount" \
+    FAKE_APPEARED_APFS_UUID=dddddddd-dddd-4ddd-8ddd-dddddddddddd \
+    FAKE_APPEARED_APFS_NAME=GoogleDrive-Backup
+  status=$?
+  after_hash="$(/usr/bin/shasum "$config" "$source_mount/canary" "$recovered_mount/canary")"
+  add_count="$(grep -Fc 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null || true)"
+
+  if [[ "$status" == "69" && "$before_hash" == "$after_hash" &&
+        "$add_count" == "0" && -e "$appeared_marker" && ! -e "$marker" ]] &&
+    { [[ ! -e "$RCLONE_LOG" ]] || ! grep -Eq '^(config|backend|copy)( |$)' "$RCLONE_LOG"; } &&
+    grep -Fqi 'nicht mehr eindeutig' "$TEST_HOME/backup.log"; then
+    pass "$name"
+  else
+    fail "$name (status $status, add $add_count)"
+  fi
+}
+
 test_numeric_family_apfs_volumes_block_setup_creation() {
   local name="numeric-family APFS volumes block setup before selection or creation"
   local volumes_root configured_volume source_mount family_one family_two family_three
@@ -2294,6 +2398,402 @@ CONFIG
   fi
 }
 
+assert_setup_source_identity_component_change_rejected() {
+  local name="$1"
+  shift
+  local volumes_root configured_volume source_mount config created_marker swap_marker
+  local animation_app before_hash after_hash status add_count
+  prepare_test_environment
+  volumes_root="$TEST_HOME/Volumes"
+  configured_volume="$volumes_root/Stale Backup Path"
+  source_mount="$volumes_root/TOSHIBA_4TB"
+  config="$TEST_HOME/source-identity-component-race.conf"
+  created_marker="$TEST_HOME/apfs-created"
+  swap_marker="$TEST_HOME/setup-source-swapped"
+  animation_app="$TEST_HOME/Fake Confirmation.app"
+  mkdir -p "$source_mount" "$animation_app"
+  printf '%s\n' 'source-canary' >"$source_mount/canary"
+  cat >"$config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$configured_volume'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+  before_hash="$(/usr/bin/shasum "$config" "$source_mount/canary")"
+
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
+    GDRIVE_BACKUP_ANIMATION_APP="$animation_app" \
+    GDRIVE_BACKUP_OPEN_BIN="$FAKE_BIN/open" \
+    FAKE_CONFIRM_RESPONSE=yes \
+    FAKE_CONFIRMATION_SOURCE_SWAP_MARKER="$swap_marker" \
+    FAKE_SETUP_SOURCE_SWAP_MARKER="$swap_marker" \
+    FAKE_CANDIDATE_MOUNT="$source_mount" \
+    FAKE_EXISTING_APFS_UUID_1= \
+    FAKE_APFS_CREATED_MARKER="$created_marker" \
+    FAKE_CREATED_MOUNT="$volumes_root/Unexpected Created Volume" \
+    "$@"
+  status=$?
+  after_hash="$(/usr/bin/shasum "$config" "$source_mount/canary")"
+  add_count="$(grep -Fc 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null || true)"
+
+  if [[ "$status" == "69" && "$before_hash" == "$after_hash" &&
+        "$add_count" == "0" && -e "$swap_marker" &&
+        ! -e "$created_marker" ]] &&
+    { [[ ! -e "$RCLONE_LOG" ]] || ! grep -Eq '^(config|backend|copy)( |$)' "$RCLONE_LOG"; } &&
+    grep -Fqi 'identitaet' "$TEST_HOME/backup.log"; then
+    pass "$name"
+  else
+    fail "$name (status $status, add $add_count)"
+  fi
+}
+
+test_apfs_creation_rejects_source_volume_uuid_change() {
+  assert_setup_source_identity_component_change_rejected \
+    "APFS creation rejects an independently changed source VolumeUUID" \
+    FAKE_CANDIDATE_UUID_AFTER_SOURCE_SWAP=44444444-4444-4444-8444-444444444444 \
+    FAKE_APFS_CONTAINER_UUID_AFTER_SOURCE_SWAP=22222222-2222-4222-8222-222222222222 \
+    FAKE_APFS_PHYSICAL_STORE_UUID_AFTER_SOURCE_SWAP=33333333-3333-4333-8333-333333333333
+}
+
+test_apfs_creation_rejects_container_uuid_change() {
+  assert_setup_source_identity_component_change_rejected \
+    "APFS creation rejects an independently changed APFSContainerUUID" \
+    FAKE_CANDIDATE_UUID_AFTER_SOURCE_SWAP=99999999-9999-4999-8999-999999999999 \
+    FAKE_APFS_CONTAINER_UUID_AFTER_SOURCE_SWAP=55555555-5555-4555-8555-555555555555 \
+    FAKE_APFS_PHYSICAL_STORE_UUID_AFTER_SOURCE_SWAP=33333333-3333-4333-8333-333333333333
+}
+
+test_apfs_creation_rejects_physical_store_uuid_change() {
+  assert_setup_source_identity_component_change_rejected \
+    "APFS creation rejects an independently changed physical-store DiskUUID" \
+    FAKE_CANDIDATE_UUID_AFTER_SOURCE_SWAP=99999999-9999-4999-8999-999999999999 \
+    FAKE_APFS_CONTAINER_UUID_AFTER_SOURCE_SWAP=22222222-2222-4222-8222-222222222222 \
+    FAKE_APFS_PHYSICAL_STORE_UUID_AFTER_SOURCE_SWAP=66666666-6666-4666-8666-666666666666
+}
+
+assert_invalid_setup_source_identity_rejected() {
+  local name="$1"
+  shift
+  local volumes_root configured_volume source_mount config created_marker
+  local before_hash after_hash status add_count
+  prepare_test_environment
+  volumes_root="$TEST_HOME/Volumes"
+  configured_volume="$volumes_root/Stale Backup Path"
+  source_mount="$volumes_root/TOSHIBA_4TB"
+  config="$TEST_HOME/invalid-source-identity.conf"
+  created_marker="$TEST_HOME/apfs-created"
+  mkdir -p "$source_mount"
+  printf '%s\n' 'source-canary' >"$source_mount/canary"
+  cat >"$config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$configured_volume'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+  before_hash="$(/usr/bin/shasum "$config" "$source_mount/canary")"
+
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
+    GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1 \
+    FAKE_CANDIDATE_MOUNT="$source_mount" \
+    FAKE_EXISTING_APFS_UUID_1= \
+    FAKE_APFS_CREATED_MARKER="$created_marker" \
+    FAKE_CREATED_MOUNT="$volumes_root/Unexpected Created Volume" \
+    "$@"
+  status=$?
+  after_hash="$(/usr/bin/shasum "$config" "$source_mount/canary")"
+  add_count="$(grep -Fc 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null || true)"
+
+  if [[ "$status" == "69" && "$before_hash" == "$after_hash" &&
+        "$add_count" == "0" && ! -e "$created_marker" ]] &&
+    { [[ ! -e "$RCLONE_LOG" ]] || ! grep -Eq '^(config|backend|copy)( |$)' "$RCLONE_LOG"; } &&
+    grep -Fqi 'stabile Identitaet' "$TEST_HOME/backup.log"; then
+    pass "$name"
+  else
+    fail "$name (status $status, add $add_count)"
+  fi
+}
+
+test_apfs_creation_rejects_missing_container_uuid() {
+  assert_invalid_setup_source_identity_rejected \
+    "APFS creation rejects a missing APFSContainerUUID" \
+    FAKE_APFS_OMIT_CONTAINER_UUID=1
+}
+
+test_apfs_creation_rejects_missing_source_volume_uuid() {
+  assert_invalid_setup_source_identity_rejected \
+    "APFS creation rejects a missing source VolumeUUID" \
+    FAKE_CANDIDATE_OMIT_VOLUME_UUID=1
+}
+
+test_apfs_creation_rejects_malformed_source_volume_uuid() {
+  assert_invalid_setup_source_identity_rejected \
+    "APFS creation rejects a malformed source VolumeUUID" \
+    FAKE_CANDIDATE_UUID=not-a-source-volume-uuid
+}
+
+test_apfs_creation_rejects_malformed_container_uuid() {
+  assert_invalid_setup_source_identity_rejected \
+    "APFS creation rejects a malformed APFSContainerUUID" \
+    FAKE_APFS_CONTAINER_UUID=not-a-container-uuid
+}
+
+test_apfs_creation_rejects_missing_physical_store_uuid() {
+  assert_invalid_setup_source_identity_rejected \
+    "APFS creation rejects a missing physical-store DiskUUID" \
+    FAKE_APFS_OMIT_PHYSICAL_STORE_UUID=1
+}
+
+test_apfs_creation_rejects_missing_physical_stores() {
+  assert_invalid_setup_source_identity_rejected \
+    "APFS creation rejects a missing PhysicalStores array" \
+    FAKE_APFS_OMIT_PHYSICAL_STORES=1
+}
+
+test_apfs_creation_rejects_empty_physical_stores() {
+  assert_invalid_setup_source_identity_rejected \
+    "APFS creation rejects an empty PhysicalStores array" \
+    FAKE_APFS_EMPTY_PHYSICAL_STORES=1
+}
+
+test_apfs_creation_rejects_duplicate_physical_store_uuid() {
+  assert_invalid_setup_source_identity_rejected \
+    "APFS creation rejects case-insensitive duplicate physical-store DiskUUIDs" \
+    FAKE_APFS_PHYSICAL_STORE_UUID=ABCDEFAB-CDEF-4ABC-8DEF-ABCDEFABCDEF \
+    FAKE_APFS_DUPLICATE_PHYSICAL_STORE_UUID=1
+}
+
+test_apfs_creation_rejects_malformed_physical_store_uuid() {
+  assert_invalid_setup_source_identity_rejected \
+    "APFS creation rejects a malformed physical-store DiskUUID" \
+    FAKE_APFS_PHYSICAL_STORE_UUID=not-a-store-uuid
+}
+
+test_apfs_creation_accepts_reordered_physical_store_set() {
+  local name="APFS creation accepts a stable multi-store identity in a different order"
+  local volumes_root configured_volume source_mount created_mount config
+  local created_marker reorder_marker animation_app status saved_uuid add_count
+  prepare_test_environment
+  volumes_root="$TEST_HOME/Volumes"
+  configured_volume="$volumes_root/Stale Backup Path"
+  source_mount="$volumes_root/TOSHIBA_4TB"
+  created_mount="$volumes_root/GoogleDrive-Backup 2"
+  config="$TEST_HOME/reordered-physical-stores.conf"
+  created_marker="$TEST_HOME/apfs-created"
+  reorder_marker="$TEST_HOME/reorder-stores"
+  animation_app="$TEST_HOME/Fake Confirmation.app"
+  mkdir -p "$source_mount" "$animation_app"
+  cat >"$config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$configured_volume'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
+    GDRIVE_BACKUP_ANIMATION_APP="$animation_app" \
+    GDRIVE_BACKUP_OPEN_BIN="$FAKE_BIN/open" \
+    BACKUP_ASSUME_YES=1 \
+    FAKE_CONFIRM_RESPONSE=yes \
+    FAKE_CONFIRMATION_STORE_REORDER_MARKER="$reorder_marker" \
+    FAKE_APFS_REVERSE_STORES_MARKER="$reorder_marker" \
+    FAKE_APFS_PHYSICAL_STORE_UUID=AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA \
+    FAKE_APFS_SECOND_PHYSICAL_STORE_UUID=BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB \
+    FAKE_CANDIDATE_MOUNT="$source_mount" \
+    FAKE_EXISTING_APFS_UUID_1= \
+    FAKE_APFS_CREATED_MARKER="$created_marker" \
+    FAKE_CREATED_MOUNT="$created_mount" \
+    FAKE_NEW_APFS_UUID=cccccccc-cccc-4ccc-8ccc-cccccccccccc
+  status=$?
+  saved_uuid="$(/bin/bash -c 'source "$1"; printf "%s" "${GDRIVE_BACKUP_VOLUME_UUID:-}"' _ "$config")"
+  add_count="$(grep -Fc 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" && "$saved_uuid" == "CCCCCCCC-CCCC-4CCC-8CCC-CCCCCCCCCCCC" &&
+        "$add_count" == "1" && -e "$created_marker" && -e "$reorder_marker" ]] &&
+    grep -Eq '^copy( |$)' "$RCLONE_LOG"; then
+    pass "$name"
+  else
+    fail "$name (status $status, uuid $saved_uuid, add $add_count)"
+  fi
+}
+
+test_apfs_creation_rejects_name_appearing_during_final_identity_check() {
+  local name="APFS creation rejects a target name appearing during the final identity check"
+  local volumes_root configured_volume candidate_mount appeared_mount config
+  local created_marker appeared_marker before_hash after_hash status add_count
+  prepare_test_environment
+  volumes_root="$TEST_HOME/Volumes"
+  configured_volume="$volumes_root/Missing Configured Backup"
+  candidate_mount="$volumes_root/TOSHIBA_4TB"
+  appeared_mount="$volumes_root/GoogleDrive-Backup 2"
+  config="$TEST_HOME/final-identity-name-race.conf"
+  created_marker="$TEST_HOME/apfs-created"
+  appeared_marker="$TEST_HOME/apfs-appeared"
+  mkdir -p "$candidate_mount"
+  printf '%s\n' 'source-canary' >"$candidate_mount/canary"
+  cat >"$config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$configured_volume'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+  before_hash="$(/usr/bin/shasum "$config" "$candidate_mount/canary")"
+
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
+    GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1 \
+    FAKE_CANDIDATE_MOUNT="$candidate_mount" \
+    FAKE_EXISTING_APFS_UUID_1= \
+    FAKE_APFS_LIST_COUNT_FILE="$APFS_LIST_COUNT_FILE" \
+    FAKE_APFS_APPEAR_AFTER_LIST_COUNT=6 \
+    FAKE_APFS_APPEARED_MARKER="$appeared_marker" \
+    FAKE_APPEARED_MOUNT="$appeared_mount" \
+    FAKE_APPEARED_APFS_UUID=cccccccc-cccc-4ccc-8ccc-cccccccccccc \
+    FAKE_APPEARED_APFS_NAME=GoogleDrive-Backup \
+    FAKE_APFS_CREATED_MARKER="$created_marker" \
+    FAKE_CREATED_MOUNT="$volumes_root/Unexpected Created Volume" \
+    FAKE_NEW_APFS_UUID=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+  status=$?
+  after_hash="$(/usr/bin/shasum "$config" "$candidate_mount/canary")"
+  add_count="$(grep -Fc 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null || true)"
+
+  if [[ "$status" == "69" && "$before_hash" == "$after_hash" &&
+        "$add_count" == "0" && -e "$appeared_marker" &&
+        ! -e "$created_marker" ]] &&
+    { [[ ! -e "$RCLONE_LOG" ]] || ! grep -Eq '^(config|backend|copy)( |$)' "$RCLONE_LOG"; } &&
+    grep -Fqi 'unmittelbar vor dem Anlegen' "$TEST_HOME/backup.log" &&
+    grep -Fqi 'nichts angelegt' "$TEST_HOME/backup.log"; then
+    pass "$name"
+  else
+    fail "$name (status $status, add $add_count)"
+  fi
+}
+
+test_apfs_creation_rejects_appeared_target_from_reused_source() {
+  local name="APFS creation rejects an appeared target from a reused source disk"
+  local volumes_root configured_volume candidate_mount appeared_mount config
+  local created_marker appeared_marker swap_marker before_hash after_hash status add_count
+  prepare_test_environment
+  volumes_root="$TEST_HOME/Volumes"
+  configured_volume="$volumes_root/Missing Configured Backup"
+  candidate_mount="$volumes_root/TOSHIBA_4TB"
+  appeared_mount="$volumes_root/GoogleDrive-Backup 2"
+  config="$TEST_HOME/appeared-target-source-swap.conf"
+  created_marker="$TEST_HOME/apfs-created"
+  appeared_marker="$TEST_HOME/apfs-appeared"
+  swap_marker="$TEST_HOME/setup-source-swapped"
+  mkdir -p "$candidate_mount"
+  printf '%s\n' 'source-canary' >"$candidate_mount/canary"
+  cat >"$config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$configured_volume'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+  before_hash="$(/usr/bin/shasum "$config" "$candidate_mount/canary")"
+
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
+    GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1 \
+    FAKE_CANDIDATE_MOUNT="$candidate_mount" \
+    FAKE_EXISTING_APFS_UUID_1= \
+    FAKE_APFS_APPEAR_AFTER_LIST_COUNT=5 \
+    FAKE_APFS_APPEARED_MARKER="$appeared_marker" \
+    FAKE_APPEARED_MOUNT="$appeared_mount" \
+    FAKE_APPEARED_APFS_UUID=cccccccc-cccc-4ccc-8ccc-cccccccccccc \
+    FAKE_APPEARED_APFS_NAME=GoogleDrive-Backup \
+    FAKE_NAMED_UUID=cccccccc-cccc-4ccc-8ccc-cccccccccccc \
+    FAKE_NAMED_MOUNT="$appeared_mount" \
+    FAKE_NAMED_CONTAINER=disk99 \
+    FAKE_APFS_SWAP_SOURCE_WHEN_TARGET_APPEARS=1 \
+    FAKE_SETUP_SOURCE_SWAP_MARKER="$swap_marker" \
+    FAKE_APFS_CREATED_MARKER="$created_marker" \
+    FAKE_CREATED_MOUNT="$volumes_root/Unexpected Created Volume"
+  status=$?
+  after_hash="$(/usr/bin/shasum "$config" "$candidate_mount/canary")"
+  add_count="$(grep -Fc 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null || true)"
+
+  if [[ "$status" == "69" && "$before_hash" == "$after_hash" &&
+        "$add_count" == "0" && -e "$appeared_marker" && -e "$swap_marker" &&
+        ! -e "$created_marker" ]] &&
+    { [[ ! -e "$RCLONE_LOG" ]] || ! grep -Eq '^(config|backend|copy)( |$)' "$RCLONE_LOG"; } &&
+    grep -Fqi 'identitaet' "$TEST_HOME/backup.log"; then
+    pass "$name"
+  else
+    fail "$name (status $status, add $add_count)"
+  fi
+}
+
+test_apfs_creation_does_not_persist_target_after_source_reuse() {
+  local name="APFS creation does not persist a target after the approved source is reused"
+  local volumes_root configured_volume candidate_mount created_mount config
+  local created_marker before_hash after_hash status add_count
+  prepare_test_environment
+  volumes_root="$TEST_HOME/Volumes"
+  configured_volume="$volumes_root/Missing Configured Backup"
+  candidate_mount="$volumes_root/TOSHIBA_4TB"
+  created_mount="$volumes_root/GoogleDrive-Backup 2"
+  config="$TEST_HOME/post-create-source-swap.conf"
+  created_marker="$TEST_HOME/apfs-created"
+  mkdir -p "$candidate_mount"
+  printf '%s\n' 'source-canary' >"$candidate_mount/canary"
+  cat >"$config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$configured_volume'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+  before_hash="$(/usr/bin/shasum "$config" "$candidate_mount/canary")"
+
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
+    GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1 \
+    FAKE_CANDIDATE_MOUNT="$candidate_mount" \
+    FAKE_EXISTING_APFS_UUID_1= \
+    FAKE_APFS_CREATED_MARKER="$created_marker" \
+    FAKE_CREATED_MOUNT="$created_mount" \
+    FAKE_NEW_APFS_UUID=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb \
+    FAKE_SETUP_SOURCE_SWAP_AFTER_CREATE=1
+  status=$?
+  after_hash="$(/usr/bin/shasum "$config" "$candidate_mount/canary")"
+  add_count="$(grep -Fc 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null || true)"
+
+  if [[ "$status" == "69" && "$before_hash" == "$after_hash" &&
+        "$add_count" == "1" && -e "$created_marker" ]] &&
+    { [[ ! -e "$RCLONE_LOG" ]] || ! grep -Eq '^(config|backend|copy)( |$)' "$RCLONE_LOG"; } &&
+    grep -Fqi 'identitaet' "$TEST_HOME/backup.log"; then
+    pass "$name"
+  else
+    fail "$name (status $status, add $add_count)"
+  fi
+}
+
 test_auto_created_apfs_volume_uses_the_new_uuid_and_mount_path() {
   local name="auto-created APFS volume persists and uses only the newly added UUID"
   local volumes_root configured_volume created_mount created_real candidate_mount
@@ -2519,8 +3019,9 @@ CONFIG
   fi
 }
 
-test_privileged_apfs_guard_rejects_reused_source_identity() {
-  local name="privileged APFS guard rejects a reused disk and container identifier"
+assert_privileged_setup_source_identity_component_change_rejected() {
+  local name="$1"
+  shift
   local volumes_root configured_volume candidate_mount config
   local created_marker swap_marker before_hash after_hash status add_count
   prepare_test_environment
@@ -2554,7 +3055,8 @@ CONFIG
     FAKE_SETUP_SOURCE_SWAP_MARKER="$swap_marker" \
     FAKE_APFS_CREATED_MARKER="$created_marker" \
     FAKE_CREATED_MOUNT="$volumes_root/Unexpected Created Volume" \
-    FAKE_NEW_APFS_UUID=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+    FAKE_NEW_APFS_UUID=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb \
+    "$@"
   status=$?
   after_hash="$(/usr/bin/shasum "$config" "$candidate_mount/canary")"
   add_count="$(grep -Fc 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null || true)"
@@ -2570,6 +3072,35 @@ CONFIG
   else
     fail "$name (status $status, add $add_count)"
   fi
+}
+
+test_privileged_apfs_guard_rejects_reused_source_identity() {
+  assert_privileged_setup_source_identity_component_change_rejected \
+    "privileged APFS guard rejects a reused disk and container identifier"
+}
+
+test_privileged_apfs_guard_rejects_source_volume_uuid_change() {
+  assert_privileged_setup_source_identity_component_change_rejected \
+    "privileged APFS guard rejects an independently changed source VolumeUUID" \
+    FAKE_CANDIDATE_UUID_AFTER_SOURCE_SWAP=44444444-4444-4444-8444-444444444444 \
+    FAKE_APFS_CONTAINER_UUID_AFTER_SOURCE_SWAP=22222222-2222-4222-8222-222222222222 \
+    FAKE_APFS_PHYSICAL_STORE_UUID_AFTER_SOURCE_SWAP=33333333-3333-4333-8333-333333333333
+}
+
+test_privileged_apfs_guard_rejects_container_uuid_change() {
+  assert_privileged_setup_source_identity_component_change_rejected \
+    "privileged APFS guard rejects an independently changed APFSContainerUUID" \
+    FAKE_CANDIDATE_UUID_AFTER_SOURCE_SWAP=99999999-9999-4999-8999-999999999999 \
+    FAKE_APFS_CONTAINER_UUID_AFTER_SOURCE_SWAP=55555555-5555-4555-8555-555555555555 \
+    FAKE_APFS_PHYSICAL_STORE_UUID_AFTER_SOURCE_SWAP=33333333-3333-4333-8333-333333333333
+}
+
+test_privileged_apfs_guard_rejects_physical_store_uuid_change() {
+  assert_privileged_setup_source_identity_component_change_rejected \
+    "privileged APFS guard rejects an independently changed physical-store DiskUUID" \
+    FAKE_CANDIDATE_UUID_AFTER_SOURCE_SWAP=99999999-9999-4999-8999-999999999999 \
+    FAKE_APFS_CONTAINER_UUID_AFTER_SOURCE_SWAP=22222222-2222-4222-8222-222222222222 \
+    FAKE_APFS_PHYSICAL_STORE_UUID_AFTER_SOURCE_SWAP=66666666-6666-4666-8666-666666666666
 }
 
 test_privileged_apfs_guard_rejects_numeric_family_race() {
@@ -2849,6 +3380,7 @@ test_saved_apfs_uuid_rejects_deep_tree_symlink_escape
 test_saved_apfs_uuid_scans_history_once_and_current_version_paths_per_copy
 test_apfs_tree_device_validation_streams_its_inventory
 test_existing_named_apfs_volume_is_recovered_idempotently
+test_existing_named_apfs_recovery_rechecks_late_ambiguity
 test_numeric_family_apfs_volumes_block_setup_creation
 test_apfs_inventory_rejects_duplicate_requested_container_among_foreign_containers
 test_apfs_inventory_ignores_exact_name_in_foreign_container
@@ -2871,11 +3403,30 @@ test_setup_interactive_confirmation_can_create_apfs_volume
 test_invalid_process_apfs_creation_approval_is_rejected
 test_apfs_creation_rechecks_inventory_after_confirmation
 test_apfs_creation_rejects_reused_source_identity_after_confirmation
+test_apfs_creation_rejects_source_volume_uuid_change
+test_apfs_creation_rejects_container_uuid_change
+test_apfs_creation_rejects_physical_store_uuid_change
+test_apfs_creation_rejects_missing_source_volume_uuid
+test_apfs_creation_rejects_malformed_source_volume_uuid
+test_apfs_creation_rejects_missing_container_uuid
+test_apfs_creation_rejects_malformed_container_uuid
+test_apfs_creation_rejects_missing_physical_store_uuid
+test_apfs_creation_rejects_missing_physical_stores
+test_apfs_creation_rejects_empty_physical_stores
+test_apfs_creation_rejects_duplicate_physical_store_uuid
+test_apfs_creation_rejects_malformed_physical_store_uuid
+test_apfs_creation_accepts_reordered_physical_store_set
+test_apfs_creation_rejects_name_appearing_during_final_identity_check
+test_apfs_creation_rejects_appeared_target_from_reused_source
+test_apfs_creation_does_not_persist_target_after_source_reuse
 test_auto_created_apfs_volume_uses_the_new_uuid_and_mount_path
 test_auto_created_apfs_volume_rejects_ambiguous_new_uuids
 test_auto_created_apfs_volume_recovers_privileged_partial_failure
 test_auto_created_apfs_volume_guards_inside_privileged_phase
 test_privileged_apfs_guard_rejects_reused_source_identity
+test_privileged_apfs_guard_rejects_source_volume_uuid_change
+test_privileged_apfs_guard_rejects_container_uuid_change
+test_privileged_apfs_guard_rejects_physical_store_uuid_change
 test_privileged_apfs_guard_rejects_numeric_family_race
 test_saved_apfs_uuid_blocks_retention_after_copy_swap
 test_saved_apfs_uuid_revalidates_before_each_retention_trash
