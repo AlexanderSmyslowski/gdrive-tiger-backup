@@ -108,6 +108,7 @@ fi
 
 if [[ -x "$NOTES_EXTRACTOR" ]]; then
   notes="$("$NOTES_EXTRACTOR" "$tag" 2>/dev/null)"
+  previous_notes="$("$NOTES_EXTRACTOR" "v2.4.5" 2>/dev/null)"
   if [[ "$notes" == *"## v${version} "* && "$notes" != *"## v2.4.3 "* ]]; then
     printf 'ok - extractor returns only the requested changelog section\n'
   else
@@ -115,36 +116,56 @@ if [[ -x "$NOTES_EXTRACTOR" ]]; then
     failures=$((failures + 1))
   fi
 
-  if [[ "$notes" == *"physical disk name"* &&
-        "$notes" == *"logical volume name"* ]]; then
-    printf 'ok - v2.4.5 notes describe readable physical and logical disk identity\n'
+  if [[ "$previous_notes" == *"physical disk name"* &&
+        "$previous_notes" == *"logical volume name"* ]]; then
+    printf 'ok - v2.4.5 historical notes describe readable physical and logical disk identity\n'
   else
-    printf 'not ok - v2.4.5 notes describe readable physical and logical disk identity\n'
+    printf 'not ok - v2.4.5 historical notes describe readable physical and logical disk identity\n'
     failures=$((failures + 1))
   fi
 
-  if [[ "$notes" == *"UUIDs, serial numbers, BSD device identifiers, and mount paths"* &&
-        "$notes" == *"exact UUID/device revalidation"* ]]; then
-    printf 'ok - v2.4.5 notes preserve private display and exact device validation\n'
+  if [[ "$previous_notes" == *"UUIDs, serial numbers, BSD device identifiers, and mount paths"* &&
+        "$previous_notes" == *"exact UUID/device revalidation"* ]]; then
+    printf 'ok - v2.4.5 historical notes preserve private display and exact device validation\n'
   else
-    printf 'not ok - v2.4.5 notes preserve private display and exact device validation\n'
+    printf 'not ok - v2.4.5 historical notes preserve private display and exact device validation\n'
     failures=$((failures + 1))
   fi
 
-  if [[ "$notes" == *"quiet recovery confirmation"* &&
-        "$notes" == *"opt-in and silent"* ]]; then
-    printf 'ok - v2.4.5 notes describe quiet successful-backup notifications\n'
+  if [[ "$previous_notes" == *"quiet recovery confirmation"* &&
+        "$previous_notes" == *"opt-in and silent"* ]]; then
+    printf 'ok - v2.4.5 historical notes describe quiet successful-backup notifications\n'
   else
-    printf 'not ok - v2.4.5 notes describe quiet successful-backup notifications\n'
+    printf 'not ok - v2.4.5 historical notes describe quiet successful-backup notifications\n'
     failures=$((failures + 1))
   fi
 
-  if [[ "$notes" == *"macOS 15"* &&
-        "$notes" == *"checked/listed counters"* &&
-        "$notes" == *"destination free space"* ]]; then
-    printf 'ok - v2.4.5 notes describe portable disk identity and truthful aggregate activity\n'
+  if [[ "$previous_notes" == *"macOS 15"* &&
+        "$previous_notes" == *"checked/listed counters"* &&
+        "$previous_notes" == *"destination free space"* ]]; then
+    printf 'ok - v2.4.5 historical notes describe portable disk identity and truthful aggregate activity\n'
   else
-    printf 'not ok - v2.4.5 notes describe portable disk identity and truthful aggregate activity\n'
+    printf 'not ok - v2.4.5 historical notes describe portable disk identity and truthful aggregate activity\n'
+    failures=$((failures + 1))
+  fi
+
+  if [[ "$notes" == *"GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1"* &&
+        "$notes" == *"BACKUP_ASSUME_YES approves backup start only"* &&
+        "$notes" == *"cannot create a volume or open volume-creation UI"* ]]; then
+    printf 'ok - v2.4.6 notes restrict APFS creation to explicit one-run approval\n'
+  else
+    printf 'not ok - v2.4.6 notes restrict APFS creation to explicit one-run approval\n'
+    failures=$((failures + 1))
+  fi
+
+  if [[ "$notes" == *"one exact-name candidate in one eligible external APFS container"* &&
+        "$notes" == *"binds its UUID, resolves its current mount point, and atomically persists the identity"* &&
+        "$notes" == *"Multiple named candidates or multiple eligible containers abort without mutation or copy"* &&
+        "$notes" == *"prefix-renamed volumes are never guessed"* &&
+        "$notes" == *"never deletes, erases, repartitions, renames, or unmounts volumes"* ]]; then
+    printf 'ok - v2.4.6 notes describe fail-closed APFS identity and non-destructive boundaries\n'
+  else
+    printf 'not ok - v2.4.6 notes describe fail-closed APFS identity and non-destructive boundaries\n'
     failures=$((failures + 1))
   fi
 fi

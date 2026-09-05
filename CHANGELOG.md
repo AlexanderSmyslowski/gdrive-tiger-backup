@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v2.4.6 - 2026-09-05
+
+- `GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1` is the narrow, explicit one-run authorization for volume creation; BACKUP_ASSUME_YES approves backup start only and never authorizes `diskutil apfs addVolume`. Scheduled, retry, mount-triggered, and menu-bar-only runs cannot create a volume or open volume-creation UI.
+- For a new dedicated volume, the routine accepts one exact-name candidate in one eligible external APFS container. It independently validates it, binds its UUID, resolves its current mount point, and atomically persists the identity.
+- Multiple named candidates or multiple eligible containers abort without mutation or copy, and prefix-renamed volumes are never guessed. The routine never deletes, erases, repartitions, renames, or unmounts volumes.
+
 ## v2.4.5 - 2026-09-04
 
 - Identify an external backup destination in the confirmation dialog by its physical disk name, decimal capacity, connection type, and logical volume name instead of showing an ambiguous macOS mount-path suffix.
