@@ -12,8 +12,14 @@ APFS volumes named `GoogleDrive-Backup`, followed by Time Machine error
 
 - A configured APFS volume UUID is authoritative. Resolve its current mount
   point through `diskutil`; never fall back to a name or stale mount path.
+- An existing path without a saved UUID is not sufficient for a backup. Only
+  the visible interactive setup flow may validate that exact external APFS
+  volume, bind its UUID, and atomically persist the resolved volume and
+  destination before copying. Every other trigger fails closed.
 - Before any `diskutil apfs addVolume`, inspect the selected external APFS
-  container for existing volumes with the requested logical name.
+  container for existing volumes with the requested logical name. Scope the
+  inventory to that exact container, and treat an exact-name record with a
+  missing or invalid UUID as an error rather than as zero candidates.
 - If exactly one existing named volume is present, validate it in the same
   external container, resolve it by UUID, and persist that UUID and current
   mount point before copying.
@@ -25,7 +31,19 @@ APFS volumes named `GoogleDrive-Backup`, followed by Time Machine error
   of choosing one by mount-directory modification time.
 - Only a zero-candidate, one-container setup may create a volume. Automatic
   schedule/retry approval must not count as human approval for APFS volume
-  creation.
+  creation. Creation is available only in the distinct interactive setup
+  context; manual overview/menu-bar, mount, schedule, retry, and unknown
+  triggers cannot create a volume or open creation UI.
+- Immediately after any human confirmation and before `addVolume`, rediscover
+  the eligible container and refresh the exact-name UUID inventory. Recover a
+  newly appeared unique candidate, abort on ambiguity, and mutate only while
+  that fresh inventory is empty.
+- Invocation trigger and one-run creation approval are captured before profile
+  configuration is loaded. A profile cannot turn an automatic/menu-bar run
+  into setup or persist creation authority, and unknown trigger or approval
+  values fail before disk access.
+- Persist a rebased nested destination together with the UUID and current mount
+  path so the next UUID-resolved run cannot inherit a stale destination root.
 - The routine contains no deletion, erasure, repartitioning, rename, or
   unmount operation. No such operation may be introduced.
 - Repeated runs are idempotent: after identity is recovered or created once,
@@ -34,12 +52,12 @@ APFS volumes named `GoogleDrive-Backup`, followed by Time Machine error
 ## Verification
 
 - Behavior-level regression tests exercise one existing volume, multiple
-  existing volumes, multiple source containers, creation authorization, and
-  two consecutive runs.
+  existing volumes, multiple source containers, path-only profiles, creation
+  authorization, invalid inventory identities, pre-create inventory races,
+  nested destinations, and two consecutive runs.
 - Ambiguity tests preserve configuration and canary files and prove that no
   `addVolume`, delete/erase command, privileged helper, or rclone copy ran.
 - Run the focused regression suite twice consecutively, followed by the full
   project test suite.
 - Live Toshiba inspection remains read-only. Existing volumes and their data
   are never changed or deleted by this work.
-

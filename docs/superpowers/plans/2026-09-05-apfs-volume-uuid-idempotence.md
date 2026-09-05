@@ -8,10 +8,11 @@
 successful external-volume run UUID-bound and repeatable.
 
 **Architecture:** Keep the existing UUID resolver authoritative. Strengthen
-only the pre-create setup path: discover one eligible external APFS container,
-evaluate its named UUID set before mutation, recover a unique existing volume,
-fail closed on ambiguity, and require creation-specific authorization. Persist
-the resolved identity atomically with the existing config writer.
+the path-binding and pre-create setup paths: distinguish visible interactive
+setup from every other trigger, discover one eligible external APFS container,
+evaluate and refresh its named UUID set before mutation, recover a unique
+existing volume, and fail closed on ambiguity. Persist the resolved identity
+and rebased destination atomically with the existing config writer.
 
 **Tech stack:** macOS Bash 3.2, `diskutil` property lists, `plutil`, `jq`, shell
 test doubles, Objective-C release application.
@@ -28,6 +29,8 @@ test doubles, Objective-C release application.
 - Never expose UUIDs in user-facing dialogs; technical UUIDs may remain in
   private configuration and diagnostic logs where already documented.
 - Do not let `BACKUP_ASSUME_YES` authorize APFS volume creation.
+- Do not let configuration files establish an invocation trigger or one-run
+  APFS creation authority.
 - Tests assert observable behavior, not source-code text.
 
 ## Task 1: Reproduce and fix the pre-create identity gap
@@ -48,10 +51,25 @@ test doubles, Objective-C release application.
 - [ ] Add a RED test requiring multiple eligible external APFS containers to
       abort instead of selecting by mtime.
 - [ ] Add a RED test proving scheduled/retry `BACKUP_ASSUME_YES=1` cannot
-      authorize a new APFS volume, while an explicit creation approval can.
+      authorize a new APFS volume. Prove that schedule, retry, mount,
+      overview/menu-bar, and unknown triggers cannot create or prompt even if
+      approval variables are set, while distinct interactive setup can.
+- [ ] Add a RED path-only test: noninteractive runs fail closed, while visible
+      setup validates and persists an exact external APFS UUID before copying.
+- [ ] Add a RED confirmation-race test in which an exact-name volume appears
+      before mutation; recover it or abort without calling `addVolume`.
+- [ ] Add RED inventory tests that scope matching to the selected container
+      and reject an exact-name record whose UUID is absent or malformed.
 - [ ] Implement deterministic single-container discovery, pre-create UUID-set
-      evaluation, UUID-based recovery/persistence for one candidate, fail-closed
-      ambiguity handling, and creation-specific authorization.
+      evaluation and refresh, UUID-based recovery/persistence for one
+      candidate, fail-closed ambiguity handling, and setup-only authorization.
+- [ ] Persist a rebased nested `GDRIVE_BACKUP_DEST_ROOT` with the resolved UUID
+      and mount path.
+- [ ] Snapshot and validate invocation trigger and creation approval before
+      sourcing configuration; a profile may establish neither capability.
+- [ ] Route only the visible app setup action through the `setup` trigger,
+      preserve its foreground progress, and keep overview/menu-bar, mount,
+      schedule, and retry launches non-capable.
 - [ ] Preserve post-create partial-success detection and UUID/device/path
       revalidation.
 - [ ] Run `bash tests/backup-encryption-test.sh` twice consecutively and
@@ -95,4 +113,3 @@ test doubles, Objective-C release application.
 - [ ] Verify installed helper hash/syntax, app version/build, active profile,
       schedule/controller state, and UUID-based Toshiba resolution.
 - [ ] Finish the Central Agent Data Hub review run.
-
