@@ -183,6 +183,7 @@ RUN_STARTED_AT=0
 OPEN_BIN="${GDRIVE_BACKUP_OPEN_BIN:-/usr/bin/open}"
 CONFIRM_BACKUP="${GDRIVE_BACKUP_CONFIRM:-1}"
 AUTO_CREATE_VOLUME="${GDRIVE_BACKUP_AUTO_CREATE_VOLUME:-1}"
+APPROVE_VOLUME_CREATION="${GDRIVE_BACKUP_APPROVE_VOLUME_CREATION:-0}"
 BACKUP_LANG="${GDRIVE_BACKUP_LANG:-auto}"
 VERSIONING="${GDRIVE_BACKUP_VERSIONING-1}"
 VERSIONS_SUBDIR="${GDRIVE_BACKUP_VERSIONS_SUBDIR-.gdrive-versions}"
@@ -2597,10 +2598,12 @@ confirm_prompt() {
   local title="$1"
   local detail="$2"
   local primary_button="$3"
+  local require_human="${4:-0}"
   local secondary_button
   secondary_button="$(t not_now)"
 
-  if [[ "$CONFIRM_BACKUP" == "0" || "${BACKUP_ASSUME_YES:-0}" == "1" ]]; then
+  if [[ "$require_human" != "1" &&
+        ( "$CONFIRM_BACKUP" == "0" || "${BACKUP_ASSUME_YES:-0}" == "1" ) ]]; then
     return 0
   fi
 
@@ -2688,16 +2691,14 @@ confirm_backup_target() {
 }
 
 find_setup_candidate() {
-  local best_mtime=0
-  local best_mount=""
-  local best_container=""
-  local best_name=""
-  local mount plist fs external container name system_image writable_media mtime
+  local selected_mount=""
+  local selected_container=""
+  local selected_name=""
+  local mount plist fs external container name system_image writable_media
 
   for mount in "$VOLUMES_ROOT"/*; do
     [[ -d "$mount" ]] || continue
     [[ "$mount" != "$VOLUME" ]] || continue
-    [[ "$(basename "$mount")" != "$BACKUP_VOLUME_NAME" ]] || continue
 
     plist="$(mktemp "${TMPDIR:-/tmp}/gdrive-volume-info.XXXXXX")" || continue
     if ! run_with_timeout 6 "$DISKUTIL_BIN" info -plist "$mount" >"$plist"; then
@@ -2719,17 +2720,19 @@ find_setup_candidate() {
     [[ "$system_image" != "true" ]] || continue
     [[ "$writable_media" == "true" ]] || continue
 
-    mtime="$(stat -f '%m' "$mount" 2>/dev/null || printf '0')"
-    if (( mtime > best_mtime )); then
-      best_mtime="$mtime"
-      best_mount="$mount"
-      best_container="$container"
-      best_name="${name:-$(basename "$mount")}"
+    # Several mounted volumes may represent one container; only a second
+    # distinct container makes automatic setup ambiguous.
+    if [[ -z "$selected_container" ]]; then
+      selected_mount="$mount"
+      selected_container="$container"
+      selected_name="${name:-$(basename "$mount")}"
+    elif [[ "$container" != "$selected_container" ]]; then
+      return 2
     fi
   done
 
-  [[ -n "$best_mount" ]] || return 1
-  printf '%s\t%s\t%s\n' "$best_mount" "$best_container" "$best_name"
+  [[ -n "$selected_mount" ]] || return 1
+  printf '%s\t%s\t%s\n' "$selected_mount" "$selected_container" "$selected_name"
 }
 
 capture_named_apfs_volume_uuids() {
@@ -2836,6 +2839,77 @@ persist_volume_config() {
   return 0
 }
 
+recover_existing_named_apfs_volume() {
+  local container="$1"
+  local candidate_uuid="$2"
+  local plist_data filesystem mount_point volume_uuid volume_name
+  local candidate_container external writable_media system_image volume_identifier
+  local resolved_mount resolve_status
+
+  if ! plist_data="$(run_with_timeout 8 "$DISKUTIL_BIN" info -plist "$candidate_uuid" 2>/dev/null)"; then
+    log "FEHLER: Das vorhandene gleichnamige APFS-Volume konnte nicht per UUID geprueft werden."
+    return 1
+  fi
+
+  filesystem="$(plist_data_value "$plist_data" FilesystemType || true)"
+  mount_point="$(plist_data_value "$plist_data" MountPoint || true)"
+  volume_uuid="$(plist_data_value "$plist_data" VolumeUUID || true)"
+  volume_name="$(plist_data_value "$plist_data" VolumeName || true)"
+  candidate_container="$(plist_data_value "$plist_data" APFSContainerReference || true)"
+  external="$(plist_data_value "$plist_data" RemovableMediaOrExternalDevice || true)"
+  writable_media="$(plist_data_value "$plist_data" WritableMedia || true)"
+  system_image="$(plist_data_value "$plist_data" SystemImage || true)"
+  volume_identifier="$(plist_data_value "$plist_data" DeviceIdentifier || true)"
+  if [[ "$filesystem" != "apfs" ||
+        "$(normalized_apfs_uuid "$volume_uuid")" != "$(normalized_apfs_uuid "$candidate_uuid")" ||
+        "$volume_name" != "$BACKUP_VOLUME_NAME" ||
+        "$candidate_container" != "$container" ||
+        "$external" != "true" || "$writable_media" != "true" ||
+        "$system_image" != "false" || -z "$mount_point" ||
+        -z "$volume_identifier" ]]; then
+    log "FEHLER: diskutil bestaetigt das vorhandene gleichnamige APFS-Volume nicht eindeutig."
+    return 1
+  fi
+  if ! resolved_mount="$(canonical_existing_directory "$mount_point")"; then
+    log "FEHLER: Das vorhandene gleichnamige APFS-Volume ist nicht eingehängt."
+    return 1
+  fi
+
+  BACKUP_VOLUME_UUID="$(normalized_apfs_uuid "$candidate_uuid")"
+  resolve_status=0
+  resolve_configured_apfs_volume || resolve_status=$?
+  if [[ "$resolve_status" != "0" || "$VOLUME" != "$resolved_mount" ]] ||
+     ! validate_configured_apfs_volume_identity; then
+    log "FEHLER: Das vorhandene gleichnamige APFS-Volume konnte nicht sicher gebunden werden."
+    return 1
+  fi
+  if ! persist_volume_config "$BACKUP_VOLUME_UUID"; then
+    log "FEHLER: Identitaet des vorhandenen APFS-Volumes konnte nicht gespeichert werden."
+    return 1
+  fi
+  log "Vorhandenes Backup-Volume per UUID gebunden: $VOLUME"
+  return 0
+}
+
+confirm_apfs_volume_creation() {
+  local source_name="$1"
+
+  # Backup-start approval is intentionally broader than permission to mutate
+  # disk layout. Automatic triggers may only proceed with the narrow setup flag.
+  if [[ "$APPROVE_VOLUME_CREATION" == "1" ]]; then
+    return 0
+  fi
+  case "$BACKUP_TRIGGER" in
+    manual|mount)
+      confirm_prompt "$(t create_volume)" "${source_name} -> ${BACKUP_VOLUME_NAME}" "$(t create_volume_action)" 1
+      ;;
+    *)
+      log "FEHLER: Ein automatischer Backup-Lauf darf kein APFS-Volume anlegen. Starte die Einrichtung manuell."
+      return 1
+      ;;
+  esac
+}
+
 create_apfs_backup_volume() {
   local container="$1"
   local before_file="$2"
@@ -2912,21 +2986,23 @@ ensure_backup_volume() {
     return 1
   fi
 
-  local candidate source_mount container source_name
+  local candidate candidate_status source_mount container source_name named_count
   local before_file after_file candidate_uuid detect_status resolve_status
-  candidate="$(find_setup_candidate || true)"
-  if [[ -z "$candidate" ]]; then
-    log "Kein geeignetes externes APFS-Volume fuer die Einrichtung gefunden."
-    return 1
-  fi
+  candidate_status=0
+  candidate="$(find_setup_candidate)" || candidate_status=$?
+  case "$candidate_status" in
+    0) ;;
+    1)
+      log "Kein geeignetes externes APFS-Volume fuer die Einrichtung gefunden."
+      return 1
+      ;;
+    *)
+      log "FEHLER: Mehrere geeignete externe APFS-Container wurden gefunden. Waehle das Backup-Volume explizit aus."
+      return 1
+      ;;
+  esac
 
   IFS=$'\t' read -r source_mount container source_name <<<"$candidate"
-  if ! confirm_prompt "$(t create_volume)" "${source_name} -> ${BACKUP_VOLUME_NAME}" "$(t create_volume_action)"; then
-    log "$(t log_setup_skipped)"
-    return 1
-  fi
-
-  log "Lege APFS-Volume '$BACKUP_VOLUME_NAME' im Container $container an (Ausgangsvolume: $source_mount)."
   before_file="$(mktemp "${TMPDIR:-/tmp}/gdrive-apfs-before.XXXXXX")" ||
     return 1
   if ! capture_named_apfs_volume_uuids "$container" "$before_file"; then
@@ -2934,6 +3010,31 @@ ensure_backup_volume() {
     log "FEHLER: Vorhandene APFS-Volumes konnten nicht sicher erfasst werden."
     return 1
   fi
+  named_count="$(/usr/bin/wc -l <"$before_file" | /usr/bin/tr -d '[:space:]')"
+  case "$named_count" in
+    0) ;;
+    1)
+      candidate_uuid="$(cat "$before_file")"
+      cleanup_temp_file "$before_file"
+      if recover_existing_named_apfs_volume "$container" "$candidate_uuid"; then
+        return 0
+      fi
+      return 1
+      ;;
+    *)
+      cleanup_temp_file "$before_file"
+      log "FEHLER: Mehrere gleichnamige APFS-Volumes wurden gefunden. Waehle das gewuenschte Volume explizit aus; es wurde nichts angelegt oder geloescht."
+      return 1
+      ;;
+  esac
+
+  if ! confirm_apfs_volume_creation "$source_name"; then
+    cleanup_temp_file "$before_file"
+    log "$(t log_setup_skipped)"
+    return 1
+  fi
+
+  log "Lege APFS-Volume '$BACKUP_VOLUME_NAME' im Container $container an (Ausgangsvolume: $source_mount)."
   if ! create_apfs_backup_volume "$container" "$before_file"; then
     cleanup_temp_file "$before_file"
     log "FEHLER: APFS-Volume konnte nicht angelegt werden."
