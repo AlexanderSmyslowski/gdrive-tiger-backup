@@ -25,6 +25,18 @@ NETWORK_MOUNT_SOURCE := macos/GDriveBackupTiger/NetworkMountSupport.m
 
 .PHONY: build install dry-run pkg test clean
 
+test-updates:
+	@set -e; TEST_BIN="$$(mktemp "$${TMPDIR:-/tmp}/gdrive-update-test.XXXXXX")"; \
+		clang $(OBJC_FLAGS) -framework Foundation -I macos/GDriveBackupTiger \
+			tests/update-support-test.m macos/GDriveBackupTiger/UpdateSupport.m -o "$$TEST_BIN"; \
+		RESULT=0; "$$TEST_BIN" || RESULT=$$?; \
+		./scripts/trash-path.sh "$$TEST_BIN"; test "$$RESULT" = 0; \
+		TEST_BIN="$$(mktemp "$${TMPDIR:-/tmp}/gdrive-update-ui-test.XXXXXX")"; \
+		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
+			tests/update-ui-test.m $(filter-out macos/GDriveBackupTiger/main.m,$(APP_SOURCES)) -o "$$TEST_BIN"; \
+		RESULT=0; "$$TEST_BIN" || RESULT=$$?; \
+		./scripts/trash-path.sh "$$TEST_BIN"; exit "$$RESULT"
+
 test-adhoc:
 	@set -e; TEST_BIN="$$(mktemp "$${TMPDIR:-/tmp}/gdrive-adhoc-test.XXXXXX")"; \
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Offer optional app-wide daily GitHub version checks after an explicit visible-overview choice; add compact update settings to both menus. Refusal, consent and daily attempt timing survive restarts.
+- Show silent, passive, per-version update notices and a menu fallback when system notifications are unavailable. Update actions open only the official release page; downloads and installation remain manual. Backup settings and notifications are unchanged.
+
 ## v2.5.1 - 2026-09-05
 
 This is the first public release of the destination picker developed in the unpublished v2.5.0 intermediate milestone. It includes all of those changes as well as the NAS retry fix below.

@@ -16,9 +16,9 @@ launch_method="$(/usr/bin/awk '
 
 if [[ "$launch_method" != *'checkForUpdates:'* &&
       "$launch_method" != *'checkCurrentVersion:'* ]]; then
-  printf '%s\n' 'ok - application launch never checks for updates automatically'
+  printf '%s\n' 'ok - application launch cannot bypass update consent policy or invoke the manual result flow'
 else
-  printf '%s\n' 'not ok - application launch performs an automatic update check'
+  printf '%s\n' 'not ok - application launch bypasses update policy with a direct or manual check'
   failures=$((failures + 1))
 fi
 

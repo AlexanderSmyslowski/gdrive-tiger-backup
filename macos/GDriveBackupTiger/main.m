@@ -1627,6 +1627,13 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic) NSUInteger diagnosticsGeneration;
 @property(nonatomic, strong) GDTUpdateChecker *updateChecker;
 @property(nonatomic) BOOL updateChecking;
+@property(nonatomic, strong) GDTAutomaticUpdatePolicy *automaticUpdatePolicy;
+@property(nonatomic) BOOL updateConsentRequested;
+@property(nonatomic) NSUInteger updateConsentGeneration;
+@property(nonatomic) NSUInteger updateConsentSnapshotGeneration;
+@property(nonatomic) BOOL updateConsentOffered;
+@property(nonatomic) BOOL updatePreferencesPresenting;
+@property(nonatomic, copy) NSString *updateAuthorizationGeneration;
 @property(nonatomic, strong) NSTimer *overviewRefreshTimer;
 @property(nonatomic, copy) NSDictionary<NSString *, NSString *> *lastOverviewSnapshot;
 @property(nonatomic) NSTimeInterval overviewRefreshInterval;
@@ -2154,8 +2161,17 @@ static void GDTAdvanceBackupNotificationAcceptedState(
                             actions:@[setupExternalVolume, ignoreExternalVolume]
                   intentIdentifiers:@[]
                             options:UNNotificationCategoryOptionNone];
+    UNNotificationAction *openUpdate = [UNNotificationAction
+        actionWithIdentifier:@"GDT_UPDATE_OPEN" title:T(self.language ?: @"en", @"updateOpenRelease")
+        options:UNNotificationActionOptionNone];
+    UNNotificationAction *laterUpdate = [UNNotificationAction
+        actionWithIdentifier:@"GDT_UPDATE_LATER" title:T(self.language ?: @"en", @"updateLater")
+        options:UNNotificationActionOptionNone];
+    UNNotificationCategory *updateCategory = [UNNotificationCategory
+        categoryWithIdentifier:@"GDT_UPDATE_AVAILABLE" actions:@[openUpdate, laterUpdate]
+        intentIdentifiers:@[] options:UNNotificationCategoryOptionCustomDismissAction];
     return [NSSet setWithObjects:backupCategory, successCategory,
-            unknownExternalVolumeCategory, nil];
+            unknownExternalVolumeCategory, updateCategory, nil];
 }
 
 - (void)configureBackupNotificationsForConfig:(NSDictionary<NSString *, NSString *> *)config {
@@ -3579,6 +3595,9 @@ static void GDTAdvanceBackupNotificationAcceptedState(
 
 - (UNNotificationPresentationOptions)presentationOptionsForNotificationCategoryIdentifier:
     (NSString *)categoryIdentifier {
+    if ([categoryIdentifier isEqualToString:@"GDT_UPDATE_AVAILABLE"]) {
+        return UNNotificationPresentationOptionList;
+    }
     if ([categoryIdentifier isEqualToString:@"GDT_UNKNOWN_EXTERNAL_VOLUME"] ||
         [categoryIdentifier isEqualToString:@"GDT_BACKUP_SUCCESS"]) {
         return UNNotificationPresentationOptionBanner |
@@ -4154,6 +4173,7 @@ static void GDTAdvanceBackupNotificationAcceptedState(
 
     if (openAction) {
         void (^showOverview)(void) = ^{
+            self.updateConsentRequested = NO;
             [self showOverviewWindow];
             [self refreshOverviewStatus:nil];
         };
@@ -4234,8 +4254,27 @@ static void GDTAdvanceBackupNotificationAcceptedState(
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center
 didReceiveNotificationResponse:(UNNotificationResponse *)response
          withCompletionHandler:(void (^)(void))completionHandler {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self userNotificationCenter:center didReceiveNotificationResponse:response
+                withCompletionHandler:completionHandler];
+        });
+        return;
+    }
+    // Notification activation must never consume an earlier deferred overview
+    // consent intent, even when another category opens a window or setup panel.
+    self.updateConsentRequested = NO;
     NSString *action = response.actionIdentifier;
     NSString *category = response.notification.request.content.categoryIdentifier;
+    if ([category isEqualToString:@"GDT_UPDATE_AVAILABLE"]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self handleUpdateNotificationAction:action
+                userInfo:response.notification.request.content.userInfo ?: @{}
+                identifier:response.notification.request.identifier ?: @""];
+            completionHandler();
+        });
+        return;
+    }
     if ([category isEqualToString:@"GDT_UNKNOWN_EXTERNAL_VOLUME"]) {
         NSString *identifier = response.notification.request.identifier;
         if (identifier.length) {
@@ -4265,6 +4304,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     if ([action isEqualToString:UNNotificationDefaultActionIdentifier] ||
         [action isEqualToString:@"GDT_OPEN_BACKUP_OVERVIEW"]) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            self.updateConsentRequested = NO;
             [self showOverviewWindow];
             [self refreshOverviewStatus:nil];
         });
@@ -4551,6 +4591,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     update.target = self;
     update.enabled = !self.updateChecking;
     [menu addItem:update];
+    [self appendAutomaticUpdateItemsToMenu:menu];
     [menu addItem:[NSMenuItem separatorItem]];
     [menu addItemWithTitle:T(language, @"quitMenu") action:@selector(terminate:) keyEquivalent:@"q"];
     return menu;
@@ -4638,8 +4679,10 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 
 - (void)refreshOverviewStatus:(id)sender {
     (void)sender;
+    [self automaticUpdateTick];
     if (self.overviewRefreshInFlight) return;
     self.overviewRefreshInFlight = YES;
+    NSUInteger updateConsentGeneration = self.updateConsentGeneration;
     NSDictionary<NSString *, NSString *> *baseConfig = GDTReadConfigDictionary();
     NSString *summaryPath = GDTBackupSummaryPathForConfig(baseConfig);
     NSCalendar *calendar = NSCalendar.autoupdatingCurrentCalendar;
@@ -4753,7 +4796,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                 [innerSelf processBackupSuccessNotificationDecision:successDecision
                                       capturedActiveIssueTimestamp:activeIssueTimestamp];
             }
-            innerSelf.lastOverviewSnapshot = displaySnapshot;
+            [innerSelf acceptOverviewSnapshot:displaySnapshot
+                     updateConsentGeneration:updateConsentGeneration];
             if ([innerSelf.window.contentView isKindOfClass:TigerOverviewView.class]) {
                 [innerSelf applyOverviewSnapshot:displaySnapshot
                                           toView:(TigerOverviewView *)innerSelf.window.contentView];
@@ -5418,6 +5462,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 
 - (void)showOverviewFromStatus:(id)sender {
     (void)sender;
+    self.updateConsentRequested = YES;
     [self showOverviewWindow];
 }
 
@@ -5855,6 +5900,234 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     return [NSWorkspace.sharedWorkspace openURL:url];
 }
 
+- (GDTAutomaticUpdatePolicy *)updatePolicy {
+    if (!self.automaticUpdatePolicy) {
+        NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0.0.0";
+        self.automaticUpdatePolicy = [[GDTAutomaticUpdatePolicy alloc]
+            initWithDefaults:NSUserDefaults.standardUserDefaults checker:[GDTUpdateChecker new]
+            currentVersion:version];
+        __weak typeof(self) weakSelf = self;
+        self.automaticUpdatePolicy.stateChanged = ^{ [weakSelf automaticUpdateStateChanged]; };
+    }
+    return self.automaticUpdatePolicy;
+}
+
+- (BOOL)updateApplicationIsActive {
+    return NSApp.isActive;
+}
+
+- (void)automaticUpdateTick {
+    if (!self.overviewMode || self.confirmMode || self.setupMode || self.progressForegroundMode) return;
+    for (NSString *identifier in [[self updatePolicy] takeObsoleteNoticeIdentifiers]) {
+        [self removeUpdateNoticeIdentifier:identifier];
+    }
+    if (!self.updateAuthorizationGeneration.length) [[self updatePolicy] checkIfDue];
+}
+
+- (void)appendAutomaticUpdateItemsToMenu:(NSMenu *)menu {
+    NSMenuItem *settings = [[NSMenuItem alloc] initWithTitle:T(self.language ?: @"en", @"updateSettings")
+        action:@selector(showUpdatePreferences:) keyEquivalent:@""];
+    settings.target = self;
+    [menu addItem:settings];
+    NSString *version = [self updatePolicy].availableVersion;
+    if (!version.length) return;
+    NSMenuItem *available = [[NSMenuItem alloc]
+        initWithTitle:[NSString stringWithFormat:T(self.language ?: @"en", @"updateAvailableMenu"), version]
+        action:@selector(openOfficialReleasePage:) keyEquivalent:@""];
+    available.target = self;
+    [menu addItem:available];
+}
+
+- (NSAlert *)updatePreferencesAlertForConsent:(BOOL)consent {
+    NSString *language = self.language ?: @"en";
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = T(language, consent ? @"updateConsentTitle" : @"updateSettings");
+    alert.informativeText = T(language, @"updatePrivacyMessage");
+    if (consent) {
+        [alert addButtonWithTitle:T(language, @"updateEnable")];
+        [alert addButtonWithTitle:T(language, @"updateDecline")];
+    } else {
+        NSButton *checkbox = [NSButton checkboxWithTitle:T(language, @"updateAutomatic") target:nil action:nil];
+        [checkbox sizeToFit];
+        checkbox.state = [self updatePolicy].enabled ? NSControlStateValueOn : NSControlStateValueOff;
+        alert.accessoryView = checkbox;
+        [alert addButtonWithTitle:T(language, @"save")];
+        [alert addButtonWithTitle:T(language, @"cancel")].keyEquivalent = @"\033";
+    }
+    return alert;
+}
+
+- (void)presentUpdatePreferencesAlert:(NSAlert *)alert completion:(void (^)(NSModalResponse))completion {
+    if (self.window.isVisible && !self.window.attachedSheet) {
+        [alert beginSheetModalForWindow:self.window completionHandler:completion];
+    } else {
+        completion([alert runModal]);
+    }
+}
+
+- (void)setUpdateConsentRequested:(BOOL)requested {
+    _updateConsentRequested = requested;
+    if (requested) {
+        self.updateConsentGeneration++;
+        self.updateConsentSnapshotGeneration = 0;
+    }
+}
+
+- (void)acceptOverviewSnapshot:(NSDictionary<NSString *, NSString *> *)snapshot
+       updateConsentGeneration:(NSUInteger)generation {
+    self.lastOverviewSnapshot = snapshot;
+    if (self.updateConsentRequested && generation != self.updateConsentGeneration) {
+        // A read started before this overview intent or activation cannot prove
+        // that backups are idle now. Keep the intent and request a current read.
+        [self refreshOverviewStatus:nil];
+        return;
+    }
+    self.updateConsentSnapshotGeneration = generation;
+    [self maybeOfferUpdateConsent];
+}
+
+- (void)maybeOfferUpdateConsent {
+    if (!self.updateConsentRequested || self.updateConsentOffered || self.updatePreferencesPresenting ||
+        !self.updateConsentGeneration || self.updateConsentSnapshotGeneration != self.updateConsentGeneration ||
+        [self updatePolicy].answered || !self.overviewMode || self.confirmMode || self.setupMode ||
+        self.progressForegroundMode || !self.window.isVisible || ![self updateApplicationIsActive] ||
+        self.window.attachedSheet || !self.lastOverviewSnapshot || self.overviewLaunchPending ||
+        self.manualLaunchPending || self.automaticRetryIdentifiersInFlight.count ||
+        [self.lastOverviewSnapshot[@"status"] isEqual:@"running"]) return;
+    self.updateConsentOffered = YES;
+    self.updateConsentRequested = NO;
+    self.updatePreferencesPresenting = YES;
+    __weak typeof(self) weakSelf = self;
+    [self presentUpdatePreferencesAlert:[self updatePreferencesAlertForConsent:YES]
+        completion:^(NSModalResponse response) {
+            weakSelf.updatePreferencesPresenting = NO;
+            if (response == NSAlertFirstButtonReturn) [weakSelf setAutomaticUpdatesEnabled:YES];
+            else if (response == NSAlertSecondButtonReturn) [weakSelf setAutomaticUpdatesEnabled:NO];
+        }];
+}
+
+- (void)applicationDidBecomeActive:(NSNotification *)notification {
+    (void)notification;
+    if (!self.updateConsentRequested || self.updateConsentOffered || [self updatePolicy].answered) return;
+    self.updateConsentRequested = YES;
+    [self refreshOverviewStatus:nil];
+}
+
+- (void)showUpdatePreferences:(id)sender {
+    (void)sender;
+    if (self.updatePreferencesPresenting || self.window.attachedSheet) return;
+    NSAlert *alert = [self updatePreferencesAlertForConsent:NO];
+    self.updatePreferencesPresenting = YES;
+    __weak typeof(self) weakSelf = self;
+    [self presentUpdatePreferencesAlert:alert completion:^(NSModalResponse response) {
+        weakSelf.updatePreferencesPresenting = NO;
+        if (response == NSAlertFirstButtonReturn) {
+            [weakSelf setAutomaticUpdatesEnabled:((NSButton *)alert.accessoryView).state == NSControlStateValueOn];
+        }
+    }];
+}
+
+- (void)setAutomaticUpdatesEnabled:(BOOL)enabled {
+    GDTAutomaticUpdatePolicy *policy = [self updatePolicy];
+    BOOL explicitOptIn = enabled && !policy.enabled;
+    [policy setEnabled:enabled];
+    if (!enabled) self.updateAuthorizationGeneration = nil;
+    if (explicitOptIn) {
+        NSString *generation = policy.generation;
+        self.updateAuthorizationGeneration = generation;
+        UNUserNotificationCenter *center = [self backupNotificationCenter];
+        __weak typeof(self) weakSelf = self;
+        void (^finishAuthorization)(void) = ^{
+            dispatch_async(dispatch_get_main_queue(), ^{
+                typeof(self) strongSelf = weakSelf;
+                if (![strongSelf.updateAuthorizationGeneration isEqual:generation]) return;
+                strongSelf.updateAuthorizationGeneration = nil;
+                [strongSelf automaticUpdateTick];
+            });
+        };
+        [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!policy.enabled || ![policy.generation isEqual:generation]) return;
+                if (settings.authorizationStatus != UNAuthorizationStatusNotDetermined) {
+                    finishAuthorization();
+                    return;
+                }
+                // Permission is app-wide; silent update content must not prevent
+                // later backup alerts from using their existing sound behavior.
+                [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert | UNAuthorizationOptionSound
+                    completionHandler:^(BOOL granted, NSError *error) {
+                        (void)granted; (void)error;
+                        finishAuthorization();
+                    }];
+            });
+        }];
+    }
+    [self automaticUpdateTick];
+}
+
+- (NSString *)updateNoticeIdentifierForVersion:(NSString *)version generation:(NSString *)generation {
+    return [NSString stringWithFormat:@"com.commcats.gdrivebackup.update.%@.%@", generation, version];
+}
+
+- (void)removeUpdateNoticeIdentifier:(NSString *)identifier {
+    if (!identifier.length) return;
+    UNUserNotificationCenter *center = [self backupNotificationCenter];
+    [center removeDeliveredNotificationsWithIdentifiers:@[identifier]];
+    [center removePendingNotificationRequestsWithIdentifiers:@[identifier]];
+}
+
+- (void)automaticUpdateStateChanged {
+    GDTAutomaticUpdatePolicy *policy = [self updatePolicy];
+    for (NSString *identifier in [policy takeObsoleteNoticeIdentifiers]) [self removeUpdateNoticeIdentifier:identifier];
+    [self buildMainMenu];
+    if (self.statusItem && self.lastOverviewSnapshot) {
+        self.statusItem.menu = [self statusMenuForSnapshot:self.lastOverviewSnapshot];
+        self.statusItem.menu.delegate = self;
+    }
+    NSString *version = [policy claimNoticeVersion];
+    if (!version) return;
+    NSString *generation = policy.generation;
+    NSString *identifier = [self updateNoticeIdentifierForVersion:version generation:generation];
+    UNUserNotificationCenter *center = [self backupNotificationCenter];
+    __weak typeof(self) weakSelf = self;
+    [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
+        void (^deliver)(void) = ^{
+            typeof(self) strongSelf = weakSelf;
+            if (!strongSelf || ![policy acceptsNoticeVersion:version generation:generation] ||
+                (settings.authorizationStatus != UNAuthorizationStatusAuthorized &&
+                 settings.authorizationStatus != UNAuthorizationStatusProvisional)) return;
+            UNMutableNotificationContent *content = [UNMutableNotificationContent new];
+            content.title = T(strongSelf.language ?: @"en", @"updateAvailableTitle");
+            content.body = [NSString stringWithFormat:T(strongSelf.language ?: @"en", @"updateNoticeMessage"), version];
+            content.categoryIdentifier = @"GDT_UPDATE_AVAILABLE";
+            content.interruptionLevel = UNNotificationInterruptionLevelPassive;
+            content.userInfo = @{@"version": version, @"generation": generation};
+            UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:identifier content:content trigger:nil];
+            [center addNotificationRequest:request withCompletionHandler:^(NSError *error) {
+                (void)error;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (![policy acceptsNoticeVersion:version generation:generation]) {
+                        [weakSelf removeUpdateNoticeIdentifier:identifier];
+                    }
+                });
+            }];
+        };
+        if (NSThread.isMainThread) deliver();
+        else dispatch_async(dispatch_get_main_queue(), deliver);
+    }];
+}
+
+- (void)handleUpdateNotificationAction:(NSString *)action userInfo:(NSDictionary *)info identifier:(NSString *)identifier {
+    NSString *version = [info[@"version"] isKindOfClass:NSString.class] ? info[@"version"] : @"";
+    NSString *generation = [info[@"generation"] isKindOfClass:NSString.class] ? info[@"generation"] : @"";
+    if (![[self updatePolicy] acceptsNoticeVersion:version generation:generation] ||
+        ![identifier isEqual:[self updateNoticeIdentifierForVersion:version generation:generation]]) return;
+    BOOL open = [action isEqual:@"GDT_UPDATE_OPEN"] || [action isEqual:UNNotificationDefaultActionIdentifier];
+    if (!open && ![action isEqual:@"GDT_UPDATE_LATER"] && ![action isEqual:UNNotificationDismissActionIdentifier]) return;
+    [self removeUpdateNoticeIdentifier:identifier];
+    if (open) [self openOfficialReleasePage:nil];
+}
+
 - (void)openOfficialReleasePage:(id)sender {
     (void)sender;
     NSURL *url = [NSURL URLWithString:
@@ -6114,6 +6387,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     updateItem.target = self;
     updateItem.enabled = !self.updateChecking;
     [appMenu addItem:updateItem];
+    [self appendAutomaticUpdateItemsToMenu:appMenu];
     [appMenu addItem:[NSMenuItem separatorItem]];
     [appMenu addItemWithTitle:T(self.language, @"hideMenu") action:@selector(hide:) keyEquivalent:@"h"];
     [appMenu addItemWithTitle:T(self.language, @"quitMenu") action:@selector(terminate:) keyEquivalent:@"q"];
@@ -7405,6 +7679,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         [self primeMountedExternalVolumeCache];
         [self installStatusItemIfNeeded];
         if ([mode isEqualToString:@"overview"]) {
+            self.updateConsentRequested = YES;
             [self showOverviewWindow];
         }
         return;
@@ -7643,6 +7918,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     }
 
     if (self.overviewMode && (self.menubarOnlyMode || !self.window || !flag)) {
+        self.updateConsentRequested = YES;
         [self showOverviewWindow];
         return NO;
     }
