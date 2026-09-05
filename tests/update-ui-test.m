@@ -14,6 +14,8 @@
 - (NSAlert *)updatePreferencesAlertForConsent:(BOOL)consent;
 - (void)automaticUpdateStateChanged;
 - (void)handleUpdateNotificationAction:(NSString *)action userInfo:(NSDictionary *)info identifier:(NSString *)identifier;
+- (void)acceptOverviewSnapshot:(NSDictionary<NSString *, NSString *> *)snapshot
+       updateConsentGeneration:(NSUInteger)generation;
 @end
 
 @interface UpdateTestSettings : NSObject
@@ -96,11 +98,13 @@
 @property(nonatomic) BOOL pretendActive;
 @property(nonatomic) NSInteger consentPresentations;
 @property(nonatomic, copy) void (^consentCompletion)(NSModalResponse);
+@property(nonatomic) NSUInteger refreshRequests;
 @end
 
 @implementation UpdateTestDelegate
 
 - (BOOL)updateApplicationIsActive { return self.pretendActive; }
+- (void)refreshOverviewStatus:(id)sender { (void)sender; self.refreshRequests++; }
 - (UNUserNotificationCenter *)backupNotificationCenter { return (id)self.center; }
 - (void)presentUpdatePreferencesAlert:(NSAlert *)alert completion:(void (^)(NSModalResponse))completion {
     (void)alert; self.consentPresentations++; self.consentCompletion = completion;
@@ -131,6 +135,75 @@ static void Assert(BOOL condition, NSString *name) {
 static void DrainMainQueue(void) {
     for (NSUInteger pass = 0; pass < 4; pass++) {
         [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    }
+}
+
+static void TestConsentFreshness(void) {
+    for (NSNumber *retryCase in @[@NO, @YES]) {
+        NSString *domain = [@"GDTConsentFreshnessTests." stringByAppendingString:NSUUID.UUID.UUIDString];
+        NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:domain];
+        UpdateTestDelegate *delegate = [UpdateTestDelegate new];
+        delegate.automaticUpdatePolicy = [[GDTAutomaticUpdatePolicy alloc] initWithDefaults:defaults
+            checker:[DeferredUpdateChecker new] currentVersion:@"2.0.0"];
+        delegate.language = @"de";
+        delegate.overviewMode = YES;
+        delegate.pretendActive = YES;
+        UpdateTestWindow *window = [[UpdateTestWindow alloc] initWithContentRect:NSMakeRect(0, 0, 600, 400)
+            styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+        window.releasedWhenClosed = NO;
+        window.pretendVisible = YES;
+        delegate.window = window;
+        delegate.lastOverviewSnapshot = @{@"status": @"success"};
+        delegate.updateConsentRequested = YES;
+        BOOL freshnessSupported = [delegate respondsToSelector:@selector(acceptOverviewSnapshot:updateConsentGeneration:)];
+        if (retryCase.boolValue) {
+            delegate.automaticRetryIdentifiersInFlight = [NSMutableSet setWithObject:@"retry-fixture"];
+            if (freshnessSupported) {
+                [delegate acceptOverviewSnapshot:@{@"status": @"failed"}
+                    updateConsentGeneration:[[delegate valueForKey:@"updateConsentGeneration"] unsignedIntegerValue]];
+            } else {
+                [delegate maybeOfferUpdateConsent];
+            }
+            Assert(delegate.consentPresentations == 0 && delegate.updateConsentRequested,
+                   @"a retry launched before failure-snapshot publication defers consent without consuming intent");
+            if (freshnessSupported) {
+                [delegate.automaticRetryIdentifiersInFlight removeAllObjects];
+                NSUInteger generation = [[delegate valueForKey:@"updateConsentGeneration"] unsignedIntegerValue];
+                [delegate acceptOverviewSnapshot:@{@"status": @"success"} updateConsentGeneration:generation];
+                [delegate acceptOverviewSnapshot:@{@"status": @"success"} updateConsentGeneration:generation];
+                Assert(delegate.consentPresentations == 1, @"consent resumes exactly once after retry completion and an idle refresh");
+            }
+        } else {
+            NSUInteger beforeActivation = 0;
+            if (freshnessSupported) {
+                beforeActivation = [[delegate valueForKey:@"updateConsentGeneration"] unsignedIntegerValue];
+                window.pretendSheet = YES;
+                [delegate acceptOverviewSnapshot:@{@"status": @"success"} updateConsentGeneration:beforeActivation];
+                window.pretendSheet = NO;
+            }
+            [delegate applicationDidBecomeActive:[NSNotification notificationWithName:NSApplicationDidBecomeActiveNotification object:NSApp]];
+            Assert(delegate.consentPresentations == 0 && delegate.updateConsentRequested && delegate.refreshRequests == 1,
+                   @"activation waits for a newly requested refresh instead of consuming cached idle status");
+            if (freshnessSupported) {
+                [delegate acceptOverviewSnapshot:@{@"status": @"success"} updateConsentGeneration:beforeActivation];
+                Assert(delegate.consentPresentations == 0 && delegate.refreshRequests == 2,
+                       @"a read started before activation cannot revive previously fresh idle consent state");
+                NSUInteger beforeIntent = [[delegate valueForKey:@"updateConsentGeneration"] unsignedIntegerValue];
+                delegate.updateConsentRequested = YES;
+                [delegate acceptOverviewSnapshot:@{@"status": @"success"} updateConsentGeneration:beforeIntent];
+                Assert(delegate.consentPresentations == 0 && delegate.refreshRequests == 3,
+                       @"a refresh already in progress before deliberate intent cannot release consent and schedules a fresh read");
+                NSUInteger current = [[delegate valueForKey:@"updateConsentGeneration"] unsignedIntegerValue];
+                [delegate acceptOverviewSnapshot:@{@"status": @"running"} updateConsentGeneration:current];
+                Assert(delegate.consentPresentations == 0 && delegate.updateConsentRequested,
+                       @"fresh running status preserves deferred consent intent");
+                [delegate acceptOverviewSnapshot:@{@"status": @"success"} updateConsentGeneration:current];
+                [delegate acceptOverviewSnapshot:@{@"status": @"success"} updateConsentGeneration:current];
+                Assert(delegate.consentPresentations == 1, @"consent resumes exactly once when a fresh refresh reports idle");
+            }
+        }
+        [defaults removePersistentDomainForName:domain];
+        [window close];
     }
 }
 
@@ -187,6 +260,10 @@ static void TestAutomaticUI(NSDictionary *menuSnapshot) {
     Assert(responseFinished && !delegate.updateConsentRequested && delegate.consentPresentations == 0,
            @"unknown-volume notification activation cancels previously deferred update consent");
     delegate.updateConsentRequested = YES;
+    if ([delegate respondsToSelector:@selector(acceptOverviewSnapshot:updateConsentGeneration:)]) {
+        [delegate acceptOverviewSnapshot:menuSnapshot
+            updateConsentGeneration:[[delegate valueForKey:@"updateConsentGeneration"] unsignedIntegerValue]];
+    }
     [delegate maybeOfferUpdateConsent]; [delegate maybeOfferUpdateConsent];
     Assert(delegate.consentPresentations == 1, @"eligible visible intent offers exactly one consent sheet");
     delegate.consentCompletion(NSModalResponseCancel);
@@ -343,6 +420,7 @@ int main(void) {
             @"nextRun": @"–", @"target": @"–", @"storage": @"–"
         };
         TestAutomaticUI(menuSnapshot);
+        TestConsentFreshness();
         NSMenu *statusMenu = [delegate statusMenuForSnapshot:menuSnapshot];
         NSMenuItem *statusUpdate = [statusMenu itemWithTitle:T(@"de", @"updateCheck")];
         [delegate buildMainMenu];

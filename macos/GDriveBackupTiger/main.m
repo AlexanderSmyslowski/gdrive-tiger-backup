@@ -1629,6 +1629,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic) BOOL updateChecking;
 @property(nonatomic, strong) GDTAutomaticUpdatePolicy *automaticUpdatePolicy;
 @property(nonatomic) BOOL updateConsentRequested;
+@property(nonatomic) NSUInteger updateConsentGeneration;
+@property(nonatomic) NSUInteger updateConsentSnapshotGeneration;
 @property(nonatomic) BOOL updateConsentOffered;
 @property(nonatomic) BOOL updatePreferencesPresenting;
 @property(nonatomic, copy) NSString *updateAuthorizationGeneration;
@@ -4680,6 +4682,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     [self automaticUpdateTick];
     if (self.overviewRefreshInFlight) return;
     self.overviewRefreshInFlight = YES;
+    NSUInteger updateConsentGeneration = self.updateConsentGeneration;
     NSDictionary<NSString *, NSString *> *baseConfig = GDTReadConfigDictionary();
     NSString *summaryPath = GDTBackupSummaryPathForConfig(baseConfig);
     NSCalendar *calendar = NSCalendar.autoupdatingCurrentCalendar;
@@ -4793,8 +4796,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                 [innerSelf processBackupSuccessNotificationDecision:successDecision
                                       capturedActiveIssueTimestamp:activeIssueTimestamp];
             }
-            innerSelf.lastOverviewSnapshot = displaySnapshot;
-            [innerSelf maybeOfferUpdateConsent];
+            [innerSelf acceptOverviewSnapshot:displaySnapshot
+                     updateConsentGeneration:updateConsentGeneration];
             if ([innerSelf.window.contentView isKindOfClass:TigerOverviewView.class]) {
                 [innerSelf applyOverviewSnapshot:displaySnapshot
                                           toView:(TigerOverviewView *)innerSelf.window.contentView];
@@ -5962,12 +5965,35 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     }
 }
 
+- (void)setUpdateConsentRequested:(BOOL)requested {
+    _updateConsentRequested = requested;
+    if (requested) {
+        self.updateConsentGeneration++;
+        self.updateConsentSnapshotGeneration = 0;
+    }
+}
+
+- (void)acceptOverviewSnapshot:(NSDictionary<NSString *, NSString *> *)snapshot
+       updateConsentGeneration:(NSUInteger)generation {
+    self.lastOverviewSnapshot = snapshot;
+    if (self.updateConsentRequested && generation != self.updateConsentGeneration) {
+        // A read started before this overview intent or activation cannot prove
+        // that backups are idle now. Keep the intent and request a current read.
+        [self refreshOverviewStatus:nil];
+        return;
+    }
+    self.updateConsentSnapshotGeneration = generation;
+    [self maybeOfferUpdateConsent];
+}
+
 - (void)maybeOfferUpdateConsent {
     if (!self.updateConsentRequested || self.updateConsentOffered || self.updatePreferencesPresenting ||
+        !self.updateConsentGeneration || self.updateConsentSnapshotGeneration != self.updateConsentGeneration ||
         [self updatePolicy].answered || !self.overviewMode || self.confirmMode || self.setupMode ||
         self.progressForegroundMode || !self.window.isVisible || ![self updateApplicationIsActive] ||
         self.window.attachedSheet || !self.lastOverviewSnapshot || self.overviewLaunchPending ||
-        self.manualLaunchPending || [self.lastOverviewSnapshot[@"status"] isEqual:@"running"]) return;
+        self.manualLaunchPending || self.automaticRetryIdentifiersInFlight.count ||
+        [self.lastOverviewSnapshot[@"status"] isEqual:@"running"]) return;
     self.updateConsentOffered = YES;
     self.updateConsentRequested = NO;
     self.updatePreferencesPresenting = YES;
@@ -5982,7 +6008,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 
 - (void)applicationDidBecomeActive:(NSNotification *)notification {
     (void)notification;
-    [self maybeOfferUpdateConsent];
+    if (!self.updateConsentRequested || self.updateConsentOffered || [self updatePolicy].answered) return;
+    self.updateConsentRequested = YES;
+    [self refreshOverviewStatus:nil];
 }
 
 - (void)showUpdatePreferences:(id)sender {
