@@ -49,6 +49,14 @@ APFS volumes named `GoogleDrive-Backup`, followed by Time Machine error
   the authorized command after the password dialog and immediately before the
   privileged mutation. A pre-dialog snapshot or matching `diskN` string is not
   sufficient.
+- Evaluate the approved stable identity and the exact/numeric name-family state
+  from the same final APFS inventory before an unprivileged mutation. Every
+  candidate discovered before, during, or after creation must pass the original
+  source/container/physical-store identity gate before it may be adopted,
+  persisted, or copied.
+- Automatic recovery of one existing named volume must refresh the name-family
+  inventory immediately before persistence. If another exact or numeric-family
+  candidate appeared during validation, abort without changing configuration.
 - When one physical disk exposes multiple suitable APFS volumes, the app must
   begin with no selection and keep confirmation disabled until the user chooses
   one explicitly. Cancelling, pressing Return before a choice, or losing the
@@ -70,8 +78,9 @@ APFS volumes named `GoogleDrive-Backup`, followed by Time Machine error
   existing volumes, multiple source containers, path-only profiles, creation
   authorization, missing and malformed inventory UUIDs, foreign or duplicated
   container records, pre-create and administrator-dialog inventory races,
-  `diskN` reuse by a different physical store, explicit multi-volume selection,
-  nested destinations, and two consecutive runs.
+  `diskN` reuse by a different physical store, independently missing, malformed,
+  or changed tuple components, late candidate appearance, explicit multi-volume
+  selection, nested destinations, and two consecutive runs.
 - Ambiguity tests preserve configuration and canary files and prove that no
   `addVolume`, delete/erase command, privileged helper, or rclone copy ran.
 - Run the focused regression suite twice consecutively, followed by the full

@@ -71,6 +71,13 @@ test doubles, Objective-C release application.
       the same `diskN` identifiers during confirmation or authorization. Bind
       approval to source-volume, container, and physical-store UUIDs and prove
       that the replacement disk receives no mutation.
+- [ ] Exercise source-volume, container, and physical-store identity changes
+      independently, including missing and malformed stable inventory fields.
+      Gate every newly appeared or post-create candidate before persistence or
+      copying, and keep uniqueness true through the final recovery write.
+- [ ] Add RED tests for a target name appearing during the final stable-identity
+      capture, a replacement disk presenting a candidate, a replacement after
+      successful creation, and a second candidate appearing late in recovery.
 - [ ] Add a production-picker test requiring a neutral placeholder, disabled
       confirmation until a deliberate choice, and no staging on Return or
       cancellation before selection.
