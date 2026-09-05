@@ -21,6 +21,83 @@ static UNUserNotificationCenter *GDTNotificationIntegrationCurrentCenter;
 
 @end
 
+typedef NS_ENUM(NSInteger, GDTUnknownVolumePickerTestMode) {
+    GDTUnknownVolumePickerTestModeConfirmWithoutSelection,
+    GDTUnknownVolumePickerTestModeSelectSecondCandidate,
+    GDTUnknownVolumePickerTestModeCancel,
+};
+
+static GDTUnknownVolumePickerTestMode GDTUnknownVolumePickerMode;
+static BOOL GDTUnknownVolumePickerStartedWithoutSelection;
+static BOOL GDTUnknownVolumePickerPrimaryInitiallyDisabled;
+static BOOL GDTUnknownVolumePickerPrimaryEnabledAfterSelection;
+
+@interface NSAlert (UnknownVolumePickerTesting)
+- (NSModalResponse)gdt_unknownVolumePickerTestRunModal;
+@end
+
+@implementation NSAlert (UnknownVolumePickerTesting)
+
+- (NSModalResponse)gdt_unknownVolumePickerTestRunModal {
+    NSPopUpButton *popup = [self.accessoryView isKindOfClass:NSPopUpButton.class]
+        ? (NSPopUpButton *)self.accessoryView : nil;
+    NSButton *primaryButton = self.buttons.firstObject;
+    GDTUnknownVolumePickerStartedWithoutSelection =
+        popup && popup.indexOfSelectedItem == 0 &&
+        popup.selectedItem.representedObject == nil;
+    GDTUnknownVolumePickerPrimaryInitiallyDisabled =
+        primaryButton && !primaryButton.enabled;
+
+    if (GDTUnknownVolumePickerMode ==
+            GDTUnknownVolumePickerTestModeSelectSecondCandidate) {
+        [popup selectItemAtIndex:2];
+        [popup sendAction:popup.action to:popup.target];
+        GDTUnknownVolumePickerPrimaryEnabledAfterSelection =
+            primaryButton.enabled;
+        return NSAlertFirstButtonReturn;
+    }
+    if (GDTUnknownVolumePickerMode == GDTUnknownVolumePickerTestModeCancel) {
+        return NSAlertSecondButtonReturn;
+    }
+    return NSAlertFirstButtonReturn;
+}
+
+@end
+
+@interface AppDelegate (UnknownVolumePickerProductionTesting)
+- (void)chooseUnknownExternalVolumeFromDescriptors:
+    (NSArray<NSDictionary<NSString *, id> *> *)descriptors
+                                         completion:
+    (void (^)(NSDictionary<NSString *, id> *descriptor))completion;
+@end
+
+static NSDictionary<NSString *, id> *RunProductionUnknownVolumePicker(
+    AppDelegate *delegate,
+    NSArray<NSDictionary<NSString *, id> *> *descriptors,
+    GDTUnknownVolumePickerTestMode mode) {
+    GDTUnknownVolumePickerMode = mode;
+    GDTUnknownVolumePickerStartedWithoutSelection = NO;
+    GDTUnknownVolumePickerPrimaryInitiallyDisabled = NO;
+    GDTUnknownVolumePickerPrimaryEnabledAfterSelection = NO;
+
+    Method productionMethod = class_getInstanceMethod(
+        NSAlert.class, @selector(runModal));
+    Method testMethod = class_getInstanceMethod(
+        NSAlert.class, @selector(gdt_unknownVolumePickerTestRunModal));
+    __block NSDictionary<NSString *, id> *chosenDescriptor = nil;
+    method_exchangeImplementations(productionMethod, testMethod);
+    @try {
+        [delegate chooseUnknownExternalVolumeFromDescriptors:descriptors
+                                                  completion:
+            ^(NSDictionary<NSString *, id> *descriptor) {
+            chosenDescriptor = descriptor;
+        }];
+    } @finally {
+        method_exchangeImplementations(productionMethod, testMethod);
+    }
+    return chosenDescriptor;
+}
+
 @interface AppDelegate (NotificationIntegrationTesting)
 - (void)processBackupNotificationDecision:(NSDictionary<NSString *, NSString *> *)decision;
 - (void)processBackupSuccessNotificationDecision:
@@ -2534,6 +2611,7 @@ int main(void) {
                 @"unknownExternalVolumeChooseTitle",
                 @"unknownExternalVolumeChooseBody",
                 @"unknownExternalVolumeChooseAction",
+                @"unknownExternalVolumeChoosePlaceholder",
                 @"unknownExternalVolumeChoiceLabelFormat",
                 @"backupNotificationRetryRunningTitle",
                 @"backupNotificationRetryRunningBody"
@@ -2763,6 +2841,36 @@ int main(void) {
             @"volumeUUID": @"PRIVATE-UUID",
             @"attachmentVolumeUUIDs": @[@"PRIVATE-UUID", @"SIBLING-UUID"]
         };
+        GDTInitializeAccessoryTestApplication();
+        AppDelegate *productionPickerDelegate = [[AppDelegate alloc] init];
+        productionPickerDelegate.language = @"en";
+        NSDictionary<NSString *, id> *prematureProductionChoice =
+            RunProductionUnknownVolumePicker(
+                productionPickerDelegate,
+                @[matchingRestartDescriptor, duplicateNameSiblingDescriptor],
+                GDTUnknownVolumePickerTestModeConfirmWithoutSelection);
+        Assert(GDTUnknownVolumePickerStartedWithoutSelection &&
+               GDTUnknownVolumePickerPrimaryInitiallyDisabled &&
+               prematureProductionChoice == nil,
+               @"the production picker has no default descriptor and Return cannot confirm before an explicit choice");
+        NSDictionary<NSString *, id> *explicitProductionChoice =
+            RunProductionUnknownVolumePicker(
+                productionPickerDelegate,
+                @[matchingRestartDescriptor, duplicateNameSiblingDescriptor],
+                GDTUnknownVolumePickerTestModeSelectSecondCandidate);
+        Assert(GDTUnknownVolumePickerStartedWithoutSelection &&
+               GDTUnknownVolumePickerPrimaryInitiallyDisabled &&
+               GDTUnknownVolumePickerPrimaryEnabledAfterSelection &&
+               explicitProductionChoice == duplicateNameSiblingDescriptor,
+               @"the production picker enables confirmation only after an explicit descriptor selection");
+        NSDictionary<NSString *, id> *cancelledProductionChoice =
+            RunProductionUnknownVolumePicker(
+                productionPickerDelegate,
+                @[matchingRestartDescriptor, duplicateNameSiblingDescriptor],
+                GDTUnknownVolumePickerTestModeCancel);
+        Assert(cancelledProductionChoice == nil,
+               @"cancelling the production picker cannot select or stage a volume");
+
         ProcessUnknownVolumeAction(
             multipleCandidateDelegate,
             @"GDT_UNKNOWN_EXTERNAL_VOLUME_SETUP",

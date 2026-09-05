@@ -1501,6 +1501,24 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 
 @end
 
+@interface GDTExplicitPopUpChoiceController : NSObject
+@property(nonatomic, weak) NSPopUpButton *popup;
+@property(nonatomic, weak) NSButton *confirmationButton;
+@property(nonatomic) BOOL hasExplicitSelection;
+- (void)choiceDidChange:(id)sender;
+@end
+
+@implementation GDTExplicitPopUpChoiceController
+
+- (void)choiceDidChange:(id)sender {
+    (void)sender;
+    self.hasExplicitSelection =
+        [self.popup.selectedItem.representedObject isKindOfClass:NSDictionary.class];
+    self.confirmationButton.enabled = self.hasExplicitSelection;
+}
+
+@end
+
 @interface AppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, NSTextFieldDelegate, UNUserNotificationCenterDelegate>
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, copy) NSString *sentinelPath;
@@ -3764,16 +3782,30 @@ static void GDTAdvanceBackupNotificationAcceptedState(
         initWithFrame:NSMakeRect(0, 0, 420, 28) pullsDown:NO];
     NSArray<NSString *> *labels =
         [self unknownExternalVolumeChoiceLabelsForDescriptors:descriptors];
+    [popup addItemWithTitle:
+        T(self.language ?: @"en", @"unknownExternalVolumeChoosePlaceholder")];
+    popup.lastItem.representedObject = nil;
     for (NSUInteger index = 0; index < descriptors.count; index++) {
         [popup addItemWithTitle:labels[index]];
         popup.lastItem.representedObject = descriptors[index];
     }
+    [popup selectItemAtIndex:0];
     alert.accessoryView = popup;
     [alert addButtonWithTitle:
         T(self.language ?: @"en", @"unknownExternalVolumeChooseAction")];
     [alert addButtonWithTitle:T(self.language ?: @"en", @"cancel")];
+    NSButton *confirmationButton = alert.buttons.firstObject;
+    confirmationButton.enabled = NO;
+    GDTExplicitPopUpChoiceController *choiceController =
+        [[GDTExplicitPopUpChoiceController alloc] init];
+    choiceController.popup = popup;
+    choiceController.confirmationButton = confirmationButton;
+    popup.target = choiceController;
+    popup.action = @selector(choiceDidChange:);
     [NSApp activateIgnoringOtherApps:YES];
-    if ([alert runModal] != NSAlertFirstButtonReturn) {
+    if ([alert runModal] != NSAlertFirstButtonReturn ||
+        !choiceController.hasExplicitSelection ||
+        !confirmationButton.enabled) {
         completion(nil);
         return;
     }
