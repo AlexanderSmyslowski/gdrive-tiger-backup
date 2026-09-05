@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## v2.5.1 - 2026-09-05
+
+This is the first public release of the destination picker developed in the unpublished v2.5.0 intermediate milestone. It includes all of those changes as well as the NAS retry fix below.
+
+- Choose the destination for a single manual backup directly in the main window. Saved NAS and external APFS destinations are listed by readable identity; the automatic profile and schedule remain unchanged.
+- Recheck the selected external volume UUID immediately before launch and inside the engine. Disconnected, read-only, ambiguous and Time Machine backup volumes cannot be selected. Repeated runs reuse the saved volume without creating or formatting volumes.
+- Show manual progress and the actual destination in the main window. Store manual results separately so an external backup cannot clear a scheduled NAS failure, and prefer newer automatic results over older manual results.
+- Add an existing external APFS volume through a compact manual-destination dialog, with explicit selection and no profile activation. The installed app and engine must both support the one-run destination protocol.
+- Defer automatic NAS retries while another backup holds the shared backup lock. A contended process launch no longer consumes the single retry; the original failed schedule remains eligible until a real retry starts or a newer run supersedes it.
+- Recover retry markers left by earlier app versions when the durable status still proves that no retry ran. Keep duplicate-start protection while waiting for the running backup to finish.
+
+Validation scope: fresh-account installation and dry-run tests on macOS 13 and the current macOS release have not yet been completed. Automated checks cover the test suite, package contents, deployment metadata and both binary architectures; they do not replace those runtime tests.
+
+## v2.5.0 - 2026-09-05
+
+Unpublished intermediate source milestone, included in the public v2.5.1 release.
+
+- Choose the destination for a single manual backup directly in the main window. Saved NAS and external APFS destinations are listed by readable identity; the automatic profile and schedule remain unchanged.
+- Recheck the selected external volume UUID immediately before launch and inside the engine. Disconnected, read-only, ambiguous and Time Machine backup volumes cannot be selected. Repeated runs reuse the saved volume without creating or formatting volumes.
+- Show manual progress and the actual destination in the main window. Store manual results separately so an external backup cannot clear a scheduled NAS failure, and prefer newer automatic results over older manual results.
+- Add an existing external APFS volume through a compact manual-destination dialog, with explicit selection and no profile activation. The installed app and engine must both support the one-run destination protocol.
+
 ## v2.4.6 - 2026-09-05
 
 - Make the process-supplied `setup` trigger the only authority that can create or bind an APFS volume. `GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1` is a narrow process-only authorization for one setup invocation; config files cannot persist it or forge setup authority, and `BACKUP_ASSUME_YES` never authorizes `diskutil apfs addVolume`.

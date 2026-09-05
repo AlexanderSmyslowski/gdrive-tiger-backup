@@ -22,11 +22,8 @@
     (void)assumeYes;
     self.launchCalls++;
     self.lastTrigger = @"manual";
-    TigerOverviewView *view = [self.window.contentView isKindOfClass:TigerOverviewView.class]
-        ? (TigerOverviewView *)self.window.contentView : nil;
-    self.sawImmediatePreparingState = view &&
-        [view.lastRunValueLabel.stringValue isEqualToString:T(self.language ?: @"en", @"statusBackupPreparing")] &&
-        !view.backupButton.enabled;
+    self.sawImmediatePreparingState = self.overviewLaunchPending &&
+        [self.lastOverviewSnapshot[@"lastRun"] isEqualToString:T(self.language ?: @"en", @"statusBackupPreparing")];
     return self.launchSucceeds;
 }
 
@@ -524,18 +521,15 @@ int main(void) {
         OverviewLaunchDelegate *guardedLaunch = [[OverviewLaunchDelegate alloc] init];
         guardedLaunch.language = @"en";
         guardedLaunch.launchSucceeds = YES;
-        guardedLaunch.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 620, 420)
-                                                           styleMask:NSWindowStyleMaskTitled
-                                                             backing:NSBackingStoreBuffered
-                                                               defer:NO];
-        guardedLaunch.window.contentView = [[TigerOverviewView alloc] initWithFrame:NSMakeRect(0, 0, 620, 420)];
+        // Headless menu-bar launches retain their progress handoff. The visible
+        // destination picker and its in-window progress are covered by adhoc-ui-test.
         [guardedLaunch startOverviewBackup:nil];
         [guardedLaunch startOverviewBackup:nil];
         Assert(guardedLaunch.launchCalls == 1 &&
                [guardedLaunch.lastTrigger isEqualToString:@"manual"] &&
                guardedLaunch.sawImmediatePreparingState &&
                guardedLaunch.progressHandoffCalls == 1,
-               @"overview keeps manual authority, shows preparation, disables repeats, and yields its Dock icon");
+               @"headless manual launch prepares status, disables repeats, and hands off progress");
 
         OverviewLaunchDelegate *failedLaunch = [[OverviewLaunchDelegate alloc] init];
         failedLaunch.language = @"en";

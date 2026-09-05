@@ -40,8 +40,9 @@ if /usr/bin/awk '
   exit 1
 fi
 
-if ! /usr/bin/grep -Fq "Current release: \`${tag}\`" "$ROOT/README.md"; then
-  printf 'README.md does not identify %s as the current release.\n' "$tag" >&2
+if ! /usr/bin/grep -Fq "Current release: \`${tag}\`" "$ROOT/README.md" &&
+   ! /usr/bin/grep -Fq "Current release candidate: \`${tag}\`" "$ROOT/README.md"; then
+  printf 'README.md does not identify %s as the current release or candidate.\n' "$tag" >&2
   exit 1
 fi
 

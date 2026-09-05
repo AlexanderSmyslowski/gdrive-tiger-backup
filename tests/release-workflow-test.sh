@@ -83,6 +83,17 @@ if [[ -x "$VALIDATOR" ]]; then
     failures=$((failures + 1))
   fi
 
+  # Candidate metadata must be verifiable before any public release exists.
+  # shellcheck disable=SC2016
+  printf 'Current release candidate: `%s`\nGDrive-Backup-Tiger-%s.pkg\n' \
+    "$tag" "$version" >"$FIXTURE_ROOT/README.md"
+  if "$FIXTURE_VALIDATOR" "$tag" >/dev/null 2>&1; then
+    printf 'ok - explicitly labelled release candidate passes metadata validation\n'
+  else
+    printf 'not ok - explicitly labelled release candidate passes metadata validation\n'
+    failures=$((failures + 1))
+  fi
+
   if "$FIXTURE_VALIDATOR" "v999.0.0" >/dev/null 2>&1; then
     printf 'not ok - mismatched release tag is rejected in the fixture\n'
     failures=$((failures + 1))
@@ -109,6 +120,8 @@ fi
 if [[ -x "$NOTES_EXTRACTOR" ]]; then
   notes="$("$NOTES_EXTRACTOR" "$tag" 2>/dev/null)"
   previous_notes="$("$NOTES_EXTRACTOR" "v2.4.5" 2>/dev/null)"
+  identity_notes="$("$NOTES_EXTRACTOR" "v2.4.6" 2>/dev/null)"
+  destination_notes="$("$NOTES_EXTRACTOR" "v2.5.1" 2>/dev/null)"
   heading_count="$(printf '%s\n' "$notes" | /usr/bin/grep -Ec '^## v')"
   if [[ "$notes" == *"## v${version} "* && "$heading_count" == "1" ]]; then
     printf 'ok - extractor returns only the requested changelog section\n'
@@ -122,6 +135,18 @@ if [[ -x "$NOTES_EXTRACTOR" ]]; then
     printf 'ok - v2.4.5 historical notes describe readable physical and logical disk identity\n'
   else
     printf 'not ok - v2.4.5 historical notes describe readable physical and logical disk identity\n'
+    failures=$((failures + 1))
+  fi
+
+  if [[ "$destination_notes" == *"single manual backup directly in the main window"* &&
+        "$destination_notes" == *"volume UUID"* &&
+        "$destination_notes" == *"manual results separately"* &&
+        "$destination_notes" == *"compact manual-destination dialog"* &&
+        "$destination_notes" == *"Defer automatic NAS retries"* &&
+        "$destination_notes" == *"unpublished v2.5.0"* ]]; then
+    printf 'ok - v2.5.1 public notes include the unpublished destination picker and retry fix\n'
+  else
+    printf 'not ok - v2.5.1 public notes include the unpublished destination picker and retry fix\n'
     failures=$((failures + 1))
   fi
 
@@ -150,22 +175,22 @@ if [[ -x "$NOTES_EXTRACTOR" ]]; then
     failures=$((failures + 1))
   fi
 
-  if [[ "$notes" == *"GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1"* &&
-        "$notes" == *"process-only authorization for one setup invocation"* &&
-        "$notes" == *"BACKUP_ASSUME_YES"* &&
-        "$notes" == *"before confirmation UI, privileged helpers, disk mutation, or copy"* ]]; then
+  if [[ "$identity_notes" == *"GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1"* &&
+        "$identity_notes" == *"process-only authorization for one setup invocation"* &&
+        "$identity_notes" == *"BACKUP_ASSUME_YES"* &&
+        "$identity_notes" == *"before confirmation UI, privileged helpers, disk mutation, or copy"* ]]; then
     printf 'ok - v2.4.6 notes restrict APFS creation to explicit one-run approval\n'
   else
     printf 'not ok - v2.4.6 notes restrict APFS creation to explicit one-run approval\n'
     failures=$((failures + 1))
   fi
 
-  if [[ "$notes" == *"every successful APFS run to be UUID-bound"* &&
-        "$notes" == *"Legacy path-only targets fail closed outside setup"* &&
-        "$notes" == *"Rediscover the sole eligible source container and exact-name UUID inventory"* &&
-        "$notes" == *"multiple eligible containers"* &&
-        "$notes" == *"numeric-family names such as \`GoogleDrive-Backup 1\` fail closed"* &&
-        "$notes" == *"never deletes, erases, repartitions, renames, or unmounts volumes"* ]]; then
+  if [[ "$identity_notes" == *"every successful APFS run to be UUID-bound"* &&
+        "$identity_notes" == *"Legacy path-only targets fail closed outside setup"* &&
+        "$identity_notes" == *"Rediscover the sole eligible source container and exact-name UUID inventory"* &&
+        "$identity_notes" == *"multiple eligible containers"* &&
+        "$identity_notes" == *"numeric-family names such as \`GoogleDrive-Backup 1\` fail closed"* &&
+        "$identity_notes" == *"never deletes, erases, repartitions, renames, or unmounts volumes"* ]]; then
     printf 'ok - v2.4.6 notes describe fail-closed APFS identity and non-destructive boundaries\n'
   else
     printf 'not ok - v2.4.6 notes describe fail-closed APFS identity and non-destructive boundaries\n'

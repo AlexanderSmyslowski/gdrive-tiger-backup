@@ -25,6 +25,13 @@ NETWORK_MOUNT_SOURCE := macos/GDriveBackupTiger/NetworkMountSupport.m
 
 .PHONY: build install dry-run pkg test clean
 
+test-adhoc:
+	@set -e; TEST_BIN="$$(mktemp "$${TMPDIR:-/tmp}/gdrive-adhoc-test.XXXXXX")"; \
+		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
+			tests/adhoc-ui-test.m $(filter-out macos/GDriveBackupTiger/main.m,$(APP_SOURCES)) -o "$$TEST_BIN"; \
+		RESULT=0; "$$TEST_BIN" || RESULT=$$?; \
+		./scripts/trash-path.sh "$$TEST_BIN"; exit "$$RESULT"
+
 build:
 	mkdir -p "$(APP_DIR)/Contents/MacOS" "$(APP_DIR)/Contents/Resources"
 	install -m 644 macos/GDriveBackupTiger/Info.plist "$(APP_DIR)/Contents/Info.plist"
@@ -59,6 +66,8 @@ pkg:
 	./packaging/build-pkg.sh
 
 test:
+	$(MAKE) test-adhoc
+	bash tests/adhoc-target-test.sh
 	bash tests/app-launch-status-test.sh
 	bash tests/app-trash-mode-test.sh
 	bash tests/backup-control-test.sh
@@ -76,6 +85,9 @@ test:
 	bash tests/package-entitlement-safety-test.sh
 	bash tests/app-build-artifacts-test.sh
 	bash tests/update-flow-safety-test.sh
+	$(MAKE) test-native
+
+test-native:
 	@set -e; RUN_STATE_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-run-state-test.XXXXXX")"; \
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
 			tests/run-state-ui-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
