@@ -259,23 +259,46 @@ if [[ "${1:-}" == "apfs" && "${2:-}" == "list" && "${3:-}" == "-plist" ]]; then
   emit_volume() {
     local uuid="$1"
     local name="$2"
-    [[ -n "$uuid" ]] || return 0
-    printf '<dict><key>Name</key><string>%s</string><key>APFSVolumeUUID</key><string>%s</string></dict>\n' \
-      "$name" "$uuid"
+    local omit_uuid="${3:-0}"
+    [[ -n "$uuid" || "$omit_uuid" == "1" ]] || return 0
+    printf '<dict><key>Name</key><string>%s</string>' "$name"
+    if [[ "$omit_uuid" != "1" ]]; then
+      printf '<key>APFSVolumeUUID</key><string>%s</string>' "$uuid"
+    fi
+    printf '</dict>\n'
   }
   cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>Containers</key><array><dict>
+<plist version="1.0"><dict><key>Containers</key><array>
+PLIST
+  if [[ -n "${FAKE_APFS_FOREIGN_CONTAINER_REFERENCE:-}" ]]; then
+    cat <<PLIST
+<dict><key>ContainerReference</key><string>${FAKE_APFS_FOREIGN_CONTAINER_REFERENCE}</string>
+<key>Volumes</key><array>
+PLIST
+    emit_volume \
+      "${FAKE_APFS_FOREIGN_VOLUME_UUID:-eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee}" \
+      "${FAKE_APFS_FOREIGN_VOLUME_NAME:-GoogleDrive-Backup}"
+    printf '</array></dict>\n'
+  fi
+  cat <<PLIST
+<dict>
 <key>ContainerReference</key><string>${4:-disk99}</string>
 <key>Volumes</key><array>
 PLIST
   emit_volume \
     "${FAKE_EXISTING_APFS_UUID_1-${FAKE_EXISTING_APFS_UUID:-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa}}" \
-    "${FAKE_EXISTING_APFS_NAME_1:-GoogleDrive-Backup}"
+    "${FAKE_EXISTING_APFS_NAME_1:-GoogleDrive-Backup}" \
+    "${FAKE_EXISTING_APFS_OMIT_UUID_1:-0}"
   emit_volume \
     "${FAKE_EXISTING_APFS_UUID_2:-}" \
-    "${FAKE_EXISTING_APFS_NAME_2:-GoogleDrive-Backup}"
+    "${FAKE_EXISTING_APFS_NAME_2:-GoogleDrive-Backup}" \
+    "${FAKE_EXISTING_APFS_OMIT_UUID_2:-0}"
+  emit_volume \
+    "${FAKE_EXISTING_APFS_UUID_3:-}" \
+    "${FAKE_EXISTING_APFS_NAME_3:-GoogleDrive-Backup}" \
+    "${FAKE_EXISTING_APFS_OMIT_UUID_3:-0}"
   if [[ -f "${FAKE_APFS_CREATED_MARKER:-/missing-created-marker}" ]]; then
     emit_volume \
       "${FAKE_NEW_APFS_UUID:-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb}" \
@@ -289,12 +312,28 @@ PLIST
       "${FAKE_APPEARED_APFS_UUID:-cccccccc-cccc-cccc-cccc-cccccccccccc}" \
       "${FAKE_APPEARED_APFS_NAME:-GoogleDrive-Backup}"
   fi
+  printf '</array></dict>\n'
+  if [[ "${FAKE_APFS_DUPLICATE_REQUESTED_CONTAINER:-0}" == "1" ]]; then
+    cat <<PLIST
+<dict><key>ContainerReference</key><string>${4:-disk99}</string>
+<key>Volumes</key><array>
+PLIST
+    emit_volume \
+      "${FAKE_APFS_DUPLICATE_CONTAINER_UUID:-ffffffff-ffff-ffff-ffff-ffffffffffff}" \
+      "${FAKE_APFS_DUPLICATE_CONTAINER_NAME:-GoogleDrive-Backup}"
+    printf '</array></dict>\n'
+  fi
   cat <<'PLIST'
-</array></dict></array></dict></plist>
+</array></dict></plist>
 PLIST
   exit 0
 fi
 if [[ "${1:-}" == "apfs" && "${2:-}" == "addVolume" ]]; then
+  if [[ "${FAKE_ADMIN_GUARD_ACTIVE:-0}" == "1" ]]; then
+    : >"${FAKE_APFS_CREATED_MARKER:?}"
+    mkdir -p "${FAKE_CREATED_MOUNT:?}"
+    exit "${FAKE_PRIVILEGED_ADD_STATUS:-0}"
+  fi
   if [[ "${FAKE_UNPRIVILEGED_ADD_STATUS:-0}" != "0" ]]; then
     exit "$FAKE_UNPRIVILEGED_ADD_STATUS"
   fi
@@ -323,7 +362,19 @@ SH
   cat >"$FAKE_BIN/osascript" <<'SH'
 #!/bin/bash
 set -u
-printf '%s\n' "$*" >>"${FAKE_OSASCRIPT_LOG:?}"
+printf 'invoked\n' >>"${FAKE_OSASCRIPT_LOG:?}"
+if [[ -n "${FAKE_ADMIN_PHASE_APPEAR_MARKER:-}" ]]; then
+  : >"$FAKE_ADMIN_PHASE_APPEAR_MARKER"
+  mkdir -p "${FAKE_ADMIN_PHASE_APPEAR_MOUNT:?}"
+fi
+if (( $# >= 4 )); then
+  guard_script="$2"
+  container="$3"
+  volume_name="$4"
+  FAKE_ADMIN_GUARD_ACTIVE=1 /bin/sh -c "$guard_script" \
+    gdrive-apfs-admin "${0%/*}/diskutil" "$container" "$volume_name"
+  exit $?
+fi
 : >"${FAKE_APFS_CREATED_MARKER:?}"
 mkdir -p "${FAKE_CREATED_MOUNT:?}"
 exit "${FAKE_PRIVILEGED_ADD_STATUS:-0}"
@@ -962,6 +1013,45 @@ test_saved_apfs_uuid_rejects_destination_symlink_escape() {
   fi
 }
 
+test_saved_apfs_uuid_rejects_in_volume_destination_symlink() {
+  local name="saved APFS UUID rejects an in-volume destination symlink before writes"
+  local configured_volume resolved_volume redirect_target config before_hash after_hash status
+  prepare_test_environment
+  configured_volume="$TEST_HOME/Configured Backup"
+  resolved_volume="$TEST_HOME/Resolved Backup"
+  redirect_target="$resolved_volume/redirect-target"
+  config="$TEST_HOME/in-volume-destination-symlink.conf"
+  mkdir -p "$configured_volume" "$resolved_volume" "$redirect_target"
+  printf '%s\n' 'destination-canary' >"$redirect_target/canary"
+  /bin/ln -s "$redirect_target" "$resolved_volume/nested"
+  cat >"$config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$configured_volume'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=11111111-2222-3333-4444-555555555555
+GDRIVE_BACKUP_DEST_ROOT='$configured_volume/nested/backup'
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+  before_hash="$(/usr/bin/shasum "$config" "$redirect_target/canary")"
+
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_ENCRYPTION=none \
+    FAKE_MOUNT_POINT="$resolved_volume"
+  status=$?
+  after_hash="$(/usr/bin/shasum "$config" "$redirect_target/canary")"
+
+  if [[ "$status" == "69" && "$before_hash" == "$after_hash" &&
+        ! -e "$redirect_target/backup" ]] &&
+    { [[ ! -e "$RCLONE_LOG" ]] || ! grep -Eq '^(config|backend|copy)( |$)' "$RCLONE_LOG"; } &&
+    grep -Fqi 'symbol' "$TEST_HOME/backup.log"; then
+    pass "$name"
+  else
+    fail "$name (status $status)"
+  fi
+}
+
 test_saved_apfs_uuid_accepts_nested_destination() {
   local name="saved APFS UUID allows a normal nested destination on the volume"
   local configured_volume resolved_volume resolved_real status
@@ -1233,18 +1323,26 @@ CONFIG
   fi
 }
 
-test_renamed_prefix_apfs_volume_is_never_recovered() {
-  local name="renamed prefix APFS volume is never recovered as the exact logical name"
-  local volumes_root configured_volume source_mount renamed_mount config marker
-  local before_hash after_hash status
+test_numeric_family_apfs_volumes_block_setup_creation() {
+  local name="numeric-family APFS volumes block setup before selection or creation"
+  local volumes_root configured_volume source_mount family_one family_two family_three
+  local config marker animation_app before_hash after_hash status
   prepare_test_environment
   volumes_root="$TEST_HOME/Volumes"
   configured_volume="$volumes_root/Stale Backup Path"
   source_mount="$volumes_root/TOSHIBA_4TB"
-  renamed_mount="$volumes_root/GoogleDrive-Backup 1"
-  config="$TEST_HOME/renamed-prefix.conf"
+  family_one="$volumes_root/GoogleDrive-Backup 1"
+  family_two="$volumes_root/GoogleDrive-Backup 2"
+  family_three="$volumes_root/GoogleDrive-Backup 3"
+  config="$TEST_HOME/numeric-family.conf"
   marker="$TEST_HOME/apfs-created"
-  mkdir -p "$source_mount" "$renamed_mount"
+  animation_app="$TEST_HOME/Fake Confirmation.app"
+  mkdir -p "$source_mount" "$family_one" "$family_two" "$family_three" \
+    "$animation_app"
+  printf '%s\n' 'source-canary' >"$source_mount/canary"
+  printf '%s\n' 'family-one-canary' >"$family_one/canary"
+  printf '%s\n' 'family-two-canary' >"$family_two/canary"
+  printf '%s\n' 'family-three-canary' >"$family_three/canary"
   cat >"$config" <<CONFIG
 GDRIVE_BACKUP_TARGET=apfs
 GDRIVE_BACKUP_VOLUME='$configured_volume'
@@ -1252,36 +1350,166 @@ GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
 GDRIVE_BACKUP_VOLUME_UUID=
 GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
 CONFIG
-  before_hash="$(/usr/bin/shasum "$config")"
+  before_hash="$(/usr/bin/shasum "$config" "$source_mount/canary" \
+    "$family_one/canary" "$family_two/canary" "$family_three/canary")"
 
   run_backup \
     GDRIVE_BACKUP_CONFIG="$config" \
     GDRIVE_BACKUP_DEST_ROOT= \
     GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
-    GDRIVE_BACKUP_TRIGGER=schedule-retry \
-    GDRIVE_BACKUP_RETRY_ORIGIN_STARTED_AT=1757030400 \
-    GDRIVE_BACKUP_RETRY_ATTEMPT=1 \
-    BACKUP_ASSUME_YES=1 \
+    GDRIVE_BACKUP_TRIGGER=setup \
+    GDRIVE_BACKUP_ANIMATION_APP="$animation_app" \
+    GDRIVE_BACKUP_OPEN_BIN="$FAKE_BIN/open" \
+    FAKE_CONFIRM_RESPONSE=yes \
     FAKE_CANDIDATE_MOUNT="$source_mount" \
-    FAKE_NAMED_UUID=cccccccc-cccc-cccc-cccc-cccccccccccc \
-    FAKE_NAMED_MOUNT="$renamed_mount" \
-    FAKE_NAMED_NAME=GoogleDrive-Backup \
     FAKE_EXISTING_APFS_UUID_1=cccccccc-cccc-cccc-cccc-cccccccccccc \
     FAKE_EXISTING_APFS_NAME_1='GoogleDrive-Backup 1' \
+    FAKE_EXISTING_APFS_UUID_2=dddddddd-dddd-dddd-dddd-dddddddddddd \
+    FAKE_EXISTING_APFS_NAME_2='GoogleDrive-Backup 2' \
+    FAKE_EXISTING_APFS_UUID_3=eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee \
+    FAKE_EXISTING_APFS_NAME_3='GoogleDrive-Backup 3' \
     FAKE_APFS_CREATED_MARKER="$marker" \
     FAKE_CREATED_MOUNT="$volumes_root/Unexpected Created Volume" \
     FAKE_NEW_APFS_UUID=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
   status=$?
-  after_hash="$(/usr/bin/shasum "$config")"
+  after_hash="$(/usr/bin/shasum "$config" "$source_mount/canary" \
+    "$family_one/canary" "$family_two/canary" "$family_three/canary")"
 
   if [[ "$status" == "69" && "$before_hash" == "$after_hash" &&
-        ! -e "$marker" && ! -s "$OSASCRIPT_LOG" ]] &&
-    ! grep -Fq 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null &&
-    { [[ ! -e "$RCLONE_LOG" ]] || ! grep -Eq '^copy( |$)' "$RCLONE_LOG"; }; then
+        ! -e "$marker" && ! -s "$OPEN_LOG" && ! -s "$OSASCRIPT_LOG" ]] &&
+    grep -Fq 'apfs list -plist disk99' "$DISKUTIL_LOG" &&
+    ! grep -Eq 'apfs (addVolume|delete|erase|partition|rename|unmount)' "$DISKUTIL_LOG" 2>/dev/null &&
+    { [[ ! -e "$RCLONE_LOG" ]] || ! grep -Eq '^(config|backend|copy)( |$)' "$RCLONE_LOG"; } &&
+    grep -Fqi 'numerisch' "$TEST_HOME/backup.log" &&
+    grep -Fqi 'explizit' "$TEST_HOME/backup.log"; then
     pass "$name"
   else
     fail "$name (status $status)"
   fi
+}
+
+assert_invalid_named_apfs_inventory_is_rejected() {
+  local name="$1"
+  local volumes_root configured_volume source_mount config marker animation_app
+  local before_hash after_hash status
+  shift
+  prepare_test_environment
+  volumes_root="$TEST_HOME/Volumes"
+  configured_volume="$volumes_root/Stale Backup Path"
+  source_mount="$volumes_root/TOSHIBA_4TB"
+  config="$TEST_HOME/invalid-named-inventory.conf"
+  marker="$TEST_HOME/apfs-created"
+  animation_app="$TEST_HOME/Fake Confirmation.app"
+  mkdir -p "$source_mount" "$animation_app"
+  printf '%s\n' 'source-canary' >"$source_mount/canary"
+  cat >"$config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$configured_volume'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+  before_hash="$(/usr/bin/shasum "$config" "$source_mount/canary")"
+
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
+    GDRIVE_BACKUP_ANIMATION_APP="$animation_app" \
+    GDRIVE_BACKUP_OPEN_BIN="$FAKE_BIN/open" \
+    FAKE_CONFIRM_RESPONSE=yes \
+    FAKE_CANDIDATE_MOUNT="$source_mount" \
+    FAKE_APFS_CREATED_MARKER="$marker" \
+    FAKE_CREATED_MOUNT="$volumes_root/Unexpected Created Volume" \
+    "$@"
+  status=$?
+  after_hash="$(/usr/bin/shasum "$config" "$source_mount/canary")"
+
+  if [[ "$status" == "69" && "$before_hash" == "$after_hash" &&
+        ! -e "$marker" && ! -s "$OPEN_LOG" && ! -s "$OSASCRIPT_LOG" ]] &&
+    grep -Fq 'apfs list -plist disk99' "$DISKUTIL_LOG" &&
+    ! grep -Eq 'apfs (addVolume|delete|erase|partition|rename|unmount)' "$DISKUTIL_LOG" 2>/dev/null &&
+    { [[ ! -e "$RCLONE_LOG" ]] || ! grep -Eq '^(config|backend|copy)( |$)' "$RCLONE_LOG"; }; then
+    pass "$name"
+  else
+    fail "$name (status $status)"
+  fi
+}
+
+test_apfs_inventory_rejects_duplicate_requested_container_among_foreign_containers() {
+  assert_invalid_named_apfs_inventory_is_rejected \
+    "APFS inventory rejects a duplicate requested container among foreign containers" \
+    FAKE_EXISTING_APFS_UUID_1= \
+    FAKE_APFS_FOREIGN_CONTAINER_REFERENCE=disk100 \
+    FAKE_APFS_DUPLICATE_REQUESTED_CONTAINER=1
+}
+
+test_apfs_inventory_ignores_exact_name_in_foreign_container() {
+  local name="APFS inventory ignores an exact-name volume in a foreign container"
+  local volumes_root configured_volume source_mount created_mount config marker output
+  local status saved_uuid add_count copy_count
+  prepare_test_environment
+  volumes_root="$TEST_HOME/Volumes"
+  configured_volume="$volumes_root/Stale Backup Path"
+  source_mount="$volumes_root/TOSHIBA_4TB"
+  created_mount="$volumes_root/GoogleDrive-Backup"
+  config="$TEST_HOME/foreign-container.conf"
+  marker="$TEST_HOME/apfs-created"
+  output="$TEST_HOME/foreign-container-output.log"
+  mkdir -p "$source_mount"
+  printf '%s\n' 'source-canary' >"$source_mount/canary"
+  cat >"$config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$configured_volume'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
+    GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1 \
+    FAKE_CANDIDATE_MOUNT="$source_mount" \
+    FAKE_EXISTING_APFS_UUID_1= \
+    FAKE_APFS_FOREIGN_CONTAINER_REFERENCE=disk100 \
+    FAKE_APFS_FOREIGN_VOLUME_UUID=deadbeef-dead-4eef-8bad-deadbeefcafe \
+    FAKE_APFS_CREATED_MARKER="$marker" \
+    FAKE_CREATED_MOUNT="$created_mount" \
+    FAKE_NEW_APFS_UUID=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb \
+    >"$output" 2>&1
+  status=$?
+  saved_uuid="$(/bin/bash -c 'source "$1"; printf "%s" "${GDRIVE_BACKUP_VOLUME_UUID:-}"' _ "$config")"
+  add_count="$(grep -Fxc 'apfs addVolume disk99 APFS GoogleDrive-Backup' "$DISKUTIL_LOG" 2>/dev/null || true)"
+  copy_count="$(grep -Fc "$created_mount/My Drive" "$RCLONE_LOG" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" && "$saved_uuid" == "BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB" &&
+        "$add_count" == "1" && "$copy_count" == "1" &&
+        "$(<"$source_mount/canary")" == "source-canary" && ! -s "$OSASCRIPT_LOG" ]] &&
+    ! grep -Fqi 'deadbeef-dead-4eef-8bad-deadbeefcafe' "$config" "$output" \
+      "$TEST_HOME/backup.log"; then
+    pass "$name"
+  else
+    fail "$name (status $status, uuid $saved_uuid, add/copies $add_count/$copy_count)"
+  fi
+}
+
+test_exact_name_apfs_inventory_rejects_missing_uuid() {
+  assert_invalid_named_apfs_inventory_is_rejected \
+    "exact-name APFS inventory rejects a record without APFSVolumeUUID" \
+    FAKE_EXISTING_APFS_UUID_1= \
+    FAKE_EXISTING_APFS_OMIT_UUID_1=1 \
+    FAKE_EXISTING_APFS_NAME_1=GoogleDrive-Backup
+}
+
+test_exact_name_apfs_inventory_rejects_malformed_uuid() {
+  assert_invalid_named_apfs_inventory_is_rejected \
+    "exact-name APFS inventory rejects a malformed APFSVolumeUUID" \
+    FAKE_EXISTING_APFS_UUID_1=not-a-volume-uuid \
+    FAKE_EXISTING_APFS_NAME_1=GoogleDrive-Backup
 }
 
 assert_existing_named_apfs_metadata_is_rejected() {
@@ -2135,10 +2363,11 @@ CONFIG
   fi
 }
 
-test_auto_created_apfs_volume_avoids_privileged_race_duplicate() {
-  local name="APFS creation rechecks for a same-name volume before privileged fallback"
+test_auto_created_apfs_volume_guards_inside_privileged_phase() {
+  local name="APFS creation guards again after authorization before privileged add"
   local volumes_root configured_volume candidate_mount appeared_mount config
-  local created_marker appeared_marker status saved_uuid add_count copy_count
+  local created_marker appeared_marker output canary first_status second_status
+  local saved_uuid add_count copy_count
   prepare_test_environment
   volumes_root="$TEST_HOME/Volumes"
   configured_volume="$volumes_root/Missing Configured Backup"
@@ -2147,7 +2376,10 @@ test_auto_created_apfs_volume_avoids_privileged_race_duplicate() {
   config="$TEST_HOME/pre-admin-race.conf"
   created_marker="$TEST_HOME/apfs-created"
   appeared_marker="$TEST_HOME/apfs-appeared"
+  output="$TEST_HOME/admin-race-output.log"
+  canary="$candidate_mount/canary"
   mkdir -p "$candidate_mount"
+  printf '%s\n' 'source-canary' >"$canary"
   cat >"$config" <<CONFIG
 GDRIVE_BACKUP_TARGET=apfs
 GDRIVE_BACKUP_VOLUME='$configured_volume'
@@ -2165,26 +2397,98 @@ CONFIG
     FAKE_CANDIDATE_MOUNT="$candidate_mount" \
     FAKE_EXISTING_APFS_UUID_1= \
     FAKE_UNPRIVILEGED_ADD_STATUS=1 \
-    FAKE_APFS_APPEAR_AFTER_LIST_COUNT=7 \
+    FAKE_ADMIN_PHASE_APPEAR_MARKER="$appeared_marker" \
+    FAKE_ADMIN_PHASE_APPEAR_MOUNT="$appeared_mount" \
     FAKE_APFS_APPEARED_MARKER="$appeared_marker" \
-    FAKE_APPEARED_MOUNT="$appeared_mount" \
-    FAKE_APPEARED_APFS_UUID=cccccccc-cccc-cccc-cccc-cccccccccccc \
-    FAKE_NAMED_UUID=cccccccc-cccc-cccc-cccc-cccccccccccc \
+    FAKE_APPEARED_APFS_UUID=feedface-feed-4ace-8bad-c0ffeec0ffee \
+    FAKE_NAMED_UUID=feedface-feed-4ace-8bad-c0ffeec0ffee \
     FAKE_NAMED_MOUNT="$appeared_mount" \
     FAKE_NAMED_CONTAINER=disk99 \
     FAKE_APFS_CREATED_MARKER="$created_marker" \
-    FAKE_CREATED_MOUNT="$volumes_root/Unexpected Created Volume"
-  status=$?
+    FAKE_CREATED_MOUNT="$volumes_root/Unexpected Created Volume" \
+    >"$output" 2>&1
+  first_status=$?
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=manual \
+    FAKE_NAMED_UUID=feedface-feed-4ace-8bad-c0ffeec0ffee \
+    FAKE_NAMED_MOUNT="$appeared_mount" \
+    FAKE_NAMED_CONTAINER=disk99 \
+    >>"$output" 2>&1
+  second_status=$?
   saved_uuid="$(/bin/bash -c 'source "$1"; printf "%s" "${GDRIVE_BACKUP_VOLUME_UUID:-}"' _ "$config")"
   add_count="$(grep -Fc 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null || true)"
   copy_count="$(grep -Fc "$appeared_mount/My Drive" "$RCLONE_LOG" 2>/dev/null || true)"
 
-  if [[ "$status" == "0" && "$saved_uuid" == "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC" &&
-        "$add_count" == "1" && "$copy_count" == "1" &&
-        -e "$appeared_marker" && ! -e "$created_marker" && ! -s "$OSASCRIPT_LOG" ]]; then
+  if [[ "$first_status" == "0" && "$second_status" == "0" &&
+        "$saved_uuid" == "FEEDFACE-FEED-4ACE-8BAD-C0FFEEC0FFEE" &&
+        "$add_count" == "1" && "$copy_count" == "2" &&
+        -e "$appeared_marker" && ! -e "$created_marker" &&
+        "$(<"$canary")" == "source-canary" &&
+        "$(/usr/bin/wc -l <"$OSASCRIPT_LOG" | /usr/bin/tr -d '[:space:]')" == "1" ]] &&
+    ! grep -Fqi 'feedface-feed-4ace-8bad-c0ffeec0ffee' \
+      "$output" "$TEST_HOME/backup.log" "$OSASCRIPT_LOG"; then
     pass "$name"
   else
-    fail "$name (status $status, uuid $saved_uuid, add/copies $add_count/$copy_count)"
+    fail "$name (statuses $first_status/$second_status, uuid $saved_uuid, add/copies $add_count/$copy_count)"
+  fi
+}
+
+test_privileged_apfs_guard_rejects_numeric_family_race() {
+  local name="privileged APFS guard blocks a numeric-family volume appearing during authorization"
+  local volumes_root configured_volume candidate_mount appeared_mount config
+  local created_marker appeared_marker before_hash after_hash status add_count
+  prepare_test_environment
+  volumes_root="$TEST_HOME/Volumes"
+  configured_volume="$volumes_root/Missing Configured Backup"
+  candidate_mount="$volumes_root/TOSHIBA_4TB"
+  appeared_mount="$volumes_root/GoogleDrive-Backup 1"
+  config="$TEST_HOME/admin-family-race.conf"
+  created_marker="$TEST_HOME/apfs-created"
+  appeared_marker="$TEST_HOME/apfs-appeared"
+  mkdir -p "$candidate_mount"
+  printf '%s\n' 'source-canary' >"$candidate_mount/canary"
+  cat >"$config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$configured_volume'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+  before_hash="$(/usr/bin/shasum "$config" "$candidate_mount/canary")"
+
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
+    GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1 \
+    FAKE_CANDIDATE_MOUNT="$candidate_mount" \
+    FAKE_EXISTING_APFS_UUID_1= \
+    FAKE_UNPRIVILEGED_ADD_STATUS=1 \
+    FAKE_ADMIN_PHASE_APPEAR_MARKER="$appeared_marker" \
+    FAKE_ADMIN_PHASE_APPEAR_MOUNT="$appeared_mount" \
+    FAKE_APFS_APPEARED_MARKER="$appeared_marker" \
+    FAKE_APPEARED_APFS_UUID=cccccccc-cccc-4ccc-8ccc-cccccccccccc \
+    FAKE_APPEARED_APFS_NAME='GoogleDrive-Backup 1' \
+    FAKE_APFS_CREATED_MARKER="$created_marker" \
+    FAKE_CREATED_MOUNT="$volumes_root/Unexpected Created Volume"
+  status=$?
+  after_hash="$(/usr/bin/shasum "$config" "$candidate_mount/canary")"
+  add_count="$(grep -Fc 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null || true)"
+
+  if [[ "$status" == "69" && "$before_hash" == "$after_hash" &&
+        "$add_count" == "1" && -e "$appeared_marker" &&
+        ! -e "$created_marker" &&
+        "$(/usr/bin/wc -l <"$OSASCRIPT_LOG" | /usr/bin/tr -d '[:space:]')" == "1" ]] &&
+    { [[ ! -e "$RCLONE_LOG" ]] || ! grep -Eq '^(config|backend|copy)( |$)' "$RCLONE_LOG"; } &&
+    grep -Fqi 'numerisch' "$TEST_HOME/backup.log" &&
+    grep -Fqi 'explizit' "$TEST_HOME/backup.log"; then
+    pass "$name"
+  else
+    fail "$name (status $status, add $add_count)"
   fi
 }
 
@@ -2401,6 +2705,7 @@ test_saved_apfs_uuid_accepts_a_mounted_apfs_image
 test_malformed_saved_apfs_uuid_is_rejected
 test_saved_apfs_uuid_rejects_parent_component_escape
 test_saved_apfs_uuid_rejects_destination_symlink_escape
+test_saved_apfs_uuid_rejects_in_volume_destination_symlink
 test_saved_apfs_uuid_accepts_nested_destination
 test_saved_apfs_uuid_revalidates_before_creating_destination
 test_saved_apfs_uuid_rejects_copy_child_symlink_escape
@@ -2408,7 +2713,11 @@ test_saved_apfs_uuid_rejects_deep_tree_symlink_escape
 test_saved_apfs_uuid_scans_history_once_and_current_version_paths_per_copy
 test_apfs_tree_device_validation_streams_its_inventory
 test_existing_named_apfs_volume_is_recovered_idempotently
-test_renamed_prefix_apfs_volume_is_never_recovered
+test_numeric_family_apfs_volumes_block_setup_creation
+test_apfs_inventory_rejects_duplicate_requested_container_among_foreign_containers
+test_apfs_inventory_ignores_exact_name_in_foreign_container
+test_exact_name_apfs_inventory_rejects_missing_uuid
+test_exact_name_apfs_inventory_rejects_malformed_uuid
 test_existing_named_apfs_volume_rejects_info_name_mismatch
 test_existing_named_apfs_volume_rejects_info_container_mismatch
 test_existing_named_apfs_volume_rejects_internal_media
@@ -2428,7 +2737,8 @@ test_apfs_creation_rechecks_inventory_after_confirmation
 test_auto_created_apfs_volume_uses_the_new_uuid_and_mount_path
 test_auto_created_apfs_volume_rejects_ambiguous_new_uuids
 test_auto_created_apfs_volume_recovers_privileged_partial_failure
-test_auto_created_apfs_volume_avoids_privileged_race_duplicate
+test_auto_created_apfs_volume_guards_inside_privileged_phase
+test_privileged_apfs_guard_rejects_numeric_family_race
 test_saved_apfs_uuid_blocks_retention_after_copy_swap
 test_saved_apfs_uuid_revalidates_before_each_retention_trash
 test_saved_apfs_uuid_blocks_retention_fallback_move_after_swap

@@ -648,6 +648,31 @@ canonical_existing_ancestor() {
   canonical_existing_directory "$path"
 }
 
+path_has_existing_symlink_component() {
+  local root="${1%/}"
+  local path="$2"
+  local relative component current
+
+  [[ -n "$root" && "$path" == "$root"/* ]] || return 1
+  relative="${path#"$root"/}"
+  current="$root"
+  while [[ -n "$relative" ]]; do
+    component="${relative%%/*}"
+    if [[ "$relative" == */* ]]; then
+      relative="${relative#*/}"
+    else
+      relative=""
+    fi
+    [[ -n "$component" ]] || return 0
+    current="${current%/}/$component"
+    if [[ -L "$current" ]]; then
+      return 0
+    fi
+    [[ -e "$current" ]] || return 1
+  done
+  return 1
+}
+
 path_is_on_encrypted_volume() {
   local path="$1"
   local existing_real device
@@ -740,6 +765,10 @@ resolve_configured_apfs_volume() {
         ;;
     esac
     resolved_destination="${resolved_mount}${destination_suffix}"
+    if path_has_existing_symlink_component "$resolved_mount" "$resolved_destination"; then
+      log "FEHLER: Das APFS-Ziel darf keine symbolisch verknuepfte Pfadkomponente enthalten."
+      return 69
+    fi
     if ! existing_ancestor="$(canonical_existing_ancestor "$resolved_destination")"; then
       log "FEHLER: Das APFS-Ziel kann nicht sicher aufgeloest werden."
       return 69
@@ -787,6 +816,10 @@ validate_configured_apfs_paths() {
         return 1
         ;;
     esac
+    if path_has_existing_symlink_component "$APFS_VOLUME_REAL" "$path"; then
+      log "FEHLER: APFS-Pfad enthaelt eine symbolisch verknuepfte Pfadkomponente."
+      return 1
+    fi
     probe="$path"
     if [[ ( -e "$probe" || -L "$probe" ) && ! -d "$probe" ]]; then
       probe="$(/usr/bin/dirname "$probe")"
@@ -2811,7 +2844,7 @@ validate_setup_source_mount() {
 capture_named_apfs_volume_uuids() {
   local container="$1"
   local output_file="$2"
-  local plist_data json_data uuid invalid_uuid=0
+  local plist_data json_data record_kind uuid invalid_uuid=0 numeric_family=0
   local unsorted_file
 
   unsorted_file="$(mktemp "${TMPDIR:-/tmp}/gdrive-apfs-uuids.XXXXXX")" ||
@@ -2827,13 +2860,22 @@ capture_named_apfs_volume_uuids() {
             error("requested APFS container is not unique")
           else
             $containers[0].Volumes[]? |
-            select(.Name == $name) |
-            if (has("APFSVolumeUUID") and
-                ((.APFSVolumeUUID | type) == "string") and
-                ((.APFSVolumeUUID | length) > 0)) then
-              .APFSVolumeUUID
+            select((.Name | type) == "string") |
+            .Name as $volume_name |
+            if $volume_name == $name then
+              if (has("APFSVolumeUUID") and
+                  ((.APFSVolumeUUID | type) == "string") and
+                  ((.APFSVolumeUUID | length) > 0)) then
+                "exact\t" + .APFSVolumeUUID
+              else
+                error("exact-name APFS volume has no valid UUID field")
+              end
+            elif (($volume_name | startswith($name + " ")) and
+                  (($volume_name | ltrimstr($name + " ")) |
+                    test("^[0-9]+$"))) then
+              "numeric-family\t"
             else
-              error("exact-name APFS volume has no valid UUID field")
+              empty
             end
           end' >"$unsorted_file"; then
     cleanup_temp_file "$unsorted_file"
@@ -2841,17 +2883,29 @@ capture_named_apfs_volume_uuids() {
   fi
 
   : >"$output_file"
-  while IFS= read -r uuid; do
-    [[ -n "$uuid" ]] || continue
-    if [[ ! "$uuid" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
-      invalid_uuid=1
-      continue
-    fi
-    normalized_apfs_uuid "$uuid" >>"$output_file"
-    printf '\n' >>"$output_file"
+  while IFS=$'\t' read -r record_kind uuid; do
+    case "$record_kind" in
+      exact)
+        if [[ ! "$uuid" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
+          invalid_uuid=1
+          continue
+        fi
+        normalized_apfs_uuid "$uuid" >>"$output_file"
+        printf '\n' >>"$output_file"
+        ;;
+      numeric-family)
+        numeric_family=1
+        ;;
+      "") ;;
+      *) invalid_uuid=1 ;;
+    esac
   done <"$unsorted_file"
   cleanup_temp_file "$unsorted_file"
   [[ "$invalid_uuid" == "0" ]] || return 1
+  if [[ "$numeric_family" == "1" ]]; then
+    log "FEHLER: Numerisch umbenannte APFS-Volumes aus derselben Namensfamilie wurden gefunden. Waehle das gewuenschte Volume explizit aus; es wurde nichts automatisch gebunden oder angelegt."
+    return 2
+  fi
   # Keep duplicate records visible: even a repeated UUID under the exact name
   # is ambiguous inventory and must be rejected by the caller's record count.
   /usr/bin/sort -o "$output_file" "$output_file"
@@ -3133,6 +3187,7 @@ create_apfs_backup_volume() {
   local container="$1"
   local before_file="$2"
   local after_file candidate_uuid detect_status admin_status=0
+  local admin_guard
 
   CREATED_APFS_VOLUME_UUID=""
   # The caller's baseline was captured after confirmation. Close the remaining
@@ -3217,11 +3272,71 @@ create_apfs_backup_volume() {
       ;;
   esac
 
-  "$OSASCRIPT_BIN" - "$container" "$BACKUP_VOLUME_NAME" <<'OSA' || admin_status=$?
+  # Authorization can remain open indefinitely. Run the final inventory guard
+  # only after macOS grants it, in the same privileged shell that performs the
+  # add, so a volume appearing in the authorization window blocks mutation.
+  # Expansion is intentionally deferred to that root shell.
+  # shellcheck disable=SC2016
+  admin_guard='
+[ "$#" -eq 3 ] || exit 70
+diskutil_bin=$1
+container_ref=$2
+volume_name=$3
+case "$container_ref" in
+  disk*) container_digits=${container_ref#disk} ;;
+  *) exit 70 ;;
+esac
+case "$container_digits" in
+  ""|*[!0-9]*) exit 70 ;;
+esac
+[ -n "$volume_name" ] || exit 70
+inventory=$("$diskutil_bin" apfs list -plist "$container_ref" 2>/dev/null) || exit 70
+container_count=$(printf "%s" "$inventory" | /usr/bin/plutil -extract Containers raw -o - - 2>/dev/null) || exit 70
+case "$container_count" in
+  ""|*[!0-9]*) exit 70 ;;
+esac
+container_index=0
+requested_container_count=0
+requested_container_index=
+while [ "$container_index" -lt "$container_count" ]; do
+  candidate_container=$(printf "%s" "$inventory" | /usr/bin/plutil -extract "Containers.${container_index}.ContainerReference" raw -o - - 2>/dev/null) || exit 70
+  if [ "$candidate_container" = "$container_ref" ]; then
+    requested_container_count=$((requested_container_count + 1))
+    requested_container_index=$container_index
+  fi
+  container_index=$((container_index + 1))
+done
+[ "$requested_container_count" -eq 1 ] || exit 71
+volume_count=$(printf "%s" "$inventory" | /usr/bin/plutil -extract "Containers.${requested_container_index}.Volumes" raw -o - - 2>/dev/null) || exit 70
+case "$volume_count" in
+  ""|*[!0-9]*) exit 70 ;;
+esac
+volume_index=0
+family_prefix="${volume_name} "
+while [ "$volume_index" -lt "$volume_count" ]; do
+  candidate_name=$(printf "%s" "$inventory" | /usr/bin/plutil -extract "Containers.${requested_container_index}.Volumes.${volume_index}.Name" raw -o - - 2>/dev/null) || exit 70
+  case "$candidate_name" in
+    "$volume_name") exit 72 ;;
+    "$family_prefix"*)
+      numeric_suffix=${candidate_name#"$family_prefix"}
+      case "$numeric_suffix" in
+        ""|*[!0-9]*) ;;
+        *) exit 73 ;;
+      esac
+      ;;
+  esac
+  volume_index=$((volume_index + 1))
+done
+exec "$diskutil_bin" apfs addVolume "$container_ref" APFS "$volume_name" >/dev/null 2>&1
+'
+  "$OSASCRIPT_BIN" - "$admin_guard" "$container" "$BACKUP_VOLUME_NAME" \
+    >/dev/null 2>&1 <<'OSA' || admin_status=$?
 on run argv
-  set containerRef to item 1 of argv
-  set volumeName to item 2 of argv
-  set cmd to "/usr/sbin/diskutil apfs addVolume " & quoted form of containerRef & " APFS " & quoted form of volumeName
+  set guardScript to item 1 of argv
+  set containerRef to item 2 of argv
+  set volumeName to item 3 of argv
+  set diskutilPath to "/usr/sbin/diskutil"
+  set cmd to "/bin/sh -c " & quoted form of guardScript & " gdrive-apfs-admin " & quoted form of diskutilPath & " " & quoted form of containerRef & " " & quoted form of volumeName
   do shell script cmd with administrator privileges
 end run
 OSA
