@@ -37,6 +37,7 @@
 @interface UpdateTestCenter : NSObject
 @property(nonatomic, strong) UpdateTestSettings *settings;
 @property(nonatomic) NSInteger permissionCalls;
+@property(nonatomic) UNAuthorizationOptions requestedOptions;
 @property(nonatomic, strong) UNNotificationRequest *request;
 @property(nonatomic, copy) void (^delivery)(NSError *);
 @property(nonatomic, copy) void (^settingsCompletion)(UNNotificationSettings *);
@@ -51,7 +52,8 @@
     else completion((id)self.settings);
 }
 - (void)requestAuthorizationWithOptions:(UNAuthorizationOptions)options completionHandler:(void (^)(BOOL, NSError *))completion {
-    (void)options; self.permissionCalls++;
+    self.requestedOptions = options;
+    self.permissionCalls++;
     if (self.deferAuthorization) self.authorizationCompletion = completion;
     else completion(NO, nil);
 }
@@ -276,9 +278,22 @@ static void TestAutomaticUI(NSDictionary *menuSnapshot) {
     delegate.center.settings.authorizationStatus = UNAuthorizationStatusAuthorized;
     delegate.center.authorizationCompletion(YES, nil); DrainMainQueue();
     Assert(checker.calls == beforePermission + 1, @"permission response resumes one due automatic check");
+    NSInteger permissionCallsAfterUpdateGrant = delegate.center.permissionCalls;
+    [delegate requestBackupNotificationAuthorizationIfNeededForConfig:@{
+        @"GDRIVE_BACKUP_SCHEDULE": @"daily", @"GDRIVE_BACKUP_NOTIFY_FAILURES": @"1"
+    }];
+    DrainMainQueue();
+    Assert((delegate.center.requestedOptions & (UNAuthorizationOptionAlert | UNAuthorizationOptionSound)) ==
+               (UNAuthorizationOptionAlert | UNAuthorizationOptionSound) &&
+           delegate.center.permissionCalls == permissionCallsAfterUpdateGrant,
+           @"update-first authorization preserves later backup alert sounds without repeat prompts");
     checker.pendingCompletion(@{@"status": @"updateAvailable", @"version": @"2.4.0"});
     Assert([delegate.center.request.content.userInfo[@"version"] isEqual:@"2.4.0"],
            @"granting first opt-in permission does not lose the first release notice");
+    Assert(!delegate.center.request.content.sound &&
+           delegate.center.request.content.interruptionLevel == UNNotificationInterruptionLevelPassive &&
+           [delegate presentationOptionsForNotificationCategoryIdentifier:@"GDT_UPDATE_AVAILABLE"] == UNNotificationPresentationOptionList,
+           @"app-wide sound authorization leaves update content passive and silent");
     UNNotificationRequest *failedNotice = delegate.center.request;
     delegate.center.delivery([NSError errorWithDomain:@"UpdateTestDelivery" code:1 userInfo:nil]);
     DrainMainQueue();

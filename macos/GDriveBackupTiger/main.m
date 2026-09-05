@@ -6024,7 +6024,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                     finishAuthorization();
                     return;
                 }
-                [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert
+                // Permission is app-wide; silent update content must not prevent
+                // later backup alerts from using their existing sound behavior.
+                [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert | UNAuthorizationOptionSound
                     completionHandler:^(BOOL granted, NSError *error) {
                         (void)granted; (void)error;
                         finishAuthorization();
