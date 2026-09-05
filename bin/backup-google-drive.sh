@@ -246,6 +246,9 @@ APFS_VOLUME_UUID=""
 APFS_VOLUME_IDENTIFIER=""
 VALIDATED_APFS_VOLUME_PLIST=""
 CREATED_APFS_VOLUME_UUID=""
+SETUP_SOURCE_VOLUME_UUID=""
+SETUP_SOURCE_CONTAINER_UUID=""
+SETUP_SOURCE_PHYSICAL_STORE_UUIDS=""
 VERSION_RUN_ID=""
 TARGET_APPROVED=0
 COPY_INDEX=0
@@ -2816,11 +2819,17 @@ find_setup_candidate() {
   printf '%s\t%s\t%s\n' "$selected_mount" "$selected_container" "$selected_name"
 }
 
-validate_setup_source_mount() {
+capture_setup_source_identity() {
   local source_mount="$1"
   local expected_container="$2"
   local plist_data filesystem mount_point container external writable_media system_image
-  local source_real mount_real
+  local source_real mount_real source_volume_uuid container_plist json_data identity_record
+  local container_uuid physical_store_uuids physical_store_uuid
+  local -a setup_physical_store_uuids=()
+
+  SETUP_SOURCE_VOLUME_UUID=""
+  SETUP_SOURCE_CONTAINER_UUID=""
+  SETUP_SOURCE_PHYSICAL_STORE_UUIDS=""
 
   if ! plist_data="$(run_with_timeout 8 "$DISKUTIL_BIN" info -plist "$source_mount" 2>/dev/null)"; then
     return 1
@@ -2831,14 +2840,83 @@ validate_setup_source_mount() {
   external="$(plist_data_value "$plist_data" RemovableMediaOrExternalDevice || true)"
   writable_media="$(plist_data_value "$plist_data" WritableMedia || true)"
   system_image="$(plist_data_value "$plist_data" SystemImage || true)"
+  source_volume_uuid="$(plist_data_value "$plist_data" VolumeUUID || true)"
   if [[ "$filesystem" != "apfs" || "$container" != "$expected_container" ||
         "$external" != "true" || "$writable_media" != "true" ||
-        "$system_image" != "false" || -z "$mount_point" ]]; then
+        "$system_image" != "false" || -z "$mount_point" ||
+        ! "$source_volume_uuid" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
     return 1
   fi
   source_real="$(canonical_existing_directory "$source_mount")" || return 1
   mount_real="$(canonical_existing_directory "$mount_point")" || return 1
-  [[ "$source_real" == "$mount_real" ]]
+  [[ "$source_real" == "$mount_real" ]] || return 1
+
+  # diskN and APFS container references are session-local handles. Bind the
+  # setup decision to UUIDs from every layer so a newly attached disk cannot
+  # inherit a stale handle while the confirmation or password dialog is open.
+  if ! container_plist="$(run_with_timeout 8 "$DISKUTIL_BIN" apfs list -plist "$expected_container" 2>/dev/null)" ||
+     ! json_data="$(printf '%s' "$container_plist" |
+       /usr/bin/plutil -convert json -o - - 2>/dev/null)" ||
+     ! identity_record="$(printf '%s' "$json_data" |
+       jq -er --arg container "$expected_container" \
+         --arg source_uuid "$(normalized_apfs_uuid "$source_volume_uuid")" '
+          [.Containers[]? | select(.ContainerReference == $container)] as $containers |
+          if ($containers | length) != 1 then
+            error("requested APFS container is not unique")
+          else
+            $containers[0] as $container_record |
+            ($container_record.APFSContainerUUID // "") as $container_uuid |
+            ($container_record.PhysicalStores // []) as $stores |
+            if (($container_uuid | type) != "string") or
+               (($container_uuid | length) == 0) or
+               (($stores | type) != "array") or
+               (($stores | length) == 0) or
+               (any($stores[]; ((.DiskUUID // "") | type) != "string" or
+                              ((.DiskUUID // "") | length) == 0)) or
+               (($stores | map(.DiskUUID | ascii_upcase) | unique | length) !=
+                ($stores | length)) or
+               ([ $container_record.Volumes[]? |
+                  select(((.APFSVolumeUUID // "") | type) == "string") |
+                  select((.APFSVolumeUUID | ascii_upcase) == $source_uuid) ] |
+                length) != 1 then
+              error("APFS source identity is incomplete or ambiguous")
+            else
+              [($container_uuid | ascii_upcase),
+               ($stores | map(.DiskUUID | ascii_upcase) | sort | join(","))] |
+              @tsv
+            end
+          end' 2>/dev/null)"; then
+    return 1
+  fi
+  IFS=$'\t' read -r container_uuid physical_store_uuids <<<"$identity_record"
+  if [[ ! "$container_uuid" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ||
+        -z "$physical_store_uuids" ]]; then
+    return 1
+  fi
+  IFS=',' read -ra setup_physical_store_uuids <<<"$physical_store_uuids"
+  for physical_store_uuid in "${setup_physical_store_uuids[@]}"; do
+    if [[ ! "$physical_store_uuid" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
+      return 1
+    fi
+  done
+
+  SETUP_SOURCE_VOLUME_UUID="$(normalized_apfs_uuid "$source_volume_uuid")"
+  SETUP_SOURCE_CONTAINER_UUID="$(normalized_apfs_uuid "$container_uuid")"
+  SETUP_SOURCE_PHYSICAL_STORE_UUIDS="$(normalized_apfs_uuid "$physical_store_uuids")"
+  return 0
+}
+
+setup_source_identity_matches() {
+  local source_mount="$1"
+  local expected_container="$2"
+  local expected_volume_uuid="$3"
+  local expected_container_uuid="$4"
+  local expected_physical_store_uuids="$5"
+
+  capture_setup_source_identity "$source_mount" "$expected_container" &&
+    [[ "$SETUP_SOURCE_VOLUME_UUID" == "$expected_volume_uuid" &&
+       "$SETUP_SOURCE_CONTAINER_UUID" == "$expected_container_uuid" &&
+       "$SETUP_SOURCE_PHYSICAL_STORE_UUIDS" == "$expected_physical_store_uuids" ]]
 }
 
 capture_named_apfs_volume_uuids() {
@@ -3186,6 +3264,10 @@ confirm_apfs_volume_creation() {
 create_apfs_backup_volume() {
   local container="$1"
   local before_file="$2"
+  local source_mount="$3"
+  local expected_source_volume_uuid="$4"
+  local expected_source_container_uuid="$5"
+  local expected_source_physical_store_uuids="$6"
   local after_file candidate_uuid detect_status admin_status=0
   local admin_guard
 
@@ -3214,6 +3296,13 @@ create_apfs_backup_volume() {
       return 1
       ;;
   esac
+  if ! setup_source_identity_matches \
+    "$source_mount" "$container" \
+    "$expected_source_volume_uuid" "$expected_source_container_uuid" \
+    "$expected_source_physical_store_uuids"; then
+    log "FEHLER: Die stabile Identitaet des APFS-Ausgangscontainers hat sich unmittelbar vor dem Anlegen geaendert. Es wurde kein Volume angelegt."
+    return 1
+  fi
   if "$DISKUTIL_BIN" apfs addVolume "$container" APFS "$BACKUP_VOLUME_NAME"; then
     return 0
   fi
@@ -3278,10 +3367,16 @@ create_apfs_backup_volume() {
   # Expansion is intentionally deferred to that root shell.
   # shellcheck disable=SC2016
   admin_guard='
-[ "$#" -eq 3 ] || exit 70
+[ "$#" -eq 6 ] || exit 70
 diskutil_bin=$1
 container_ref=$2
 volume_name=$3
+expected_source_volume_uuid=$4
+expected_container_uuid=$5
+expected_physical_store_uuids=$6
+is_uuid() {
+  printf "%s\n" "$1" | /usr/bin/grep -Eq "^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$"
+}
 case "$container_ref" in
   disk*) container_digits=${container_ref#disk} ;;
   *) exit 70 ;;
@@ -3290,6 +3385,17 @@ case "$container_digits" in
   ""|*[!0-9]*) exit 70 ;;
 esac
 [ -n "$volume_name" ] || exit 70
+is_uuid "$expected_source_volume_uuid" || exit 70
+is_uuid "$expected_container_uuid" || exit 70
+case "$expected_physical_store_uuids" in
+  ""|*[!0-9A-Fa-f,-]*) exit 70 ;;
+esac
+old_ifs=$IFS
+IFS=,
+for expected_store_uuid in $expected_physical_store_uuids; do
+  is_uuid "$expected_store_uuid" || exit 70
+done
+IFS=$old_ifs
 inventory=$("$diskutil_bin" apfs list -plist "$container_ref" 2>/dev/null) || exit 70
 container_count=$(printf "%s" "$inventory" | /usr/bin/plutil -extract Containers raw -o - - 2>/dev/null) || exit 70
 case "$container_count" in
@@ -3307,14 +3413,45 @@ while [ "$container_index" -lt "$container_count" ]; do
   container_index=$((container_index + 1))
 done
 [ "$requested_container_count" -eq 1 ] || exit 71
+current_container_uuid=$(printf "%s" "$inventory" | /usr/bin/plutil -extract "Containers.${requested_container_index}.APFSContainerUUID" raw -o - - 2>/dev/null) || exit 70
+is_uuid "$current_container_uuid" || exit 70
+current_container_uuid=$(printf "%s" "$current_container_uuid" | /usr/bin/tr "[:lower:]" "[:upper:]")
+expected_container_uuid=$(printf "%s" "$expected_container_uuid" | /usr/bin/tr "[:lower:]" "[:upper:]")
+[ "$current_container_uuid" = "$expected_container_uuid" ] || exit 74
+physical_store_count=$(printf "%s" "$inventory" | /usr/bin/plutil -extract "Containers.${requested_container_index}.PhysicalStores" raw -o - - 2>/dev/null) || exit 70
+case "$physical_store_count" in
+  ""|*[!0-9]*) exit 70 ;;
+esac
+[ "$physical_store_count" -gt 0 ] || exit 70
+physical_store_index=0
+current_physical_store_lines=
+while [ "$physical_store_index" -lt "$physical_store_count" ]; do
+  current_store_uuid=$(printf "%s" "$inventory" | /usr/bin/plutil -extract "Containers.${requested_container_index}.PhysicalStores.${physical_store_index}.DiskUUID" raw -o - - 2>/dev/null) || exit 70
+  is_uuid "$current_store_uuid" || exit 70
+  current_store_uuid=$(printf "%s" "$current_store_uuid" | /usr/bin/tr "[:lower:]" "[:upper:]")
+  current_physical_store_lines="${current_physical_store_lines}${current_store_uuid}
+"
+  physical_store_index=$((physical_store_index + 1))
+done
+current_physical_store_uuids=$(printf "%s" "$current_physical_store_lines" | /usr/bin/sort | /usr/bin/awk "NF { if (seen[\$0]++) exit 2; values = values separator \$0; separator = \",\" } END { print values }") || exit 70
+expected_physical_store_uuids=$(printf "%s" "$expected_physical_store_uuids" | /usr/bin/tr "[:lower:]" "[:upper:]")
+[ "$current_physical_store_uuids" = "$expected_physical_store_uuids" ] || exit 74
 volume_count=$(printf "%s" "$inventory" | /usr/bin/plutil -extract "Containers.${requested_container_index}.Volumes" raw -o - - 2>/dev/null) || exit 70
 case "$volume_count" in
   ""|*[!0-9]*) exit 70 ;;
 esac
 volume_index=0
 family_prefix="${volume_name} "
+source_volume_match_count=0
 while [ "$volume_index" -lt "$volume_count" ]; do
   candidate_name=$(printf "%s" "$inventory" | /usr/bin/plutil -extract "Containers.${requested_container_index}.Volumes.${volume_index}.Name" raw -o - - 2>/dev/null) || exit 70
+  candidate_uuid=$(printf "%s" "$inventory" | /usr/bin/plutil -extract "Containers.${requested_container_index}.Volumes.${volume_index}.APFSVolumeUUID" raw -o - - 2>/dev/null) || exit 70
+  is_uuid "$candidate_uuid" || exit 70
+  candidate_uuid=$(printf "%s" "$candidate_uuid" | /usr/bin/tr "[:lower:]" "[:upper:]")
+  expected_source_volume_uuid=$(printf "%s" "$expected_source_volume_uuid" | /usr/bin/tr "[:lower:]" "[:upper:]")
+  if [ "$candidate_uuid" = "$expected_source_volume_uuid" ]; then
+    source_volume_match_count=$((source_volume_match_count + 1))
+  fi
   case "$candidate_name" in
     "$volume_name") exit 72 ;;
     "$family_prefix"*)
@@ -3327,20 +3464,34 @@ while [ "$volume_index" -lt "$volume_count" ]; do
   esac
   volume_index=$((volume_index + 1))
 done
+[ "$source_volume_match_count" -eq 1 ] || exit 74
 exec "$diskutil_bin" apfs addVolume "$container_ref" APFS "$volume_name" >/dev/null 2>&1
 '
   "$OSASCRIPT_BIN" - "$admin_guard" "$container" "$BACKUP_VOLUME_NAME" \
+    "$expected_source_volume_uuid" "$expected_source_container_uuid" \
+    "$expected_source_physical_store_uuids" \
     >/dev/null 2>&1 <<'OSA' || admin_status=$?
 on run argv
   set guardScript to item 1 of argv
   set containerRef to item 2 of argv
   set volumeName to item 3 of argv
+  set sourceVolumeUUID to item 4 of argv
+  set containerUUID to item 5 of argv
+  set physicalStoreUUIDs to item 6 of argv
   set diskutilPath to "/usr/sbin/diskutil"
-  set cmd to "/bin/sh -c " & quoted form of guardScript & " gdrive-apfs-admin " & quoted form of diskutilPath & " " & quoted form of containerRef & " " & quoted form of volumeName
+  set cmd to "/bin/sh -c " & quoted form of guardScript & " gdrive-apfs-admin " & quoted form of diskutilPath & " " & quoted form of containerRef & " " & quoted form of volumeName & " " & quoted form of sourceVolumeUUID & " " & quoted form of containerUUID & " " & quoted form of physicalStoreUUIDs
   do shell script cmd with administrator privileges
 end run
 OSA
   if [[ "$admin_status" != "0" ]]; then
+    if [[ "$admin_status" == "74" ]] ||
+       ! setup_source_identity_matches \
+         "$source_mount" "$container" \
+         "$expected_source_volume_uuid" "$expected_source_container_uuid" \
+         "$expected_source_physical_store_uuids"; then
+      log "FEHLER: Die stabile Identitaet des APFS-Ausgangscontainers hat sich waehrend der Administratorfreigabe geaendert. Es wurde kein Volume angelegt."
+      return 1
+    fi
     # diskutil can create the APFS volume and still report a later mount error.
     # Let the caller compare UUID sets before deciding whether creation failed.
     log "WARNUNG: Der privilegierte APFS-Aufruf meldete Status $admin_status; pruefe die Volume-UUIDs vor einem Abbruch."
@@ -3379,6 +3530,8 @@ ensure_backup_volume() {
   fi
 
   local candidate candidate_status source_mount container source_name named_count
+  local initial_source_volume_uuid initial_source_container_uuid
+  local initial_source_physical_store_uuids
   local fresh_candidate fresh_candidate_status fresh_container
   local fresh_file fresh_count
   local before_file after_file candidate_uuid detect_status resolve_status
@@ -3397,6 +3550,13 @@ ensure_backup_volume() {
   esac
 
   IFS=$'\t' read -r source_mount container source_name <<<"$candidate"
+  if ! capture_setup_source_identity "$source_mount" "$container"; then
+    log "FEHLER: Die stabile Identitaet des APFS-Ausgangscontainers konnte nicht ermittelt werden."
+    return 1
+  fi
+  initial_source_volume_uuid="$SETUP_SOURCE_VOLUME_UUID"
+  initial_source_container_uuid="$SETUP_SOURCE_CONTAINER_UUID"
+  initial_source_physical_store_uuids="$SETUP_SOURCE_PHYSICAL_STORE_UUIDS"
   before_file="$(mktemp "${TMPDIR:-/tmp}/gdrive-apfs-before.XXXXXX")" ||
     return 1
   if ! capture_named_apfs_volume_uuids "$container" "$before_file"; then
@@ -3437,9 +3597,12 @@ ensure_backup_volume() {
     fresh_container="${fresh_container%%$'\t'*}"
   fi
   if [[ "$fresh_candidate_status" != "0" || "$fresh_container" != "$container" ]] ||
-     ! validate_setup_source_mount "$source_mount" "$container"; then
+     ! capture_setup_source_identity "$source_mount" "$container" ||
+     [[ "$SETUP_SOURCE_VOLUME_UUID" != "$initial_source_volume_uuid" ||
+        "$SETUP_SOURCE_CONTAINER_UUID" != "$initial_source_container_uuid" ||
+        "$SETUP_SOURCE_PHYSICAL_STORE_UUIDS" != "$initial_source_physical_store_uuids" ]]; then
     cleanup_temp_file "$before_file"
-    log "FEHLER: Der APFS-Ausgangscontainer hat sich waehrend der Bestaetigung geaendert."
+    log "FEHLER: Die stabile Identitaet des APFS-Ausgangscontainers hat sich waehrend der Bestaetigung geaendert. Es wurde kein Volume angelegt."
     return 1
   fi
   fresh_file="$(mktemp "${TMPDIR:-/tmp}/gdrive-apfs-confirmed.XXXXXX")" || {
@@ -3477,7 +3640,10 @@ ensure_backup_volume() {
   esac
 
   log "Lege APFS-Volume '$BACKUP_VOLUME_NAME' im Container $container an (Ausgangsvolume: $source_mount)."
-  if ! create_apfs_backup_volume "$container" "$before_file"; then
+  if ! create_apfs_backup_volume \
+    "$container" "$before_file" "$source_mount" \
+    "$initial_source_volume_uuid" "$initial_source_container_uuid" \
+    "$initial_source_physical_store_uuids"; then
     cleanup_temp_file "$before_file"
     log "FEHLER: APFS-Volume konnte nicht angelegt werden."
     return 1
