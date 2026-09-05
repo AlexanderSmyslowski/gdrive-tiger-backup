@@ -18,6 +18,7 @@
 #import "UpdateSupport.h"
 #import "Localization.h"
 #import "NetworkMountSupport.h"
+#import "OnboardingSupport.h"
 
 static NSImage *CreateApplicationIcon(void) {
     NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(128, 128)];
@@ -1575,6 +1576,12 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, copy) NSString *setupContextStatusText;
 @property(nonatomic, strong) NSStatusItem *statusItem;
 @property(nonatomic, strong) NSWindow *setupWindow;
+@property(nonatomic, strong) TigerOnboardingView *onboardingView;
+@property(nonatomic) BOOL onboardingMode;
+@property(nonatomic) GDTOnboardingStep onboardingStep;
+@property(nonatomic, copy) NSString *onboardingAutomaticTarget;
+@property(nonatomic, copy) NSString *onboardingManualTarget;
+@property(nonatomic, copy) NSDictionary<NSString *, id> *onboardingReadinessSnapshot;
 @property(nonatomic) BOOL mountedNASRefreshInFlight;
 @property(nonatomic) NSUInteger mountedNASRefreshGeneration;
 @property(nonatomic) BOOL rebuildingSetupWindow;
@@ -5617,6 +5624,221 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     [self showSetupWindow];
 }
 
+- (NSDictionary<NSString *, NSString *> *)onboardingUpdates {
+    return GDTOnboardingConfigurationUpdates(
+        GDTReadConfigDictionary(),
+        self.onboardingAutomaticTarget ?: @"apfs");
+}
+
+- (void)refreshOnboardingSummary {
+    if (!self.onboardingView) {
+        return;
+    }
+    NSDictionary<NSString *, NSString *> *updates = [self onboardingUpdates];
+    NSString *destination = GDTBackupDestinationForConfig(updates);
+    if (!destination.length) {
+        destination = T(self.language ?: @"en", @"overviewUnavailable");
+    }
+    self.onboardingView.automaticDestination = destination;
+    self.onboardingView.manualDestination = self.onboardingManualTarget ?: @"";
+    self.onboardingView.manualDestinationVisible = self.onboardingManualTarget.length > 0;
+    self.onboardingView.scheduleSummary = T(self.language ?: @"en", @"scheduleDaily");
+    self.onboardingView.notificationSummary =
+        T(self.language ?: @"en", @"notifyBackupFailures");
+}
+
+- (void)runOnboardingReadinessCheck {
+    if (!self.onboardingView || self.setupHealthCheckInFlight) {
+        return;
+    }
+    self.setupHealthCheckInFlight = YES;
+    self.onboardingReadinessSnapshot = nil;
+    self.onboardingView.canAdvance = NO;
+    if (!self.setupHealthChecker) {
+        self.setupHealthChecker = [GDTSetupHealthChecker productionChecker];
+    }
+    NSDictionary<NSString *, NSString *> *config = [self onboardingUpdates];
+    GDTSetupHealthChecker *checker = self.setupHealthChecker;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSDictionary<NSString *, id> *snapshot = [checker snapshotForConfig:config];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) strongSelf = weakSelf;
+            if (!strongSelf || !strongSelf.onboardingView) {
+                return;
+            }
+            strongSelf.setupHealthCheckInFlight = NO;
+            strongSelf.onboardingReadinessSnapshot = snapshot ?: @{};
+            [strongSelf.onboardingView applyReadinessSnapshot:snapshot ?: @{}];
+        });
+    });
+}
+
+- (void)onboardingDestinationSelected:(NSString *)target {
+    self.onboardingAutomaticTarget = [target isEqualToString:@"nas"] ? @"nas" : @"apfs";
+    self.onboardingView.canAdvance = self.onboardingAutomaticTarget.length > 0;
+    [self refreshOnboardingSummary];
+}
+
+- (void)advanceOnboarding:(id)sender {
+    (void)sender;
+    if (!self.onboardingView.canAdvance) {
+        return;
+    }
+    if (self.onboardingStep == GDTOnboardingStepDestination) {
+        self.onboardingStep = GDTOnboardingStepReadiness;
+        self.onboardingView.step = self.onboardingStep;
+        [self runOnboardingReadinessCheck];
+        return;
+    }
+    if (self.onboardingStep == GDTOnboardingStepReadiness) {
+        if (![self.onboardingReadinessSnapshot[@"overall"] isEqualToString:@"ready"]) {
+            return;
+        }
+        self.onboardingStep = GDTOnboardingStepSchedule;
+        self.onboardingView.step = self.onboardingStep;
+        self.onboardingView.canAdvance = YES;
+        return;
+    }
+    [self finishOnboarding];
+}
+
+- (void)backOnboarding:(id)sender {
+    (void)sender;
+    if (self.onboardingStep == GDTOnboardingStepDestination) {
+        return;
+    }
+    self.onboardingStep--;
+    self.onboardingView.step = self.onboardingStep;
+    self.onboardingView.canAdvance = self.onboardingStep != GDTOnboardingStepReadiness;
+}
+
+- (void)finishOnboarding {
+    NSDictionary<NSString *, NSString *> *updates = [self onboardingUpdates];
+    NSMutableDictionary<NSString *, NSString *> *validationUpdates =
+        [updates mutableCopy];
+    validationUpdates[@"RCLONE_REMOTE"] =
+        GDTReadConfigDictionary()[@"RCLONE_REMOTE"] ?: @"gdrive";
+    NSString *validationErrorKey =
+        [self setupValidationErrorKeyForUpdates:validationUpdates];
+    if (validationErrorKey.length) {
+        self.onboardingView.readinessSummary =
+            T(self.language ?: @"en", validationErrorKey);
+        self.onboardingView.step = GDTOnboardingStepReadiness;
+        self.onboardingStep = GDTOnboardingStepReadiness;
+        self.onboardingView.canAdvance = NO;
+        return;
+    }
+    NSError *error = nil;
+    if (!GDTWriteConfigUpdates(updates, &error)) {
+        self.onboardingView.readinessSummary =
+            error.localizedDescription ?: T(self.language ?: @"en", @"setupCheckNeedsAttention");
+        self.onboardingView.step = GDTOnboardingStepReadiness;
+        self.onboardingStep = GDTOnboardingStepReadiness;
+        self.onboardingView.canAdvance = NO;
+        return;
+    }
+    if (![self applySchedule:@"daily" error:&error]) {
+        self.onboardingView.readinessSummary =
+            error.localizedDescription ?: T(self.language ?: @"en", @"setupCheckNeedsAttention");
+        self.onboardingView.step = GDTOnboardingStepReadiness;
+        self.onboardingStep = GDTOnboardingStepReadiness;
+        self.onboardingView.canAdvance = NO;
+        return;
+    }
+    if (!GDTWriteConfigUpdates(GDTOnboardingCompletionUpdate(), &error)) {
+        self.onboardingView.readinessSummary =
+            error.localizedDescription ?: T(self.language ?: @"en", @"setupCheckNeedsAttention");
+        self.onboardingView.step = GDTOnboardingStepReadiness;
+        self.onboardingStep = GDTOnboardingStepReadiness;
+        self.onboardingView.canAdvance = NO;
+        return;
+    }
+    [self configureBackupNotificationsForConfig:GDTReadConfigDictionary()];
+    self.onboardingView.readinessSummary = T(self.language ?: @"en", @"statusSaved");
+    self.onboardingView.canAdvance = NO;
+    self.onboardingMode = NO;
+    [self.setupWindow orderOut:nil];
+    [NSApp terminate:nil];
+}
+
+- (void)showOnboardingWindow {
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    [self buildMainMenu];
+    [NSApp setApplicationIconImage:CreateApplicationIcon()];
+    if (self.setupWindow && self.onboardingMode) {
+        self.onboardingMode = NO;
+        [self.setupWindow close];
+        self.setupWindow = nil;
+    }
+    if (self.setupWindow) {
+        [self.setupWindow deminiaturize:nil];
+        [self.setupWindow makeKeyAndOrderFront:nil];
+        [NSApp activateIgnoringOtherApps:YES];
+        return;
+    }
+    self.onboardingMode = YES;
+    self.onboardingStep = GDTOnboardingStepDestination;
+    NSDictionary<NSString *, NSString *> *config = GDTReadConfigDictionary();
+    self.onboardingAutomaticTarget =
+        [config[@"GDRIVE_BACKUP_TARGET"] lowercaseString].length
+            ? [config[@"GDRIVE_BACKUP_TARGET"] lowercaseString] : @"apfs";
+    NSString *volume = config[@"GDRIVE_BACKUP_VOLUME"] ?: @"";
+    NSString *volumeUUID = config[@"GDRIVE_BACKUP_VOLUME_UUID"] ?: @"";
+    BOOL hasOptionalVolume =
+        [self.onboardingAutomaticTarget isEqualToString:@"nas"] &&
+        volume.length && volumeUUID.length &&
+        ![volume isEqualToString:@"/Volumes/GoogleDrive-Backup"];
+    self.onboardingManualTarget = hasOptionalVolume
+        ? (config[@"GDRIVE_BACKUP_VOLUME_NAME"] ?: volume.lastPathComponent) : @"";
+
+    NSSize size = NSMakeSize(650, 620);
+    NSRect screenFrame = NSScreen.mainScreen ? NSScreen.mainScreen.visibleFrame
+                                             : NSMakeRect(0, 0, 1200, 800);
+    NSPoint origin = NSMakePoint(NSMidX(screenFrame) - size.width / 2,
+                                 NSMidY(screenFrame) - size.height / 2);
+    self.setupWindow = [[NSWindow alloc]
+        initWithContentRect:NSMakeRect(origin.x, origin.y, size.width, size.height)
+                  styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                            NSWindowStyleMaskMiniaturizable
+                    backing:NSBackingStoreBuffered
+                      defer:NO];
+    self.setupWindow.title = @"GDrive Backup Tiger";
+    self.setupWindow.releasedWhenClosed = NO;
+    self.setupWindow.delegate = self;
+    self.setupWindow.level = NSNormalWindowLevel;
+    self.setupWindow.collectionBehavior = NSWindowCollectionBehaviorManaged |
+        NSWindowCollectionBehaviorFullScreenNone;
+    self.onboardingView = [[TigerOnboardingView alloc]
+        initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
+    self.onboardingView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    self.onboardingView.language = self.language ?: @"en";
+    self.onboardingView.step = self.onboardingStep;
+    __weak typeof(self) weakSelf = self;
+    self.onboardingView.destinationHandler = ^(NSString *target) {
+        [weakSelf onboardingDestinationSelected:target];
+    };
+    self.onboardingView.advanceHandler = ^{
+        [weakSelf advanceOnboarding:nil];
+    };
+    self.onboardingView.backHandler = ^{
+        [weakSelf backOnboarding:nil];
+    };
+    self.onboardingView.advancedSetupHandler = ^{
+        typeof(self) strongSelf = weakSelf;
+        strongSelf.onboardingMode = NO;
+        [strongSelf showSetupWindow];
+    };
+    self.onboardingView.cancelHandler = ^{
+        [weakSelf.setupWindow close];
+    };
+    self.setupWindow.contentView = self.onboardingView;
+    [self refreshOnboardingSummary];
+    self.onboardingView.canAdvance = YES;
+    [self.setupWindow makeKeyAndOrderFront:nil];
+    [NSApp activateIgnoringOtherApps:YES];
+}
+
 - (void)updateControllerActivationPolicy {
     if (!self.overviewMode) {
         return;
@@ -6098,6 +6320,11 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     [self buildMainMenu];
     [NSApp setApplicationIconImage:CreateApplicationIcon()];
 
+    if (self.setupWindow && self.onboardingMode) {
+        self.onboardingMode = NO;
+        [self.setupWindow close];
+        self.setupWindow = nil;
+    }
     if (self.setupWindow) {
         [self.setupWindow deminiaturize:nil];
         [self.setupWindow makeKeyAndOrderFront:nil];
@@ -7046,6 +7273,12 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         [self prepareProfileStore];
     }
     self.language = ConfiguredLanguage();
+    if ([mode isEqualToString:@"overview"] &&
+        GDTOnboardingNeedsPresentation(GDTReadConfigDictionary())) {
+        self.setupMode = YES;
+        [self showOnboardingWindow];
+        return;
+    }
     if ([self shouldInstallStatusItemForMode:mode]) {
         self.overviewMode = YES;
         self.menubarOnlyMode = [mode isEqualToString:@"menubar"];
@@ -7080,7 +7313,11 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 
     if ([mode isEqualToString:@"setup"]) {
         self.setupMode = YES;
-        [self showSetupWindow];
+        if (GDTOnboardingNeedsPresentation(GDTReadConfigDictionary())) {
+            [self showOnboardingWindow];
+        } else {
+            [self showSetupWindow];
+        }
         return;
     }
 
@@ -7263,6 +7500,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         self.diagnosticsView = nil;
     } else if (closingWindow == self.setupWindow) {
         self.setupWindow = nil;
+        self.onboardingView = nil;
+        self.onboardingMode = NO;
     }
     if (self.overviewMode) {
         __weak typeof(self) weakSelf = self;

@@ -232,7 +232,23 @@ NSString *T(NSString *language, NSString *key) {
         @"diagnosticsSaved": @"Sicherer Bericht gespeichert.",
         @"diagnosticsManual": @"Nur manuell",
         @"diagnosticsLoaded": @"Aktiv",
-        @"diagnosticsNotLoaded": @"Nicht aktiv"
+        @"diagnosticsNotLoaded": @"Nicht aktiv",
+        @"onboardingTitle": @"GDrive Backup Tiger einrichten",
+        @"onboardingDescription": @"Wähle ein automatisches Hauptziel. Eine zusätzliche externe Platte bleibt für manuelle Backups verfügbar.",
+        @"onboardingStepDestination": @"1 Ziel",
+        @"onboardingStepReadiness": @"2 Prüfung",
+        @"onboardingStepSchedule": @"3 Zeitplan",
+        @"onboardingAutomaticTarget": @"Automatisch:",
+        @"onboardingChooseAutomaticTarget": @"Automatisches Hauptziel auswählen.",
+        @"onboardingManualTarget": @"Manuell:",
+        @"onboardingManualTargetNone": @"Keine zusätzliche Platte vorgemerkt.",
+        @"onboardingReadiness": @"Bereitschaft:",
+        @"onboardingSchedule": @"Zeitplan:",
+        @"onboardingNotifications": @"Fehlerbenachrichtigungen:",
+        @"onboardingBack": @"Zurück",
+        @"onboardingContinue": @"Weiter",
+        @"onboardingFinish": @"Speichern und fertig",
+        @"onboardingAdvanced": @"Erweiterte Einrichtung"
     };
     NSDictionary<NSString *, NSString *> *en = @{
         @"confirmTarget": @"Use this volume?",
@@ -442,7 +458,23 @@ NSString *T(NSString *language, NSString *key) {
         @"diagnosticsSaved": @"Safe report saved.",
         @"diagnosticsManual": @"Manual only",
         @"diagnosticsLoaded": @"Active",
-        @"diagnosticsNotLoaded": @"Not active"
+        @"diagnosticsNotLoaded": @"Not active",
+        @"onboardingTitle": @"Set up GDrive Backup Tiger",
+        @"onboardingDescription": @"Choose one automatic primary destination. An additional external disk remains available for manual backups.",
+        @"onboardingStepDestination": @"1 Destination",
+        @"onboardingStepReadiness": @"2 Check",
+        @"onboardingStepSchedule": @"3 Schedule",
+        @"onboardingAutomaticTarget": @"Automatic:",
+        @"onboardingChooseAutomaticTarget": @"Choose the automatic primary destination.",
+        @"onboardingManualTarget": @"Manual:",
+        @"onboardingManualTargetNone": @"No additional disk selected.",
+        @"onboardingReadiness": @"Readiness:",
+        @"onboardingSchedule": @"Schedule:",
+        @"onboardingNotifications": @"Failure notifications:",
+        @"onboardingBack": @"Back",
+        @"onboardingContinue": @"Continue",
+        @"onboardingFinish": @"Save and finish",
+        @"onboardingAdvanced": @"Advanced setup"
     };
     NSDictionary<NSString *, NSString *> *fr = @{
         @"confirmTarget": @"Utiliser ce volume ?",
@@ -652,7 +684,23 @@ NSString *T(NSString *language, NSString *key) {
         @"diagnosticsSaved": @"Rapport sûr enregistré.",
         @"diagnosticsManual": @"Manuel uniquement",
         @"diagnosticsLoaded": @"Actif",
-        @"diagnosticsNotLoaded": @"Inactif"
+        @"diagnosticsNotLoaded": @"Inactif",
+        @"onboardingTitle": @"Configurer GDrive Backup Tiger",
+        @"onboardingDescription": @"Choisissez une destination principale automatique. Un disque externe supplémentaire reste disponible pour les sauvegardes manuelles.",
+        @"onboardingStepDestination": @"1 Destination",
+        @"onboardingStepReadiness": @"2 Vérification",
+        @"onboardingStepSchedule": @"3 Planification",
+        @"onboardingAutomaticTarget": @"Automatique :",
+        @"onboardingChooseAutomaticTarget": @"Choisissez la destination principale automatique.",
+        @"onboardingManualTarget": @"Manuel :",
+        @"onboardingManualTargetNone": @"Aucun disque supplémentaire sélectionné.",
+        @"onboardingReadiness": @"État :",
+        @"onboardingSchedule": @"Planification :",
+        @"onboardingNotifications": @"Notifications d’échec :",
+        @"onboardingBack": @"Retour",
+        @"onboardingContinue": @"Continuer",
+        @"onboardingFinish": @"Enregistrer et terminer",
+        @"onboardingAdvanced": @"Configuration avancée"
     };
     NSDictionary<NSString *, NSString *> *es = @{
         @"confirmTarget": @"¿Usar este volumen?",
@@ -862,7 +910,23 @@ NSString *T(NSString *language, NSString *key) {
         @"diagnosticsSaved": @"Informe seguro guardado.",
         @"diagnosticsManual": @"Solo manual",
         @"diagnosticsLoaded": @"Activo",
-        @"diagnosticsNotLoaded": @"Inactivo"
+        @"diagnosticsNotLoaded": @"Inactivo",
+        @"onboardingTitle": @"Configurar GDrive Backup Tiger",
+        @"onboardingDescription": @"Elige un destino principal automático. Un disco externo adicional quedará disponible para copias manuales.",
+        @"onboardingStepDestination": @"1 Destino",
+        @"onboardingStepReadiness": @"2 Comprobación",
+        @"onboardingStepSchedule": @"3 Programación",
+        @"onboardingAutomaticTarget": @"Automático:",
+        @"onboardingChooseAutomaticTarget": @"Elige el destino principal automático.",
+        @"onboardingManualTarget": @"Manual:",
+        @"onboardingManualTargetNone": @"No hay disco adicional seleccionado.",
+        @"onboardingReadiness": @"Estado:",
+        @"onboardingSchedule": @"Programación:",
+        @"onboardingNotifications": @"Avisos de error:",
+        @"onboardingBack": @"Atrás",
+        @"onboardingContinue": @"Continuar",
+        @"onboardingFinish": @"Guardar y terminar",
+        @"onboardingAdvanced": @"Configuración avanzada"
     };
     NSDictionary<NSString *, NSString *> *ja = @{
         @"confirmTarget": @"このボリュームを使いますか？",
@@ -1072,7 +1136,23 @@ NSString *T(NSString *language, NSString *key) {
         @"diagnosticsSaved": @"安全なレポートを保存しました。",
         @"diagnosticsManual": @"手動のみ",
         @"diagnosticsLoaded": @"有効",
-        @"diagnosticsNotLoaded": @"無効"
+        @"diagnosticsNotLoaded": @"無効",
+        @"onboardingTitle": @"GDrive Backup Tiger を設定",
+        @"onboardingDescription": @"自動バックアップの主な保存先を1つ選びます。追加の外付けディスクは手動バックアップ用に残せます。",
+        @"onboardingStepDestination": @"1 保存先",
+        @"onboardingStepReadiness": @"2 確認",
+        @"onboardingStepSchedule": @"3 スケジュール",
+        @"onboardingAutomaticTarget": @"自動：",
+        @"onboardingChooseAutomaticTarget": @"自動バックアップの主な保存先を選択してください。",
+        @"onboardingManualTarget": @"手動：",
+        @"onboardingManualTargetNone": @"追加のディスクは選択されていません。",
+        @"onboardingReadiness": @"準備状況：",
+        @"onboardingSchedule": @"スケジュール：",
+        @"onboardingNotifications": @"失敗通知：",
+        @"onboardingBack": @"戻る",
+        @"onboardingContinue": @"続ける",
+        @"onboardingFinish": @"保存して完了",
+        @"onboardingAdvanced": @"詳細設定"
     };
     NSDictionary<NSString *, NSString *> *yue = @{
         @"confirmTarget": @"使用呢個卷宗？",
@@ -1282,7 +1362,23 @@ NSString *T(NSString *language, NSString *key) {
         @"diagnosticsSaved": @"已儲存安全報告。",
         @"diagnosticsManual": @"只限手動",
         @"diagnosticsLoaded": @"已啟用",
-        @"diagnosticsNotLoaded": @"未啟用"
+        @"diagnosticsNotLoaded": @"未啟用",
+        @"onboardingTitle": @"設定 GDrive Backup Tiger",
+        @"onboardingDescription": @"選擇一個自動主要目的地。額外外置磁碟可保留作手動備份。",
+        @"onboardingStepDestination": @"1 目的地",
+        @"onboardingStepReadiness": @"2 檢查",
+        @"onboardingStepSchedule": @"3 時間表",
+        @"onboardingAutomaticTarget": @"自動：",
+        @"onboardingChooseAutomaticTarget": @"選擇自動主要目的地。",
+        @"onboardingManualTarget": @"手動：",
+        @"onboardingManualTargetNone": @"未選擇額外磁碟。",
+        @"onboardingReadiness": @"準備狀態：",
+        @"onboardingSchedule": @"時間表：",
+        @"onboardingNotifications": @"失敗通知：",
+        @"onboardingBack": @"返回",
+        @"onboardingContinue": @"繼續",
+        @"onboardingFinish": @"儲存並完成",
+        @"onboardingAdvanced": @"進階設定"
     };
     NSDictionary<NSString *, NSString *> *ko = @{
         @"confirmTarget": @"이 볼륨을 사용할까요?",
@@ -1492,7 +1588,23 @@ NSString *T(NSString *language, NSString *key) {
         @"diagnosticsSaved": @"안전한 보고서를 저장했습니다.",
         @"diagnosticsManual": @"수동만",
         @"diagnosticsLoaded": @"활성",
-        @"diagnosticsNotLoaded": @"비활성"
+        @"diagnosticsNotLoaded": @"비활성",
+        @"onboardingTitle": @"GDrive Backup Tiger 설정",
+        @"onboardingDescription": @"자동 기본 대상 하나를 선택하세요. 추가 외장 디스크는 수동 백업용으로 남겨둘 수 있습니다.",
+        @"onboardingStepDestination": @"1 대상",
+        @"onboardingStepReadiness": @"2 점검",
+        @"onboardingStepSchedule": @"3 일정",
+        @"onboardingAutomaticTarget": @"자동:",
+        @"onboardingChooseAutomaticTarget": @"자동 기본 대상을 선택하세요.",
+        @"onboardingManualTarget": @"수동:",
+        @"onboardingManualTargetNone": @"추가 디스크가 선택되지 않았습니다.",
+        @"onboardingReadiness": @"준비 상태:",
+        @"onboardingSchedule": @"일정:",
+        @"onboardingNotifications": @"실패 알림:",
+        @"onboardingBack": @"뒤로",
+        @"onboardingContinue": @"계속",
+        @"onboardingFinish": @"저장하고 완료",
+        @"onboardingAdvanced": @"고급 설정"
     };
 
     NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *tables = @{

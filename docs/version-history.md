@@ -6,6 +6,10 @@ without merging the development branch or creating later tags and releases.
 The source history is retained without squashing, and the missing publication
 records are restored transparently as historical source milestones.
 
+The next unreleased onboarding work is intentionally a feature change, not a
+release number: new users receive a guided destination-neutral setup, while
+existing profiles keep the expert setup and all backup configuration keys.
+
 | Version | Build | Source commit | Publication record |
 | --- | ---: | --- | --- |
 | v1.0.0 | 1 | `567f353` | Original tag; bundle metadata used `1.0`; release page added retrospectively |
