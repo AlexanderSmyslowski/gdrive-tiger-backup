@@ -5952,7 +5952,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         checkbox.state = [self updatePolicy].enabled ? NSControlStateValueOn : NSControlStateValueOff;
         alert.accessoryView = checkbox;
         [alert addButtonWithTitle:T(language, @"save")];
-        [alert addButtonWithTitle:T(language, @"cancel")];
+        [alert addButtonWithTitle:T(language, @"cancel")].keyEquivalent = @"\033";
     }
     return alert;
 }

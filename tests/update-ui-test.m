@@ -99,6 +99,7 @@
 @property(nonatomic) NSInteger consentPresentations;
 @property(nonatomic, copy) void (^consentCompletion)(NSModalResponse);
 @property(nonatomic) NSUInteger refreshRequests;
+@property(nonatomic, strong) NSAlert *capturedPreferencesAlert;
 @end
 
 @implementation UpdateTestDelegate
@@ -107,7 +108,8 @@
 - (void)refreshOverviewStatus:(id)sender { (void)sender; self.refreshRequests++; }
 - (UNUserNotificationCenter *)backupNotificationCenter { return (id)self.center; }
 - (void)presentUpdatePreferencesAlert:(NSAlert *)alert completion:(void (^)(NSModalResponse))completion {
-    (void)alert; self.consentPresentations++; self.consentCompletion = completion;
+    self.capturedPreferencesAlert = alert;
+    self.consentPresentations++; self.consentCompletion = completion;
 }
 
 - (void)presentUpdateResult:(NSDictionary<NSString *, NSString *> *)result {
@@ -119,6 +121,16 @@
     return YES;
 }
 
+@end
+
+// Replace only modal dismissal; the native button still resolves the key event,
+// and the real controller completion decides whether preferences are persisted.
+@interface UpdateCancelResponse : NSObject
+@property(nonatomic, copy) void (^completion)(NSModalResponse);
+- (void)cancel:(id)sender;
+@end
+@implementation UpdateCancelResponse
+- (void)cancel:(id)sender { (void)sender; self.completion(NSAlertSecondButtonReturn); }
 @end
 
 static int failures = 0;
@@ -135,6 +147,53 @@ static void Assert(BOOL condition, NSString *name) {
 static void DrainMainQueue(void) {
     for (NSUInteger pass = 0; pass < 4; pass++) {
         [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    }
+}
+
+static void TestLocalizedSettingsEscape(void) {
+    NSEvent *escape = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+        modifierFlags:0 timestamp:0 windowNumber:0 context:nil characters:@"\033"
+        charactersIgnoringModifiers:@"\033" isARepeat:NO keyCode:53];
+    for (NSString *language in SupportedLanguageCodes()) {
+        NSString *domain = [@"GDTUpdateEscapeTests." stringByAppendingString:NSUUID.UUID.UUIDString];
+        NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:domain];
+        UpdateTestDelegate *delegate = [UpdateTestDelegate new];
+        delegate.language = language;
+        delegate.automaticUpdatePolicy = [[GDTAutomaticUpdatePolicy alloc] initWithDefaults:defaults
+            checker:[DeferredUpdateChecker new] currentVersion:@"2.0.0"];
+        [delegate showUpdatePreferences:nil];
+        NSAlert *settings = delegate.capturedPreferencesAlert;
+        ((NSButton *)settings.accessoryView).state = NSControlStateValueOn;
+        NSButton *cancel = settings.buttons.lastObject;
+        UpdateCancelResponse *dismissal = [UpdateCancelResponse new];
+        dismissal.completion = delegate.consentCompletion;
+        cancel.target = dismissal;
+        cancel.action = @selector(cancel:);
+        BOOL handled = [cancel performKeyEquivalent:escape];
+        Assert(handled && !delegate.updatePreferencesPresenting &&
+               !delegate.automaticUpdatePolicy.answered && !delegate.automaticUpdatePolicy.enabled,
+               [NSString stringWithFormat:@"%@: Escape cancels settings without saving an edited checkbox", language]);
+
+        NSAlert *consent = [delegate updatePreferencesAlertForConsent:YES];
+        Assert(![consent.buttons.lastObject.keyEquivalent isEqualToString:@"\033"],
+               [NSString stringWithFormat:@"%@: consent decline has no Escape binding", language]);
+        // Finish the intercepted presentation on RED too, without granting consent.
+        if (!handled) delegate.consentCompletion(NSAlertSecondButtonReturn);
+        UpdateTestWindow *window = [[UpdateTestWindow alloc] initWithContentRect:NSMakeRect(0, 0, 600, 400)
+            styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+        window.releasedWhenClosed = NO;
+        window.pretendVisible = YES;
+        delegate.window = window;
+        delegate.overviewMode = YES;
+        delegate.pretendActive = YES;
+        delegate.updateConsentRequested = YES;
+        [delegate acceptOverviewSnapshot:@{@"status": @"success"}
+            updateConsentGeneration:delegate.updateConsentGeneration];
+        delegate.consentCompletion(NSAlertSecondButtonReturn);
+        Assert(delegate.automaticUpdatePolicy.answered && !delegate.automaticUpdatePolicy.enabled,
+               [NSString stringWithFormat:@"%@: explicit consent decline still persists refusal", language]);
+        [defaults removePersistentDomainForName:domain];
+        [window close];
     }
 }
 
@@ -421,6 +480,7 @@ int main(void) {
         };
         TestAutomaticUI(menuSnapshot);
         TestConsentFreshness();
+        TestLocalizedSettingsEscape();
         NSMenu *statusMenu = [delegate statusMenuForSnapshot:menuSnapshot];
         NSMenuItem *statusUpdate = [statusMenu itemWithTitle:T(@"de", @"updateCheck")];
         [delegate buildMainMenu];
