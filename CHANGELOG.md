@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v2.5.0 - 2026-09-05
+
+- Choose the destination for a single manual backup directly in the main window. Saved NAS and external APFS destinations are listed by readable identity; the automatic profile and schedule remain unchanged.
+- Recheck the selected external volume UUID immediately before launch and inside the engine. Disconnected, read-only, ambiguous and Time Machine backup volumes cannot be selected. Repeated runs reuse the saved volume without creating or formatting volumes.
+- Show manual progress and the actual destination in the main window. Store manual results separately so an external backup cannot clear a scheduled NAS failure, and prefer newer automatic results over older manual results.
+- Add an existing external APFS volume through a compact manual-destination dialog, with explicit selection and no profile activation. The installed app and engine must both support the one-run destination protocol.
+
 ## v2.4.6 - 2026-09-05
 
 - Make the process-supplied `setup` trigger the only authority that can create or bind an APFS volume. `GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1` is a narrow process-only authorization for one setup invocation; config files cannot persist it or forge setup authority, and `BACKUP_ASSUME_YES` never authorizes `diskutil apfs addVolume`.

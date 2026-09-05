@@ -109,6 +109,7 @@ fi
 if [[ -x "$NOTES_EXTRACTOR" ]]; then
   notes="$("$NOTES_EXTRACTOR" "$tag" 2>/dev/null)"
   previous_notes="$("$NOTES_EXTRACTOR" "v2.4.5" 2>/dev/null)"
+  identity_notes="$("$NOTES_EXTRACTOR" "v2.4.6" 2>/dev/null)"
   heading_count="$(printf '%s\n' "$notes" | /usr/bin/grep -Ec '^## v')"
   if [[ "$notes" == *"## v${version} "* && "$heading_count" == "1" ]]; then
     printf 'ok - extractor returns only the requested changelog section\n'
@@ -150,22 +151,22 @@ if [[ -x "$NOTES_EXTRACTOR" ]]; then
     failures=$((failures + 1))
   fi
 
-  if [[ "$notes" == *"GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1"* &&
-        "$notes" == *"process-only authorization for one setup invocation"* &&
-        "$notes" == *"BACKUP_ASSUME_YES"* &&
-        "$notes" == *"before confirmation UI, privileged helpers, disk mutation, or copy"* ]]; then
+  if [[ "$identity_notes" == *"GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1"* &&
+        "$identity_notes" == *"process-only authorization for one setup invocation"* &&
+        "$identity_notes" == *"BACKUP_ASSUME_YES"* &&
+        "$identity_notes" == *"before confirmation UI, privileged helpers, disk mutation, or copy"* ]]; then
     printf 'ok - v2.4.6 notes restrict APFS creation to explicit one-run approval\n'
   else
     printf 'not ok - v2.4.6 notes restrict APFS creation to explicit one-run approval\n'
     failures=$((failures + 1))
   fi
 
-  if [[ "$notes" == *"every successful APFS run to be UUID-bound"* &&
-        "$notes" == *"Legacy path-only targets fail closed outside setup"* &&
-        "$notes" == *"Rediscover the sole eligible source container and exact-name UUID inventory"* &&
-        "$notes" == *"multiple eligible containers"* &&
-        "$notes" == *"numeric-family names such as \`GoogleDrive-Backup 1\` fail closed"* &&
-        "$notes" == *"never deletes, erases, repartitions, renames, or unmounts volumes"* ]]; then
+  if [[ "$identity_notes" == *"every successful APFS run to be UUID-bound"* &&
+        "$identity_notes" == *"Legacy path-only targets fail closed outside setup"* &&
+        "$identity_notes" == *"Rediscover the sole eligible source container and exact-name UUID inventory"* &&
+        "$identity_notes" == *"multiple eligible containers"* &&
+        "$identity_notes" == *"numeric-family names such as \`GoogleDrive-Backup 1\` fail closed"* &&
+        "$identity_notes" == *"never deletes, erases, repartitions, renames, or unmounts volumes"* ]]; then
     printf 'ok - v2.4.6 notes describe fail-closed APFS identity and non-destructive boundaries\n'
   else
     printf 'not ok - v2.4.6 notes describe fail-closed APFS identity and non-destructive boundaries\n'

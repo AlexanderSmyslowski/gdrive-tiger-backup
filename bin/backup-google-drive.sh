@@ -1,6 +1,11 @@
 #!/bin/bash
 set -uo pipefail
 
+if [[ "${1:-}" == "--capabilities" ]]; then
+  printf '%s\n' 'adhoc-target-v1'
+  exit 0
+fi
+
 PATH="${GDRIVE_BACKUP_PATH:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
 export PATH
 
@@ -66,7 +71,7 @@ find_nas_mount_for_url() {
   done < <(/sbin/mount)
 }
 
-# These two values are one-shot process capabilities. Capture them before the
+# These values are one-shot process capabilities. Capture them before the
 # shell config is loaded so persistent configuration cannot grant setup rights.
 _GDT_PROCESS_TRIGGER_SET=0
 _GDT_PROCESS_TRIGGER_VALUE=""
@@ -80,8 +85,36 @@ if [[ "${GDRIVE_BACKUP_APPROVE_VOLUME_CREATION+x}" == "x" ]]; then
   _GDT_PROCESS_VOLUME_APPROVAL_SET=1
   _GDT_PROCESS_VOLUME_APPROVAL_VALUE="$GDRIVE_BACKUP_APPROVE_VOLUME_CREATION"
 fi
+_GDT_PROCESS_RUN_TARGET_SET=0
+_GDT_PROCESS_RUN_TARGET_VALUE=""
+if [[ "${GDRIVE_BACKUP_RUN_TARGET+x}" == "x" ]]; then
+  _GDT_PROCESS_RUN_TARGET_SET=1
+  _GDT_PROCESS_RUN_TARGET_VALUE="$GDRIVE_BACKUP_RUN_TARGET"
+fi
+_GDT_PROCESS_RUN_VOLUME_UUID_SET=0
+_GDT_PROCESS_RUN_VOLUME_UUID_VALUE=""
+if [[ "${GDRIVE_BACKUP_RUN_VOLUME_UUID+x}" == "x" ]]; then
+  _GDT_PROCESS_RUN_VOLUME_UUID_SET=1
+  _GDT_PROCESS_RUN_VOLUME_UUID_VALUE="$GDRIVE_BACKUP_RUN_VOLUME_UUID"
+fi
+_GDT_PROCESS_SUMMARY_STATE_FILE_SET=0
+_GDT_PROCESS_SUMMARY_STATE_FILE_VALUE=""
+if [[ "${GDRIVE_BACKUP_SUMMARY_STATE_FILE+x}" == "x" ]]; then
+  _GDT_PROCESS_SUMMARY_STATE_FILE_SET=1
+  _GDT_PROCESS_SUMMARY_STATE_FILE_VALUE="$GDRIVE_BACKUP_SUMMARY_STATE_FILE"
+fi
+_GDT_PROCESS_PROGRESS_STATE_FILE_SET=0
+_GDT_PROCESS_PROGRESS_STATE_FILE_VALUE=""
+if [[ "${GDRIVE_BACKUP_PROGRESS_STATE_FILE+x}" == "x" ]]; then
+  _GDT_PROCESS_PROGRESS_STATE_FILE_SET=1
+  _GDT_PROCESS_PROGRESS_STATE_FILE_VALUE="$GDRIVE_BACKUP_PROGRESS_STATE_FILE"
+fi
 readonly _GDT_PROCESS_TRIGGER_SET _GDT_PROCESS_TRIGGER_VALUE
 readonly _GDT_PROCESS_VOLUME_APPROVAL_SET _GDT_PROCESS_VOLUME_APPROVAL_VALUE
+readonly _GDT_PROCESS_RUN_TARGET_SET _GDT_PROCESS_RUN_TARGET_VALUE
+readonly _GDT_PROCESS_RUN_VOLUME_UUID_SET _GDT_PROCESS_RUN_VOLUME_UUID_VALUE
+readonly _GDT_PROCESS_SUMMARY_STATE_FILE_SET _GDT_PROCESS_SUMMARY_STATE_FILE_VALUE
+readonly _GDT_PROCESS_PROGRESS_STATE_FILE_SET _GDT_PROCESS_PROGRESS_STATE_FILE_VALUE
 
 CONFIG_DIR="${GDRIVE_BACKUP_CONFIG_DIR:-$HOME/.config/gdrive-tiger-backup}"
 LEGACY_CONFIG_FILE="$CONFIG_DIR/config"
@@ -129,6 +162,17 @@ if [[ "$_GDT_PROCESS_VOLUME_APPROVAL_SET" == "1" ]]; then
 else
   APPROVE_VOLUME_CREATION=0
 fi
+RUN_TARGET_OVERRIDE=""
+RUN_TARGET_OVERRIDE_ERROR=""
+if [[ "$_GDT_PROCESS_RUN_TARGET_SET" == "1" ]]; then
+  case "$_GDT_PROCESS_RUN_TARGET_VALUE" in
+    apfs|nas) RUN_TARGET_OVERRIDE="$_GDT_PROCESS_RUN_TARGET_VALUE" ;;
+    *) RUN_TARGET_OVERRIDE_ERROR="invalid_value" ;;
+  esac
+  if [[ "$BACKUP_TRIGGER" != "manual" ]]; then
+    RUN_TARGET_OVERRIDE_ERROR="nonmanual_trigger"
+  fi
+fi
 case "$BACKUP_TRIGGER" in
   manual|setup|schedule|schedule-retry|mount) ;;
   *)
@@ -145,7 +189,9 @@ case "$APPROVE_VOLUME_CREATION" in
 esac
 AUTOMATIC_BACKUPS_PAUSED="${GDRIVE_BACKUP_PAUSED:-0}"
 NAS_START_ON_MOUNT="${GDRIVE_BACKUP_NAS_START_ON_MOUNT:-0}"
-if [[ "$BACKUP_TRIGGER" == "mount" && "$NAS_START_ON_MOUNT" != "1" ]]; then
+if [[ -n "$RUN_TARGET_OVERRIDE" ]]; then
+  REQUESTED_BACKUP_TARGET="$RUN_TARGET_OVERRIDE"
+elif [[ "$BACKUP_TRIGGER" == "mount" && "$NAS_START_ON_MOUNT" != "1" ]]; then
   REQUESTED_BACKUP_TARGET="apfs"
 else
   REQUESTED_BACKUP_TARGET="${GDRIVE_BACKUP_TARGET:-apfs}"
@@ -209,14 +255,20 @@ if [[ "$BACKUP_TRIGGER" != "schedule-retry" ]]; then
   RETRY_ORIGIN_STARTED_AT=""
   RETRY_ATTEMPT=""
 fi
-if [[ -n "${GDRIVE_BACKUP_SUMMARY_STATE_FILE:-}" ]]; then
+if [[ "$_GDT_PROCESS_SUMMARY_STATE_FILE_SET" == "1" ]]; then
+  SUMMARY_STATE_FILE="$_GDT_PROCESS_SUMMARY_STATE_FILE_VALUE"
+elif [[ -n "${GDRIVE_BACKUP_SUMMARY_STATE_FILE:-}" ]]; then
   SUMMARY_STATE_FILE="$GDRIVE_BACKUP_SUMMARY_STATE_FILE"
 elif [[ -n "$ACTIVE_PROFILE_ID" ]]; then
   SUMMARY_STATE_FILE="$HOME/Library/Application Support/GDrive Backup Tiger/profiles/$ACTIVE_PROFILE_ID/last-run.status"
 else
   SUMMARY_STATE_FILE="$HOME/Library/Application Support/GDrive Backup Tiger/last-run.status"
 fi
-DURABLE_PROGRESS_FILE="${GDRIVE_BACKUP_PROGRESS_STATE_FILE:-}"
+if [[ "$_GDT_PROCESS_PROGRESS_STATE_FILE_SET" == "1" ]]; then
+  DURABLE_PROGRESS_FILE="$_GDT_PROCESS_PROGRESS_STATE_FILE_VALUE"
+else
+  DURABLE_PROGRESS_FILE="${GDRIVE_BACKUP_PROGRESS_STATE_FILE:-}"
+fi
 PROGRESS_PROFILE_ID="${GDRIVE_BACKUP_PROFILE_ID:-${ACTIVE_PROFILE_ID:-legacy}}"
 DURABLE_PROGRESS_OWNED=0
 RUN_STARTED_AT=0
@@ -4010,6 +4062,51 @@ trap on_exit EXIT
 trap 'cancel_run 129 HUP' HUP
 trap 'cancel_run 130 INT' INT
 trap 'cancel_run 143 TERM' TERM
+
+case "$RUN_TARGET_OVERRIDE_ERROR" in
+  "") ;;
+  nonmanual_trigger)
+    RUN_STATE_REASON="invalid_run_target"
+    log "FEHLER: GDRIVE_BACKUP_RUN_TARGET ist nur fuer manuelle Backups erlaubt."
+    exit 64
+    ;;
+  *)
+    RUN_STATE_REASON="invalid_run_target"
+    log "FEHLER: GDRIVE_BACKUP_RUN_TARGET muss apfs oder nas sein."
+    exit 64
+    ;;
+esac
+if [[ "$RUN_TARGET_OVERRIDE" == "apfs" && -z "$BACKUP_VOLUME_UUID" ]]; then
+  RUN_STATE_REASON="invalid_run_target"
+  log "FEHLER: Fuer ein einmaliges APFS-Backup ist eine gespeicherte Volume-UUID erforderlich."
+  exit 64
+fi
+if [[ "$_GDT_PROCESS_RUN_VOLUME_UUID_SET" == "1" &&
+      ( "$BACKUP_TRIGGER" != "manual" || "$RUN_TARGET_OVERRIDE" != "apfs" ) ]]; then
+  RUN_STATE_REASON="invalid_run_volume_identity"
+  log "FEHLER: GDRIVE_BACKUP_RUN_VOLUME_UUID ist nur fuer manuelle APFS-Einmal-Backups erlaubt."
+  exit 64
+fi
+if [[ "$RUN_TARGET_OVERRIDE" == "apfs" ]]; then
+  if [[ "$_GDT_PROCESS_RUN_VOLUME_UUID_SET" != "1" ||
+        -z "$_GDT_PROCESS_RUN_VOLUME_UUID_VALUE" ]]; then
+    RUN_STATE_REASON="invalid_run_volume_identity"
+    log "FEHLER: Die in der App ausgewaehlte Volume-UUID fehlt."
+    exit 78
+  fi
+  if [[ ! "$_GDT_PROCESS_RUN_VOLUME_UUID_VALUE" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
+    RUN_STATE_REASON="invalid_run_volume_identity"
+    log "FEHLER: Die in der App ausgewaehlte Volume-UUID ist ungueltig."
+    exit 78
+  fi
+  RUN_VOLUME_UUID_NORMALIZED="$(lowercase "$_GDT_PROCESS_RUN_VOLUME_UUID_VALUE")"
+  CONFIGURED_VOLUME_UUID_NORMALIZED="$(lowercase "$BACKUP_VOLUME_UUID")"
+  if [[ "$RUN_VOLUME_UUID_NORMALIZED" != "$CONFIGURED_VOLUME_UUID_NORMALIZED" ]]; then
+    RUN_STATE_REASON="invalid_run_volume_identity"
+    log "FEHLER: Die ausgewaehlte Volume-UUID stimmt nicht mehr mit dem gespeicherten Profil ueberein."
+    exit 78
+  fi
+fi
 
 if [[ ! "$NAS_READY_TIMEOUT_SECONDS" =~ ^[0-9]{1,3}$ ]] ||
    (( 10#$NAS_READY_TIMEOUT_SECONDS > 300 )); then
