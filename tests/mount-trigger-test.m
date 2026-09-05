@@ -533,7 +533,9 @@ int main(void) {
             @"/Volumes/Known Backup": @"KNOWN-UUID",
             @"/Volumes/Macintosh HD": @"INTERNAL-UUID",
             @"/Volumes/Server": @"NETWORK-UUID",
-            @"/Volumes/Installer": @"IMAGE-UUID"
+            @"/Volumes/Installer": @"IMAGE-UUID",
+            @"/Volumes/Portable ExFAT": @"EXFAT-UUID",
+            @"/Volumes/Read Only APFS": @"READONLY-UUID"
         };
         unknownDelegate.testVolumeDescriptors = @{
             @"/Volumes/Archive": @{
@@ -607,6 +609,30 @@ int main(void) {
                 @"isSystemImage": @YES,
                 @"isWritable": @NO,
                 @"filesystem": @"hfs"
+            },
+            @"/Volumes/Portable ExFAT": @{
+                @"path": @"/Volumes/Portable ExFAT",
+                @"name": @"Portable ExFAT",
+                @"volumeUUID": @"EXFAT-UUID",
+                @"diskID": @"disk31",
+                @"isLocal": @YES,
+                @"isInternal": @NO,
+                @"isPhysical": @YES,
+                @"isSystemImage": @NO,
+                @"isWritable": @YES,
+                @"filesystem": @"exfat"
+            },
+            @"/Volumes/Read Only APFS": @{
+                @"path": @"/Volumes/Read Only APFS",
+                @"name": @"Read Only APFS",
+                @"volumeUUID": @"READONLY-UUID",
+                @"diskID": @"disk32",
+                @"isLocal": @YES,
+                @"isInternal": @NO,
+                @"isPhysical": @YES,
+                @"isSystemImage": @NO,
+                @"isWritable": @NO,
+                @"filesystem": @"apfs"
             }
         };
 
@@ -683,14 +709,15 @@ int main(void) {
 
         NSInteger noticesBeforeIgnoredMedia = unknownDelegate.unknownVolumeNoticeCalls;
         for (NSString *path in @[
-            @"/Volumes/Macintosh HD", @"/Volumes/Server", @"/Volumes/Installer"
+            @"/Volumes/Macintosh HD", @"/Volumes/Server", @"/Volumes/Installer",
+            @"/Volumes/Portable ExFAT", @"/Volumes/Read Only APFS"
         ]) {
             [unknownDelegate workspaceVolumeDidMount:MountNotification(path)];
         }
         PumpRunLoop(0.03);
         Assert(unknownDelegate.unknownVolumeNoticeCalls == noticesBeforeIgnoredMedia &&
                unknownDelegate.launchCalls == 0,
-               @"internal, network, and disk-image mounts remain silent and cannot start a backup");
+               @"internal, network, disk-image, exFAT, and read-only mounts remain silent and cannot start a backup");
 
         MountTriggerDelegate *knownSiblingDelegate = [[MountTriggerDelegate alloc] init];
         knownSiblingDelegate.testConfig = unknownDelegate.testConfig;

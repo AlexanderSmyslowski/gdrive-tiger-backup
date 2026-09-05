@@ -79,6 +79,19 @@ static UNUserNotificationCenter *GDTNotificationIntegrationCurrentCenter;
     (NSString *)categoryIdentifier;
 - (void)handleUnknownExternalVolumeActionIdentifier:(NSString *)actionIdentifier
                                            userInfo:(NSDictionary *)userInfo;
+- (void)revalidateUnknownExternalVolumeCandidatesForUserInfo:(NSDictionary *)userInfo
+                                                  completion:
+    (void (^)(NSArray<NSDictionary<NSString *, id> *> *descriptors))completion;
+- (void)chooseUnknownExternalVolumeFromDescriptors:
+    (NSArray<NSDictionary<NSString *, id> *> *)descriptors
+                                         completion:
+    (void (^)(NSDictionary<NSString *, id> *descriptor))completion;
+- (void)revalidateSelectedUnknownExternalVolumeDescriptor:
+    (NSDictionary<NSString *, id> *)descriptor
+                                               completion:
+    (void (^)(NSDictionary<NSString *, id> *descriptor))completion;
+- (NSArray<NSString *> *)unknownExternalVolumeChoiceLabelsForDescriptors:
+    (NSArray<NSDictionary<NSString *, id> *> *)descriptors;
 - (void)finishUnknownExternalVolumeInspectionForDiskID:(NSString *)diskID;
 - (NSSet<NSString *> *)rememberedUnknownExternalVolumeUUIDsForDiskID:
     (NSString *)diskID;
@@ -177,8 +190,13 @@ static UNUserNotificationCenter *GDTNotificationIntegrationCurrentCenter;
 @end
 
 @interface UnknownVolumeNotificationTestDelegate : NotificationTestDelegate
-@property(nonatomic, copy) NSDictionary<NSString *, id> *revalidatedDescriptor;
+@property(nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *revalidatedCandidates;
+@property(nonatomic, copy) NSDictionary<NSString *, id> *chosenDescriptor;
+@property(nonatomic, copy) NSDictionary<NSString *, id> *postChoiceDescriptor;
 @property(nonatomic) NSInteger revalidationCalls;
+@property(nonatomic) NSInteger choiceCalls;
+@property(nonatomic) NSInteger selectedRevalidationCalls;
+@property(nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *choiceCandidates;
 @property(nonatomic) NSInteger setupPresentationCalls;
 @property(nonatomic) NSInteger overviewPresentationCalls;
 @property(nonatomic) NSInteger configSaveCalls;
@@ -202,13 +220,31 @@ static UNUserNotificationCenter *GDTNotificationIntegrationCurrentCenter;
 
 @implementation UnknownVolumeNotificationTestDelegate
 
-- (void)revalidateUnknownExternalVolumeUserInfo:(NSDictionary *)userInfo
-                                      completion:
-    (void (^)(NSDictionary<NSString *, id> *descriptor))completion {
+- (void)revalidateUnknownExternalVolumeCandidatesForUserInfo:(NSDictionary *)userInfo
+                                                  completion:
+    (void (^)(NSArray<NSDictionary<NSString *, id> *> *descriptors))completion {
     (void)userInfo;
     self.revalidationCalls++;
     self.revalidationRanOnMainThread = NSThread.isMainThread;
-    completion(self.revalidatedDescriptor);
+    completion(self.revalidatedCandidates ?: @[]);
+}
+
+- (void)chooseUnknownExternalVolumeFromDescriptors:
+    (NSArray<NSDictionary<NSString *, id> *> *)descriptors
+                                         completion:
+    (void (^)(NSDictionary<NSString *, id> *descriptor))completion {
+    self.choiceCalls++;
+    self.choiceCandidates = descriptors;
+    completion(self.chosenDescriptor);
+}
+
+- (void)revalidateSelectedUnknownExternalVolumeDescriptor:
+    (NSDictionary<NSString *, id> *)descriptor
+                                               completion:
+    (void (^)(NSDictionary<NSString *, id> *descriptor))completion {
+    (void)descriptor;
+    self.selectedRevalidationCalls++;
+    completion(self.postChoiceDescriptor);
 }
 
 - (void)presentSetupForUnknownExternalVolumeDescriptor:
@@ -249,6 +285,7 @@ static UNUserNotificationCenter *GDTNotificationIntegrationCurrentCenter;
 @property(nonatomic, strong) NSMutableArray<NSString *> *inspectedPaths;
 @property(nonatomic) NSInteger mountEnumerationCalls;
 @property(nonatomic) NSInteger setupPresentationCalls;
+@property(nonatomic) NSInteger unavailablePresentationCalls;
 @property(nonatomic, copy) NSDictionary<NSString *, id> *presentedDescriptor;
 @property(nonatomic, copy) NSDictionary<NSString *, NSSet<NSString *> *> *
     rememberedAttachmentUUIDsByDiskID;
@@ -276,9 +313,43 @@ static UNUserNotificationCenter *GDTNotificationIntegrationCurrentCenter;
     self.presentedDescriptor = descriptor;
 }
 
+- (void)presentUnknownExternalVolumeUnavailable {
+    self.unavailablePresentationCalls++;
+}
+
 - (NSSet<NSString *> *)rememberedUnknownExternalVolumeUUIDsForDiskID:
     (NSString *)diskID {
     return self.rememberedAttachmentUUIDsByDiskID[diskID] ?: [NSSet set];
+}
+
+@end
+
+
+@interface PickerUnknownVolumeNotificationTestDelegate : RestartUnknownVolumeNotificationTestDelegate
+@property(nonatomic) NSInteger choiceCalls;
+@property(nonatomic) NSInteger selectedCandidateIndex;
+@property(nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *choiceCandidates;
+@property(nonatomic, copy) NSDictionary<NSString *, NSDictionary<NSString *, id> *> *
+    descriptorsByPathBeforeChoiceCompletion;
+@end
+
+@implementation PickerUnknownVolumeNotificationTestDelegate
+
+- (void)chooseUnknownExternalVolumeFromDescriptors:
+    (NSArray<NSDictionary<NSString *, id> *> *)descriptors
+                                         completion:
+    (void (^)(NSDictionary<NSString *, id> *descriptor))completion {
+    self.choiceCalls++;
+    self.choiceCandidates = descriptors;
+    if (self.descriptorsByPathBeforeChoiceCompletion) {
+        self.descriptorsByPath = self.descriptorsByPathBeforeChoiceCompletion;
+    }
+    if (self.selectedCandidateIndex < 0 ||
+        (NSUInteger)self.selectedCandidateIndex >= descriptors.count) {
+        completion(nil);
+        return;
+    }
+    completion(descriptors[(NSUInteger)self.selectedCandidateIndex]);
 }
 
 @end
@@ -2460,6 +2531,10 @@ int main(void) {
                 @"unknownExternalVolumeIgnoreAction",
                 @"unknownExternalVolumeReviewSetup",
                 @"unknownExternalVolumeUnavailable",
+                @"unknownExternalVolumeChooseTitle",
+                @"unknownExternalVolumeChooseBody",
+                @"unknownExternalVolumeChooseAction",
+                @"unknownExternalVolumeChoiceLabelFormat",
                 @"backupNotificationRetryRunningTitle",
                 @"backupNotificationRetryRunningBody"
             ]) {
@@ -2523,7 +2598,7 @@ int main(void) {
                unknownActionDelegate.backupLaunchCalls == 0,
                @"a stale unknown-disk setup action fails closed with visible guidance and no configuration change");
 
-        unknownActionDelegate.revalidatedDescriptor = unknownDescriptor;
+        unknownActionDelegate.revalidatedCandidates = @[unknownDescriptor];
         ProcessUnknownVolumeAction(
             unknownActionDelegate, @"GDT_UNKNOWN_EXTERNAL_VOLUME_SETUP", unknownUserInfo);
         ProcessUnknownVolumeAction(
@@ -2531,11 +2606,12 @@ int main(void) {
         ProcessUnknownVolumeAction(
             unknownActionDelegate, @"UNEXPECTED_ACTION", unknownUserInfo);
         Assert(unknownActionDelegate.revalidationCalls == 3 &&
+               unknownActionDelegate.choiceCalls == 0 &&
                unknownActionDelegate.setupPresentationCalls == 2 &&
                unknownActionDelegate.overviewPresentationCalls == 0 &&
                unknownActionDelegate.configSaveCalls == 0 &&
                unknownActionDelegate.backupLaunchCalls == 0,
-               @"only an explicit setup click or notification-body click stages a revalidated disk without saving");
+               @"one eligible target stages only after an explicit notification action and never opens a picker");
 
         RestartUnknownVolumeNotificationTestDelegate *mismatchedRestartDelegate =
             [[RestartUnknownVolumeNotificationTestDelegate alloc] init];
@@ -2623,10 +2699,9 @@ int main(void) {
                 @"volumeUUID": @"PRIVATE-UUID",
                 @"attachmentVolumeUUIDs": @[@"PRIVATE-UUID", @"SIBLING-UUID"]
             });
-        Assert(remainingSiblingDelegate.setupPresentationCalls == 1 &&
-               remainingSiblingDelegate.presentedDescriptor ==
-                   remainingSiblingDescriptor,
-               @"one retained banner can safely stage a sibling volume after its originally selected volume leaves");
+        Assert(remainingSiblingDelegate.setupPresentationCalls == 0 &&
+               remainingSiblingDelegate.unavailablePresentationCalls == 1,
+               @"a vanished originally offered UUID never silently falls back to a sibling volume");
 
         RestartUnknownVolumeNotificationTestDelegate *mixedSiblingDelegate =
             [[RestartUnknownVolumeNotificationTestDelegate alloc] init];
@@ -2661,6 +2736,132 @@ int main(void) {
                    matchingRestartDescriptor,
                @"setup action deterministically prefers the originally offered writable APFS volume");
 
+        NSDictionary<NSString *, id> *duplicateNameSiblingDescriptor = @{
+            @"path": @"/Volumes/TOSHIBA_4TB 1",
+            @"name": @"TOSHIBA_4TB",
+            @"volumeUUID": @"SIBLING-UUID",
+            @"diskID": @"disk20",
+            @"isLocal": @YES,
+            @"isInternal": @NO,
+            @"isPhysical": @YES,
+            @"isSystemImage": @NO,
+            @"isWritable": @YES,
+            @"filesystem": @"apfs"
+        };
+        PickerUnknownVolumeNotificationTestDelegate *multipleCandidateDelegate =
+            [[PickerUnknownVolumeNotificationTestDelegate alloc] init];
+        multipleCandidateDelegate.selectedCandidateIndex = -1;
+        multipleCandidateDelegate.candidateMountPaths = @[
+            @"/Volumes/TOSHIBA_4TB", @"/Volumes/TOSHIBA_4TB 1"
+        ];
+        multipleCandidateDelegate.descriptorsByPath = @{
+            @"/Volumes/TOSHIBA_4TB": matchingRestartDescriptor,
+            @"/Volumes/TOSHIBA_4TB 1": duplicateNameSiblingDescriptor
+        };
+        NSDictionary *multipleCandidateUserInfo = @{
+            @"diskID": @"disk20",
+            @"volumeUUID": @"PRIVATE-UUID",
+            @"attachmentVolumeUUIDs": @[@"PRIVATE-UUID", @"SIBLING-UUID"]
+        };
+        ProcessUnknownVolumeAction(
+            multipleCandidateDelegate,
+            @"GDT_UNKNOWN_EXTERNAL_VOLUME_SETUP",
+            multipleCandidateUserInfo);
+        Assert(multipleCandidateDelegate.choiceCalls == 1 &&
+               multipleCandidateDelegate.choiceCandidates.count == 2 &&
+               multipleCandidateDelegate.setupPresentationCalls == 0 &&
+               multipleCandidateDelegate.unavailablePresentationCalls == 0,
+               @"multiple eligible volumes require a picker and cancellation leaves setup unchanged");
+
+        SEL choiceLabelsSelector = NSSelectorFromString(
+            @"unknownExternalVolumeChoiceLabelsForDescriptors:");
+        NSArray<NSString *> *duplicateNameLabels = @[];
+        if ([multipleCandidateDelegate respondsToSelector:choiceLabelsSelector]) {
+            typedef NSArray<NSString *> *(*ChoiceLabelsMethod)(id, SEL, NSArray *);
+            ChoiceLabelsMethod choiceLabelsMethod =
+                (ChoiceLabelsMethod)[multipleCandidateDelegate
+                    methodForSelector:choiceLabelsSelector];
+            duplicateNameLabels = choiceLabelsMethod(
+                multipleCandidateDelegate,
+                choiceLabelsSelector,
+                @[matchingRestartDescriptor, duplicateNameSiblingDescriptor]);
+        }
+        BOOL safeDuplicateLabels = duplicateNameLabels.count == 2 &&
+            [duplicateNameLabels[0] containsString:@"TOSHIBA_4TB"] &&
+            [duplicateNameLabels[1] containsString:@"TOSHIBA_4TB 1"];
+        for (NSString *label in duplicateNameLabels) {
+            safeDuplicateLabels = safeDuplicateLabels &&
+                ![label containsString:@"PRIVATE-UUID"] &&
+                ![label containsString:@"SIBLING-UUID"] &&
+                ![label containsString:@"disk20"] &&
+                ![label containsString:@"/Volumes/"];
+        }
+        Assert(safeDuplicateLabels,
+               @"duplicate volume names are distinguished by safe mount labels without UUID or BSD identifiers");
+
+        PickerUnknownVolumeNotificationTestDelegate *selectedCandidateDelegate =
+            [[PickerUnknownVolumeNotificationTestDelegate alloc] init];
+        selectedCandidateDelegate.selectedCandidateIndex = 1;
+        selectedCandidateDelegate.candidateMountPaths =
+            multipleCandidateDelegate.candidateMountPaths;
+        selectedCandidateDelegate.descriptorsByPath =
+            multipleCandidateDelegate.descriptorsByPath;
+        ProcessUnknownVolumeAction(
+            selectedCandidateDelegate,
+            @"GDT_UNKNOWN_EXTERNAL_VOLUME_SETUP",
+            multipleCandidateUserInfo);
+        Assert(selectedCandidateDelegate.choiceCalls == 1 &&
+               selectedCandidateDelegate.setupPresentationCalls == 1 &&
+               selectedCandidateDelegate.presentedDescriptor ==
+                   duplicateNameSiblingDescriptor &&
+               selectedCandidateDelegate.mountEnumerationCalls == 1 &&
+               selectedCandidateDelegate.inspectedPaths.count == 3 &&
+               [selectedCandidateDelegate.inspectedPaths.lastObject
+                   isEqualToString:@"/Volumes/TOSHIBA_4TB 1"],
+               @"an explicitly selected UUID is revalidated and only then staged");
+
+        PickerUnknownVolumeNotificationTestDelegate *disappearedSelectionDelegate =
+            [[PickerUnknownVolumeNotificationTestDelegate alloc] init];
+        disappearedSelectionDelegate.selectedCandidateIndex = 0;
+        disappearedSelectionDelegate.candidateMountPaths =
+            multipleCandidateDelegate.candidateMountPaths;
+        disappearedSelectionDelegate.descriptorsByPath =
+            multipleCandidateDelegate.descriptorsByPath;
+        disappearedSelectionDelegate.descriptorsByPathBeforeChoiceCompletion = @{
+            @"/Volumes/TOSHIBA_4TB 1": duplicateNameSiblingDescriptor
+        };
+        ProcessUnknownVolumeAction(
+            disappearedSelectionDelegate,
+            @"GDT_UNKNOWN_EXTERNAL_VOLUME_SETUP",
+            multipleCandidateUserInfo);
+        Assert(disappearedSelectionDelegate.choiceCalls == 1 &&
+               disappearedSelectionDelegate.setupPresentationCalls == 0 &&
+               disappearedSelectionDelegate.unavailablePresentationCalls == 1,
+               @"a selected volume that disappears cannot fall through to a mounted sibling");
+
+        NSMutableDictionary<NSString *, id> *swappedDescriptor =
+            [matchingRestartDescriptor mutableCopy];
+        swappedDescriptor[@"volumeUUID"] = @"REPLACEMENT-UUID";
+        PickerUnknownVolumeNotificationTestDelegate *swappedSelectionDelegate =
+            [[PickerUnknownVolumeNotificationTestDelegate alloc] init];
+        swappedSelectionDelegate.selectedCandidateIndex = 0;
+        swappedSelectionDelegate.candidateMountPaths =
+            multipleCandidateDelegate.candidateMountPaths;
+        swappedSelectionDelegate.descriptorsByPath =
+            multipleCandidateDelegate.descriptorsByPath;
+        swappedSelectionDelegate.descriptorsByPathBeforeChoiceCompletion = @{
+            @"/Volumes/TOSHIBA_4TB": swappedDescriptor,
+            @"/Volumes/TOSHIBA_4TB 1": duplicateNameSiblingDescriptor
+        };
+        ProcessUnknownVolumeAction(
+            swappedSelectionDelegate,
+            @"GDT_UNKNOWN_EXTERNAL_VOLUME_SETUP",
+            multipleCandidateUserInfo);
+        Assert(swappedSelectionDelegate.choiceCalls == 1 &&
+               swappedSelectionDelegate.setupPresentationCalls == 0 &&
+               swappedSelectionDelegate.unavailablePresentationCalls == 1,
+               @"a selected mount root whose UUID changed fails closed before staging");
+
         RestartUnknownVolumeNotificationTestDelegate *lateSiblingActionDelegate =
             [[RestartUnknownVolumeNotificationTestDelegate alloc] init];
         lateSiblingActionDelegate.candidateMountPaths =
@@ -2676,13 +2877,13 @@ int main(void) {
             lateSiblingActionDelegate,
             @"GDT_UNKNOWN_EXTERNAL_VOLUME_SETUP",
             unknownUserInfo);
-        Assert(lateSiblingActionDelegate.presentedDescriptor ==
-                   remainingSiblingDescriptor,
-               @"a sibling mounted after delivery remains eligible through the attachment marker");
+        Assert(lateSiblingActionDelegate.setupPresentationCalls == 0 &&
+               lateSiblingActionDelegate.unavailablePresentationCalls == 1,
+               @"an attachment marker cannot substitute a later sibling for the offered UUID");
 
         UnknownVolumeNotificationTestDelegate *backgroundActionDelegate =
             [[UnknownVolumeNotificationTestDelegate alloc] init];
-        backgroundActionDelegate.revalidatedDescriptor = unknownDescriptor;
+        backgroundActionDelegate.revalidatedCandidates = @[unknownDescriptor];
         dispatch_semaphore_t backgroundActionReturned = dispatch_semaphore_create(0);
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             ProcessUnknownVolumeAction(
