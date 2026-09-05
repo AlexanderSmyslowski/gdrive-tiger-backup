@@ -83,6 +83,17 @@ if [[ -x "$VALIDATOR" ]]; then
     failures=$((failures + 1))
   fi
 
+  # Candidate metadata must be verifiable before any public release exists.
+  # shellcheck disable=SC2016
+  printf 'Current release candidate: `%s`\nGDrive-Backup-Tiger-%s.pkg\n' \
+    "$tag" "$version" >"$FIXTURE_ROOT/README.md"
+  if "$FIXTURE_VALIDATOR" "$tag" >/dev/null 2>&1; then
+    printf 'ok - explicitly labelled release candidate passes metadata validation\n'
+  else
+    printf 'not ok - explicitly labelled release candidate passes metadata validation\n'
+    failures=$((failures + 1))
+  fi
+
   if "$FIXTURE_VALIDATOR" "v999.0.0" >/dev/null 2>&1; then
     printf 'not ok - mismatched release tag is rejected in the fixture\n'
     failures=$((failures + 1))

@@ -112,6 +112,16 @@ static NSDictionary<NSString *, id> *RunProductionUnknownVolumePicker(
     (NSDictionary<NSString *, NSString *> *)decision
          capturedActiveIssueTimestamp:(NSTimeInterval)capturedActiveIssueTimestamp;
 - (void)processAutomaticRetryDecision:(NSDictionary<NSString *, NSString *> *)decision;
+- (NSString *)automaticRetryLockPath;
+- (BOOL)automaticRetryLockIsAvailable;
+- (NSString *)automaticRetrySummaryPathForProfileID:(NSString *)profileID;
+- (NSDictionary<NSString *, NSString *> *)automaticRetrySummaryAtPath:(NSString *)path;
+- (NSDictionary<NSString *, NSString *> *)automaticRetryDecisionForSummary:
+    (NSDictionary<NSString *, NSString *> *)summary
+                                                               summaryPath:(NSString *)summaryPath
+                                                                 profileID:(NSString *)profileID;
+- (BOOL)launchAutomaticRetryDecision:(NSDictionary<NSString *, NSString *> *)decision
+                           completion:(void (^)(NSInteger status))completion;
 - (NSUserDefaults *)backupNotificationDefaultsStore;
 - (void)deliverBackupNotificationDecision:(NSDictionary<NSString *, NSString *> *)decision
                                 completion:(void (^)(BOOL delivered))completion;
@@ -747,8 +757,17 @@ static NSDictionary<NSString *, id> *RunProductionUnknownVolumePicker(
 @interface RetryTestDelegate : NotificationTestDelegate
 @property(nonatomic) NSInteger retryLaunchCalls;
 @property(nonatomic) BOOL retryLaunchSucceeds;
+@property(nonatomic) BOOL retryLockAvailable;
+@property(nonatomic) NSInteger overviewRefreshCalls;
 @property(nonatomic, copy) NSDictionary<NSString *, NSString *> *lastRetryDecision;
 @property(nonatomic, copy) NSDictionary<NSString *, NSString *> *revalidatedRetryDecision;
+@property(nonatomic, copy) NSDictionary<NSString *, NSString *> *latestRetryDecision;
+@property(nonatomic, copy) NSDictionary<NSString *, NSString *> *currentRetrySummary;
+@property(nonatomic, copy) NSString *retrySummaryPath;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *
+    retrySummariesByPath;
+@property(nonatomic, strong) NSMutableArray<NSString *> *retrySummaryReadPaths;
+@property(nonatomic, strong) NSMutableArray<void (^)(NSInteger)> *retryCompletions;
 @end
 
 @implementation RetryTestDelegate
@@ -759,8 +778,60 @@ static NSDictionary<NSString *, id> *RunProductionUnknownVolumePicker(
     return self.retryLaunchSucceeds;
 }
 
+- (BOOL)launchAutomaticRetryDecision:(NSDictionary<NSString *, NSString *> *)decision
+                           completion:(void (^)(NSInteger status))completion {
+    self.retryLaunchCalls++;
+    self.lastRetryDecision = decision;
+    if (self.retryLaunchSucceeds && completion) {
+        if (!self.retryCompletions) self.retryCompletions = [NSMutableArray array];
+        [self.retryCompletions addObject:[completion copy]];
+    }
+    return self.retryLaunchSucceeds;
+}
+
+- (BOOL)automaticRetryLockIsAvailable {
+    return self.retryLockAvailable;
+}
+
+- (NSString *)automaticRetrySummaryPathForProfileID:(NSString *)profileID {
+    return self.retrySummaryPath ?: [@"summary://" stringByAppendingString:profileID ?: @""];
+}
+
+- (NSDictionary<NSString *, NSString *> *)automaticRetrySummaryAtPath:(NSString *)path {
+    if (!self.retrySummaryReadPaths) self.retrySummaryReadPaths = [NSMutableArray array];
+    [self.retrySummaryReadPaths addObject:path ?: @""];
+    return self.retrySummariesByPath[path] ?: self.currentRetrySummary ?: @{};
+}
+
+- (NSDictionary<NSString *, NSString *> *)automaticRetryDecisionForSummary:
+    (NSDictionary<NSString *, NSString *> *)summary
+                                                               summaryPath:(NSString *)summaryPath
+                                                                 profileID:(NSString *)profileID {
+    (void)summary;
+    (void)summaryPath;
+    (void)profileID;
+    return self.latestRetryDecision ?: self.revalidatedRetryDecision;
+}
+
 - (NSDictionary<NSString *, NSString *> *)currentAutomaticRetryDecision {
     return self.revalidatedRetryDecision;
+}
+
+- (void)refreshOverviewStatus:(id)sender {
+    (void)sender;
+    self.overviewRefreshCalls++;
+}
+
+@end
+
+@interface RetryLockProbeDelegate : NotificationTestDelegate
+@property(nonatomic, copy) NSString *testRetryLockPath;
+@end
+
+@implementation RetryLockProbeDelegate
+
+- (NSString *)automaticRetryLockPath {
+    return self.testRetryLockPath ?: @"";
 }
 
 @end
@@ -871,6 +942,13 @@ static void ProcessRetry(RetryTestDelegate *delegate,
     typedef void (*ProcessMethod)(id, SEL, NSDictionary *);
     ProcessMethod method = (ProcessMethod)[delegate methodForSelector:selector];
     method(delegate, selector, decision);
+}
+
+static void CompleteNextRetry(RetryTestDelegate *delegate, NSInteger status) {
+    if (!delegate.retryCompletions.count) return;
+    void (^completion)(NSInteger) = delegate.retryCompletions.firstObject;
+    [delegate.retryCompletions removeObjectAtIndex:0];
+    completion(status);
 }
 
 static void HandleBackupAction(id delegate, NSString *action,
@@ -2366,10 +2444,28 @@ int main(void) {
                        isEqualToString:@"failure"],
                @"a rejected running revision remains retryable and is never persisted");
 
-        RetryTestDelegate *retryDelegate = [[RetryTestDelegate alloc] init];
-        retryDelegate.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
-            [suiteName stringByAppendingString:@".retry"]];
-        retryDelegate.retryLaunchSucceeds = YES;
+        NSString *retryLockProbePath = [NSTemporaryDirectory()
+            stringByAppendingPathComponent:[NSString stringWithFormat:
+                @"gdrive-retry-lock-%@", NSUUID.UUID.UUIDString]];
+        BOOL retryLockFixtureCreated = [[NSData data] writeToFile:retryLockProbePath
+                                                       atomically:YES];
+        int retryLockDescriptor = open(retryLockProbePath.fileSystemRepresentation,
+                                       O_WRONLY | O_CLOEXEC);
+        BOOL retryLockHeld = retryLockDescriptor >= 0 &&
+            flock(retryLockDescriptor, LOCK_EX | LOCK_NB) == 0;
+        RetryLockProbeDelegate *retryLockProbe = [[RetryLockProbeDelegate alloc] init];
+        retryLockProbe.testRetryLockPath = retryLockProbePath;
+        BOOL busyLockDetected = retryLockHeld &&
+            ![retryLockProbe automaticRetryLockIsAvailable];
+        if (retryLockHeld) (void)flock(retryLockDescriptor, LOCK_UN);
+        BOOL releasedLockDetected = [retryLockProbe automaticRetryLockIsAvailable];
+        if (retryLockDescriptor >= 0) (void)close(retryLockDescriptor);
+        [NSFileManager.defaultManager trashItemAtURL:
+            [NSURL fileURLWithPath:retryLockProbePath] resultingItemURL:nil error:nil];
+        Assert(retryLockFixtureCreated && retryLockHeld && busyLockDetected &&
+               releasedLockDetected,
+               @"the read-only retry probe detects and releases the engine's global lock");
+
         NSDictionary<NSString *, NSString *> *retryDecision = @{
             @"identifier": @"office.automatic-retry.100",
             @"profileID": @"office",
@@ -2377,21 +2473,179 @@ int main(void) {
             @"attempt": @"1",
             @"trigger": @"schedule-retry"
         };
-        retryDelegate.revalidatedRetryDecision = retryDecision;
-        ProcessRetry(retryDelegate, retryDecision);
-        ProcessRetry(retryDelegate, retryDecision);
-        Assert(retryDelegate.retryLaunchCalls == 1 &&
-               [retryDelegate.lastRetryDecision[@"originStartedAt"] isEqualToString:@"100"],
-               @"the same durable failure can launch only one automatic retry");
+        NSDictionary<NSString *, NSString *> *scheduledFailure = @{
+            @"protocol": @"1",
+            @"status": @"failure",
+            @"pid": @"123",
+            @"started_at": @"100",
+            @"finished_at": @"110",
+            @"exit_code": @"69",
+            @"trigger": @"schedule",
+            @"target": @"nas",
+            @"reason": @"destination_unreadable"
+        };
+        NSDictionary<NSString *, NSString *> *matchingRetryFailure = @{
+            @"protocol": @"1",
+            @"status": @"failure",
+            @"pid": @"124",
+            @"started_at": @"200",
+            @"finished_at": @"210",
+            @"exit_code": @"69",
+            @"trigger": @"schedule-retry",
+            @"target": @"nas",
+            @"reason": @"destination_unreadable",
+            @"retry_origin_started_at": @"100",
+            @"retry_attempt": @"1"
+        };
+        NSString *retryClaimKey =
+            @"GDTBackupNotification.office.lastAutomaticRetryIdentifier";
 
+        RetryTestDelegate *blockedRetry = [[RetryTestDelegate alloc] init];
+        blockedRetry.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+            [suiteName stringByAppendingString:@".retry-blocked"]];
+        blockedRetry.retryLaunchSucceeds = YES;
+        blockedRetry.retryLockAvailable = NO;
+        blockedRetry.revalidatedRetryDecision = retryDecision;
+        blockedRetry.currentRetrySummary = scheduledFailure;
+        ProcessRetry(blockedRetry, retryDecision);
+        ProcessRetry(blockedRetry, retryDecision);
+        Assert(blockedRetry.retryLaunchCalls == 0 &&
+               [blockedRetry.testDefaults objectForKey:retryClaimKey] == nil,
+               @"a busy global backup lock defers retry without launching or claiming it");
+
+        RetryTestDelegate *newerClaimBeforeLaunch = [[RetryTestDelegate alloc] init];
+        newerClaimBeforeLaunch.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+            [suiteName stringByAppendingString:@".retry-newer-prelaunch"]];
+        newerClaimBeforeLaunch.retryLaunchSucceeds = YES;
+        newerClaimBeforeLaunch.retryLockAvailable = YES;
+        newerClaimBeforeLaunch.revalidatedRetryDecision = retryDecision;
+        newerClaimBeforeLaunch.currentRetrySummary = scheduledFailure;
+        [newerClaimBeforeLaunch.testDefaults setObject:@"office.automatic-retry.300"
+                                                forKey:retryClaimKey];
+        ProcessRetry(newerClaimBeforeLaunch, retryDecision);
+        Assert(newerClaimBeforeLaunch.retryLaunchCalls == 0 &&
+               [[newerClaimBeforeLaunch.testDefaults stringForKey:retryClaimKey]
+                   isEqualToString:@"office.automatic-retry.300"],
+               @"a newer persistent retry marker blocks an older decision before launch");
+
+        RetryTestDelegate *publishedRetryBeforeLaunch = [[RetryTestDelegate alloc] init];
+        publishedRetryBeforeLaunch.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+            [suiteName stringByAppendingString:@".retry-published-prelaunch"]];
+        publishedRetryBeforeLaunch.retryLaunchSucceeds = YES;
+        publishedRetryBeforeLaunch.retryLockAvailable = YES;
+        publishedRetryBeforeLaunch.revalidatedRetryDecision = retryDecision;
+        publishedRetryBeforeLaunch.latestRetryDecision = @{};
+        publishedRetryBeforeLaunch.currentRetrySummary = matchingRetryFailure;
+        ProcessRetry(publishedRetryBeforeLaunch, retryDecision);
+        Assert(publishedRetryBeforeLaunch.retryLaunchCalls == 0,
+               @"a retry result published during revalidation prevents a duplicate launch");
+
+        NSDictionary<NSString *, NSString *> *newerScheduledFailure = @{
+            @"protocol": @"1",
+            @"status": @"failure",
+            @"pid": @"125",
+            @"started_at": @"300",
+            @"finished_at": @"310",
+            @"exit_code": @"69",
+            @"trigger": @"schedule",
+            @"target": @"nas",
+            @"reason": @"destination_unreadable"
+        };
+        NSDictionary<NSString *, NSString *> *newerRetryDecision = @{
+            @"identifier": @"office.automatic-retry.300",
+            @"profileID": @"office",
+            @"originStartedAt": @"300",
+            @"attempt": @"1",
+            @"trigger": @"schedule-retry"
+        };
+        RetryTestDelegate *newerSummaryBeforeLaunch = [[RetryTestDelegate alloc] init];
+        newerSummaryBeforeLaunch.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+            [suiteName stringByAppendingString:@".retry-newer-summary-prelaunch"]];
+        newerSummaryBeforeLaunch.retryLaunchSucceeds = YES;
+        newerSummaryBeforeLaunch.retryLockAvailable = YES;
+        newerSummaryBeforeLaunch.revalidatedRetryDecision = retryDecision;
+        newerSummaryBeforeLaunch.latestRetryDecision = newerRetryDecision;
+        newerSummaryBeforeLaunch.currentRetrySummary = newerScheduledFailure;
+        ProcessRetry(newerSummaryBeforeLaunch, retryDecision);
+        Assert(newerSummaryBeforeLaunch.retryLaunchCalls == 0,
+               @"a newer schedule failure published during revalidation supersedes the old retry");
+
+        [blockedRetry.testDefaults setObject:retryDecision[@"identifier"]
+                                      forKey:retryClaimKey];
+        ProcessRetry(blockedRetry, retryDecision);
+        Assert(blockedRetry.retryLaunchCalls == 0,
+               @"an obsolete launch-only claim cannot bypass a busy backup lock");
+        blockedRetry.retryLockAvailable = YES;
+        ProcessRetry(blockedRetry, retryDecision);
+        ProcessRetry(blockedRetry, retryDecision);
+        Assert(blockedRetry.retryLaunchCalls == 1 &&
+               blockedRetry.retryCompletions.count == 1,
+               @"releasing the lock starts exactly one retry despite an obsolete claim");
+        blockedRetry.currentRetrySummary = matchingRetryFailure;
+        CompleteNextRetry(blockedRetry, 69);
+        Assert([[blockedRetry.testDefaults stringForKey:retryClaimKey]
+                    isEqualToString:retryDecision[@"identifier"]],
+               @"a matching durable retry result verifies the persistent claim");
+        ProcessRetry(blockedRetry, retryDecision);
+        Assert(blockedRetry.retryLaunchCalls == 1,
+               @"a verified persistent retry claim prevents a duplicate launch");
+
+        RetryTestDelegate *restartedRetry = [[RetryTestDelegate alloc] init];
+        restartedRetry.testDefaults = blockedRetry.testDefaults;
+        restartedRetry.retryLaunchSucceeds = YES;
+        restartedRetry.retryLockAvailable = YES;
+        restartedRetry.revalidatedRetryDecision = retryDecision;
+        restartedRetry.currentRetrySummary = matchingRetryFailure;
+        ProcessRetry(restartedRetry, retryDecision);
+        Assert(restartedRetry.retryLaunchCalls == 0,
+               @"a verified claim remains deduplicated after a controller restart");
+
+        RetryTestDelegate *olderClaimRetry = [[RetryTestDelegate alloc] init];
+        olderClaimRetry.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+            [suiteName stringByAppendingString:@".retry-older-claim"]];
+        olderClaimRetry.retryLaunchSucceeds = YES;
+        olderClaimRetry.retryLockAvailable = YES;
+        olderClaimRetry.revalidatedRetryDecision = retryDecision;
+        olderClaimRetry.currentRetrySummary = scheduledFailure;
+        [olderClaimRetry.testDefaults setObject:@"office.automatic-retry.50"
+                                         forKey:retryClaimKey];
+        ProcessRetry(olderClaimRetry, retryDecision);
+        olderClaimRetry.currentRetrySummary = matchingRetryFailure;
+        CompleteNextRetry(olderClaimRetry, 69);
+        Assert([[olderClaimRetry.testDefaults stringForKey:retryClaimKey]
+                    isEqualToString:retryDecision[@"identifier"]],
+               @"a verified retry replaces an older persistent claim for the profile");
+
+        RetryTestDelegate *lockSkippedRetry = [[RetryTestDelegate alloc] init];
+        lockSkippedRetry.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+            [suiteName stringByAppendingString:@".retry-lock-skipped"]];
+        lockSkippedRetry.retryLaunchSucceeds = YES;
+        lockSkippedRetry.retryLockAvailable = YES;
+        lockSkippedRetry.revalidatedRetryDecision = retryDecision;
+        lockSkippedRetry.currentRetrySummary = scheduledFailure;
+        ProcessRetry(lockSkippedRetry, retryDecision);
+        ProcessRetry(lockSkippedRetry, retryDecision);
+        Assert(lockSkippedRetry.retryLaunchCalls == 1 &&
+               [lockSkippedRetry.testDefaults objectForKey:retryClaimKey] == nil,
+               @"task acceptance alone neither duplicates nor consumes a retry");
+        CompleteNextRetry(lockSkippedRetry, 0);
+        Assert([lockSkippedRetry.testDefaults objectForKey:retryClaimKey] == nil,
+               @"a lock-skipped child with the unchanged schedule failure remains unclaimed");
+        ProcessRetry(lockSkippedRetry, retryDecision);
+        Assert(lockSkippedRetry.retryLaunchCalls == 2,
+               @"a lock-skipped retry becomes eligible again after its child exits");
+
+        RetryTestDelegate *retryDelegate = [[RetryTestDelegate alloc] init];
+        retryDelegate.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+            [suiteName stringByAppendingString:@".retry-launch-failure"]];
+        retryDelegate.retryLockAvailable = YES;
+        retryDelegate.revalidatedRetryDecision = retryDecision;
         retryDelegate.retryLaunchSucceeds = NO;
-        NSMutableDictionary<NSString *, NSString *> *notLaunched = [retryDecision mutableCopy];
-        notLaunched[@"identifier"] = @"office.automatic-retry.200";
-        notLaunched[@"originStartedAt"] = @"200";
-        retryDelegate.revalidatedRetryDecision = notLaunched;
-        ProcessRetry(retryDelegate, notLaunched);
-        ProcessRetry(retryDelegate, notLaunched);
-        Assert(retryDelegate.retryLaunchCalls == 3,
+        retryDelegate.currentRetrySummary = scheduledFailure;
+        ProcessRetry(retryDelegate, retryDecision);
+        ProcessRetry(retryDelegate, retryDecision);
+        Assert(retryDelegate.retryLaunchCalls == 2 &&
+               [retryDelegate.testDefaults objectForKey:retryClaimKey] == nil,
                @"a failed task launch is not persisted as an executed retry");
 
         NSMutableDictionary<NSString *, NSString *> *stale = [retryDecision mutableCopy];
@@ -2399,8 +2653,82 @@ int main(void) {
         stale[@"originStartedAt"] = @"300";
         retryDelegate.revalidatedRetryDecision = nil;
         ProcessRetry(retryDelegate, stale);
-        Assert(retryDelegate.retryLaunchCalls == 3,
+        Assert(retryDelegate.retryLaunchCalls == 2,
                @"a stale asynchronous retry decision is revalidated before launch");
+
+        RetryTestDelegate *supersededRetry = [[RetryTestDelegate alloc] init];
+        supersededRetry.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+            [suiteName stringByAppendingString:@".retry-superseded"]];
+        supersededRetry.retryLaunchSucceeds = YES;
+        supersededRetry.retryLockAvailable = YES;
+        supersededRetry.revalidatedRetryDecision = retryDecision;
+        supersededRetry.currentRetrySummary = scheduledFailure;
+        ProcessRetry(supersededRetry, retryDecision);
+        NSString *newerRetryIdentifier = @"office.automatic-retry.300";
+        [supersededRetry.testDefaults setObject:newerRetryIdentifier
+                                         forKey:retryClaimKey];
+        supersededRetry.currentRetrySummary = matchingRetryFailure;
+        supersededRetry.revalidatedRetryDecision = nil;
+        CompleteNextRetry(supersededRetry, 69);
+        Assert([[supersededRetry.testDefaults stringForKey:retryClaimKey]
+                    isEqualToString:newerRetryIdentifier],
+               @"a matching retry completion cannot overwrite a newer persistent claim");
+
+        RetryTestDelegate *malformedClaimRetry = [[RetryTestDelegate alloc] init];
+        malformedClaimRetry.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+            [suiteName stringByAppendingString:@".retry-malformed-claim"]];
+        malformedClaimRetry.retryLaunchSucceeds = YES;
+        malformedClaimRetry.retryLockAvailable = YES;
+        malformedClaimRetry.revalidatedRetryDecision = retryDecision;
+        malformedClaimRetry.currentRetrySummary = scheduledFailure;
+        ProcessRetry(malformedClaimRetry, retryDecision);
+        [malformedClaimRetry.testDefaults setObject:@"not-a-valid-retry-marker"
+                                             forKey:retryClaimKey];
+        malformedClaimRetry.currentRetrySummary = matchingRetryFailure;
+        CompleteNextRetry(malformedClaimRetry, 69);
+        Assert([[malformedClaimRetry.testDefaults stringForKey:retryClaimKey]
+                    isEqualToString:@"not-a-valid-retry-marker"],
+               @"a matching retry completion cannot overwrite a malformed persistent claim");
+
+        RetryTestDelegate *foreignProfileRetry = [[RetryTestDelegate alloc] init];
+        foreignProfileRetry.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+            [suiteName stringByAppendingString:@".retry-foreign-profile"]];
+        foreignProfileRetry.retryLaunchSucceeds = YES;
+        foreignProfileRetry.retryLockAvailable = YES;
+        foreignProfileRetry.revalidatedRetryDecision = retryDecision;
+        foreignProfileRetry.retrySummaryPath = @"summary://office";
+        foreignProfileRetry.retrySummariesByPath = [@{
+            @"summary://office": scheduledFailure,
+            @"summary://archive": matchingRetryFailure
+        } mutableCopy];
+        ProcessRetry(foreignProfileRetry, retryDecision);
+        foreignProfileRetry.retrySummaryPath = @"summary://archive";
+        CompleteNextRetry(foreignProfileRetry, 69);
+        Assert([foreignProfileRetry.testDefaults objectForKey:retryClaimKey] == nil &&
+               [foreignProfileRetry.retrySummaryReadPaths.lastObject
+                   isEqualToString:@"summary://office"],
+               @"a profile switch cannot attribute a foreign matching-origin summary to the retry");
+
+        RetryTestDelegate *switchedProfileRetry = [[RetryTestDelegate alloc] init];
+        switchedProfileRetry.testDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+            [suiteName stringByAppendingString:@".retry-switched-profile"]];
+        switchedProfileRetry.retryLaunchSucceeds = YES;
+        switchedProfileRetry.retryLockAvailable = YES;
+        switchedProfileRetry.revalidatedRetryDecision = retryDecision;
+        switchedProfileRetry.retrySummaryPath = @"summary://office";
+        switchedProfileRetry.retrySummariesByPath = [@{
+            @"summary://office": scheduledFailure,
+            @"summary://archive": scheduledFailure
+        } mutableCopy];
+        ProcessRetry(switchedProfileRetry, retryDecision);
+        switchedProfileRetry.retrySummariesByPath[@"summary://office"] = matchingRetryFailure;
+        switchedProfileRetry.retrySummaryPath = @"summary://archive";
+        CompleteNextRetry(switchedProfileRetry, 69);
+        Assert([[switchedProfileRetry.testDefaults stringForKey:retryClaimKey]
+                    isEqualToString:retryDecision[@"identifier"]] &&
+               [switchedProfileRetry.retrySummaryReadPaths.lastObject
+                   isEqualToString:@"summary://office"],
+               @"a profile switch still verifies the retry against its captured summary source");
 
         SEL contentSelector = NSSelectorFromString(@"backupNotificationContentForDecision:");
         typedef UNMutableNotificationContent *(*ContentMethod)(

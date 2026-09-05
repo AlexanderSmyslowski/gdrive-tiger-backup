@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v2.5.1 - 2026-09-05
+
+- Defer automatic NAS retries while another backup holds the shared backup lock. A contended process launch no longer consumes the single retry; the original failed schedule remains eligible until a real retry starts or a newer run supersedes it.
+- Recover retry markers left by earlier app versions when the durable status still proves that no retry ran. Keep duplicate-start protection while waiting for the running backup to finish.
+
 ## v2.5.0 - 2026-09-05
 
 - Choose the destination for a single manual backup directly in the main window. Saved NAS and external APFS destinations are listed by readable identity; the automatic profile and schedule remain unchanged.
