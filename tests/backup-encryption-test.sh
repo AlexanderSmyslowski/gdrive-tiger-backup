@@ -26,16 +26,24 @@ pass() {
 
 prepare_test_environment() {
   TEST_HOME="$(mktemp -d "${TMPDIR:-/tmp}/gdrive-encryption-test.XXXXXX")"
+  TEST_HOME="$(cd "$TEST_HOME" && /bin/pwd -P)"
   TEST_DIRS+=("$TEST_HOME")
   FAKE_BIN="$TEST_HOME/fake-bin"
   VOLUME="$TEST_HOME/GoogleDrive-Backup"
   DISKUTIL_LOG="$TEST_HOME/diskutil.log"
   DISKUTIL_COUNT_FILE="$TEST_HOME/diskutil-count"
+  APFS_LIST_COUNT_FILE="$TEST_HOME/apfs-list-count"
   OSASCRIPT_LOG="$TEST_HOME/osascript.log"
+  OPEN_LOG="$TEST_HOME/open.log"
   RCLONE_LOG="$TEST_HOME/rclone.log"
   CRYPT_CONFIG_COUNT="$TEST_HOME/crypt-config-count"
   RETENTION_TRASH="$TEST_HOME/retention-trash"
   mkdir -p "$FAKE_BIN"
+  : >"$DISKUTIL_LOG"
+  : >"$OSASCRIPT_LOG"
+  : >"$OPEN_LOG"
+  : >"$RCLONE_LOG"
+  : >"$TEST_HOME/backup.log"
 
   cat >"$FAKE_BIN/rclone" <<'SH'
 #!/bin/bash
@@ -237,6 +245,17 @@ PLIST
   exit 0
 fi
 if [[ "${1:-}" == "apfs" && "${2:-}" == "list" && "${3:-}" == "-plist" ]]; then
+  list_count=1
+  if [[ -f "${FAKE_APFS_LIST_COUNT_FILE:?}" ]]; then
+    list_count="$(( $(<"$FAKE_APFS_LIST_COUNT_FILE") + 1 ))"
+  fi
+  printf '%s\n' "$list_count" >"$FAKE_APFS_LIST_COUNT_FILE"
+  if (( ${FAKE_APFS_APPEAR_AFTER_LIST_COUNT:-0} > 0 &&
+        list_count >= ${FAKE_APFS_APPEAR_AFTER_LIST_COUNT:-0} )) &&
+     [[ ! -e "${FAKE_APFS_APPEARED_MARKER:-/missing-appeared-marker}" ]]; then
+    : >"$FAKE_APFS_APPEARED_MARKER"
+    mkdir -p "${FAKE_APPEARED_MOUNT:?}"
+  fi
   emit_volume() {
     local uuid="$1"
     local name="$2"
@@ -265,6 +284,11 @@ PLIST
       "${FAKE_SECOND_NEW_APFS_UUID:-}" \
       "${FAKE_SECOND_CREATED_NAME:-GoogleDrive-Backup}"
   fi
+  if [[ -f "${FAKE_APFS_APPEARED_MARKER:-/missing-appeared-marker}" ]]; then
+    emit_volume \
+      "${FAKE_APPEARED_APFS_UUID:-cccccccc-cccc-cccc-cccc-cccccccccccc}" \
+      "${FAKE_APPEARED_APFS_NAME:-GoogleDrive-Backup}"
+  fi
   cat <<'PLIST'
 </array></dict></array></dict></plist>
 PLIST
@@ -281,6 +305,21 @@ fi
 exit 64
 SH
 
+  cat >"$FAKE_BIN/open" <<'SH'
+#!/bin/bash
+set -u
+printf '%s\n' "$*" >>"${FAKE_OPEN_LOG:?}"
+response_path="${!#}"
+printf '%s\n' "${FAKE_CONFIRM_RESPONSE:-no}" >"$response_path"
+if [[ -n "${FAKE_CONFIRMATION_APPEAR_MARKER:-}" ]]; then
+  : >"$FAKE_CONFIRMATION_APPEAR_MARKER"
+fi
+if [[ -n "${FAKE_CONFIRMATION_APPEAR_MOUNT:-}" ]]; then
+  mkdir -p "$FAKE_CONFIRMATION_APPEAR_MOUNT"
+fi
+exit "${FAKE_OPEN_STATUS:-0}"
+SH
+
   cat >"$FAKE_BIN/osascript" <<'SH'
 #!/bin/bash
 set -u
@@ -291,7 +330,7 @@ exit "${FAKE_PRIVILEGED_ADD_STATUS:-0}"
 SH
 
   chmod +x "$FAKE_BIN/rclone" "$FAKE_BIN/jq" "$FAKE_BIN/flock" "$FAKE_BIN/diskutil" \
-    "$FAKE_BIN/osascript" "$FAKE_BIN/trash"
+    "$FAKE_BIN/osascript" "$FAKE_BIN/open" "$FAKE_BIN/trash"
 }
 
 run_backup_command() {
@@ -304,7 +343,9 @@ run_backup_command() {
     GDRIVE_BACKUP_OSASCRIPT="$FAKE_BIN/osascript" \
     FAKE_DISKUTIL_LOG="$DISKUTIL_LOG" \
     FAKE_DISKUTIL_COUNT_FILE="$DISKUTIL_COUNT_FILE" \
+    FAKE_APFS_LIST_COUNT_FILE="$APFS_LIST_COUNT_FILE" \
     FAKE_OSASCRIPT_LOG="$OSASCRIPT_LOG" \
+    FAKE_OPEN_LOG="$OPEN_LOG" \
     FAKE_RCLONE_LOG="$RCLONE_LOG" \
     FAKE_CRYPT_CONFIG_COUNT="$CRYPT_CONFIG_COUNT" \
     FAKE_CRYPT_REMOTE="${FAKE_CRYPT_REMOTE:-backup-crypt}" \
@@ -326,6 +367,7 @@ run_backup_command() {
     MOUNT_SETTLE_SECONDS=0 \
     GDRIVE_BACKUP_TARGET=apfs \
     GDRIVE_BACKUP_VOLUME="$VOLUME" \
+    GDRIVE_BACKUP_VOLUME_UUID="${GDRIVE_BACKUP_VOLUME_UUID:-11111111-2222-3333-4444-555555555555}" \
     GDRIVE_BACKUP_DEST_ROOT="$VOLUME" \
     GDRIVE_BACKUP_CONFIRM=0 \
     GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1 \
@@ -335,6 +377,7 @@ run_backup_command() {
     GDRIVE_BACKUP_LOCK="$TEST_HOME/backup.lock" \
     GDRIVE_BACKUP_LOG="$TEST_HOME/backup.log" \
     BACKUP_DISABLE_ANIMATION=1 \
+    FAKE_MOUNT_POINT="${FAKE_MOUNT_POINT:-$VOLUME}" \
     RCLONE_REMOTE=tdd-remote \
     "$@" \
     "$BACKUP_SCRIPT" "$argument"
@@ -384,7 +427,8 @@ test_encrypted_mode_never_auto_creates_plain_volume() {
   local status
   prepare_test_environment
 
-  run_backup GDRIVE_BACKUP_ENCRYPTION=apfs
+  run_backup GDRIVE_BACKUP_ENCRYPTION=apfs \
+    GDRIVE_BACKUP_VOLUME_UUID= GDRIVE_BACKUP_TRIGGER=setup
   status=$?
 
   if [[ "$status" == "69" ]] &&
@@ -434,8 +478,8 @@ test_encrypted_apfs_volume_is_accepted() {
   fi
 }
 
-test_default_mode_preserves_existing_targets() {
-  local name="default mode keeps existing unencrypted target behavior"
+test_default_mode_preserves_uuid_bound_targets() {
+  local name="default mode keeps existing UUID-bound unencrypted target behavior"
   local status
   prepare_test_environment
   mkdir -p "$VOLUME"
@@ -443,7 +487,7 @@ test_default_mode_preserves_existing_targets() {
   run_backup
   status=$?
 
-  if [[ "$status" == "0" && ( ! -e "$DISKUTIL_LOG" || ! -s "$DISKUTIL_LOG" ) ]] &&
+  if [[ "$status" == "0" && -s "$DISKUTIL_LOG" ]] &&
     grep -Fq 'copy ' "$RCLONE_LOG"; then
     pass "$name"
   else
@@ -734,7 +778,8 @@ test_rclone_crypt_rejects_physical_symlink_redirection() {
     run_backup GDRIVE_BACKUP_ENCRYPTION=rclone-crypt \
       GDRIVE_BACKUP_CRYPT_REMOTE=backup-crypt
     status=$?
-    if [[ "$status" == "78" ]] && ! grep -Eq '^copy( |$)' "$RCLONE_LOG"; then
+    if [[ "$status" == "69" || "$status" == "78" ]] &&
+       ! grep -Eq '^copy( |$)' "$RCLONE_LOG"; then
       rejected=$((rejected + 1))
     fi
   done
@@ -1117,7 +1162,7 @@ test_apfs_tree_device_validation_streams_its_inventory() {
 test_existing_named_apfs_volume_is_recovered_idempotently() {
   local name="one existing exact-name APFS volume is recovered and reused by UUID"
   local volumes_root configured_volume source_mount recovered_mount recovered_real
-  local config marker status_one status_two saved_volume saved_uuid add_count copy_count
+  local config marker status_one status_two saved_volume saved_uuid saved_destination add_count copy_count
   prepare_test_environment
   volumes_root="$TEST_HOME/Volumes"
   configured_volume="$volumes_root/Stale Backup Path"
@@ -1132,6 +1177,7 @@ GDRIVE_BACKUP_TARGET=apfs
 GDRIVE_BACKUP_VOLUME='$configured_volume'
 GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
 GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_DEST_ROOT='$configured_volume/nested/backup'
 GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
 CONFIG
 
@@ -1139,6 +1185,7 @@ CONFIG
     GDRIVE_BACKUP_CONFIG="$config" \
     GDRIVE_BACKUP_DEST_ROOT= \
     GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
     FAKE_APFS_CREATED_MARKER="$marker" \
     FAKE_CANDIDATE_MOUNT="$source_mount" \
     FAKE_CANDIDATE_UUID=11111111-2222-3333-4444-555555555555 \
@@ -1155,6 +1202,7 @@ CONFIG
     GDRIVE_BACKUP_CONFIG="$config" \
     GDRIVE_BACKUP_DEST_ROOT= \
     GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=manual \
     FAKE_APFS_CREATED_MARKER="$marker" \
     FAKE_CANDIDATE_MOUNT="$source_mount" \
     FAKE_CANDIDATE_UUID=11111111-2222-3333-4444-555555555555 \
@@ -1169,17 +1217,19 @@ CONFIG
 
   saved_volume="$(/bin/bash -c 'source "$1"; printf "%s" "${GDRIVE_BACKUP_VOLUME:-}"' _ "$config")"
   saved_uuid="$(/bin/bash -c 'source "$1"; printf "%s" "${GDRIVE_BACKUP_VOLUME_UUID:-}"' _ "$config")"
+  saved_destination="$(/bin/bash -c 'source "$1"; printf "%s" "${GDRIVE_BACKUP_DEST_ROOT:-}"' _ "$config")"
   add_count="$(grep -Fc 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null || true)"
-  copy_count="$(grep -Fc "$recovered_real/My Drive" "$RCLONE_LOG" 2>/dev/null || true)"
+  copy_count="$(grep -Fc "$recovered_real/nested/backup/My Drive" "$RCLONE_LOG" 2>/dev/null || true)"
 
   if [[ "$status_one" == "0" && "$status_two" == "0" &&
         "$saved_volume" == "$recovered_real" &&
         "$saved_uuid" == "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC" &&
+        "$saved_destination" == "$recovered_real/nested/backup" &&
         "$add_count" == "0" && "$copy_count" == "2" ]] &&
     ! grep -Fq "$configured_volume/My Drive" "$RCLONE_LOG"; then
     pass "$name"
   else
-    fail "$name (statuses $status_one/$status_two, volume $saved_volume, uuid $saved_uuid, add $add_count, copies $copy_count)"
+    fail "$name (statuses $status_one/$status_two, volume $saved_volume, destination $saved_destination, uuid $saved_uuid, add $add_count, copies $copy_count)"
   fi
 }
 
@@ -1261,6 +1311,7 @@ CONFIG
     GDRIVE_BACKUP_CONFIG="$config" \
     GDRIVE_BACKUP_DEST_ROOT= \
     GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
     FAKE_CANDIDATE_MOUNT="$source_mount" \
     FAKE_CANDIDATE_UUID=11111111-2222-3333-4444-555555555555 \
     FAKE_NAMED_UUID=cccccccc-cccc-cccc-cccc-cccccccccccc \
@@ -1345,6 +1396,7 @@ CONFIG
     GDRIVE_BACKUP_CONFIG="$config" \
     GDRIVE_BACKUP_DEST_ROOT= \
     GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
     FAKE_APFS_CREATED_MARKER="$marker" \
     FAKE_CANDIDATE_MOUNT="$source_mount" \
     FAKE_EXISTING_APFS_UUID_1=cccccccc-cccc-cccc-cccc-cccccccccccc \
@@ -1357,6 +1409,7 @@ CONFIG
     GDRIVE_BACKUP_CONFIG="$config" \
     GDRIVE_BACKUP_DEST_ROOT= \
     GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
     FAKE_APFS_CREATED_MARKER="$marker" \
     FAKE_CANDIDATE_MOUNT="$source_mount" \
     FAKE_EXISTING_APFS_UUID_1=cccccccc-cccc-cccc-cccc-cccccccccccc \
@@ -1409,6 +1462,7 @@ CONFIG
     GDRIVE_BACKUP_CONFIG="$config" \
     GDRIVE_BACKUP_DEST_ROOT= \
     GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
     FAKE_CANDIDATE_MOUNT="$first_mount" \
     FAKE_CANDIDATE_CONTAINER=disk99 \
     FAKE_SECOND_CANDIDATE_MOUNT="$second_mount" \
@@ -1432,96 +1486,507 @@ CONFIG
   fi
 }
 
-test_apfs_creation_requires_creation_specific_approval() {
-  local name="scheduled assume-yes cannot create an APFS volume but explicit approval can"
-  local volumes_root configured_volume source_mount config marker created_mount
-  local unattended_status approved_status approved_add_count unattended_safe
+test_path_only_apfs_target_rejects_nonsetup_triggers() {
+  local name="path-only APFS target cannot copy from schedule or manual triggers"
+  local config before_hash after_hash schedule_status manual_status animation_app open_count
   prepare_test_environment
-  volumes_root="$TEST_HOME/Volumes"
-  configured_volume="$volumes_root/Stale Backup Path"
-  source_mount="$volumes_root/TOSHIBA_4TB"
-  config="$TEST_HOME/unattended-create.conf"
-  marker="$TEST_HOME/apfs-created"
-  created_mount="$volumes_root/GoogleDrive-Backup"
-  mkdir -p "$source_mount"
+  mkdir -p "$VOLUME"
+  config="$TEST_HOME/path-only-schedule.conf"
   cat >"$config" <<CONFIG
 GDRIVE_BACKUP_TARGET=apfs
-GDRIVE_BACKUP_VOLUME='$configured_volume'
+GDRIVE_BACKUP_VOLUME='$VOLUME'
 GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
 GDRIVE_BACKUP_VOLUME_UUID=
 GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
 CONFIG
-
+  before_hash="$(/usr/bin/shasum "$config")"
   run_backup \
     GDRIVE_BACKUP_CONFIG="$config" \
-    GDRIVE_BACKUP_DEST_ROOT= \
-    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
-    GDRIVE_BACKUP_TRIGGER=schedule-retry \
-    GDRIVE_BACKUP_RETRY_ORIGIN_STARTED_AT=1757030400 \
-    GDRIVE_BACKUP_RETRY_ATTEMPT=1 \
-    GDRIVE_BACKUP_CONFIRM=1 \
+    GDRIVE_BACKUP_TRIGGER=schedule \
     BACKUP_ASSUME_YES=1 \
-    FAKE_CANDIDATE_MOUNT="$source_mount" \
-    FAKE_EXISTING_APFS_UUID_1= \
-    FAKE_APFS_CREATED_MARKER="$marker" \
-    FAKE_CREATED_MOUNT="$created_mount" \
-    FAKE_NEW_APFS_UUID=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
-  unattended_status=$?
-
-  unattended_safe=0
-  if [[ "$unattended_status" == "69" && ! -e "$marker" &&
-        ! -s "$OSASCRIPT_LOG" ]] &&
-    ! grep -Fq 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null &&
-    ! grep -Fq 'Warte auf Benutzerbestaetigung' "$TEST_HOME/backup.log" &&
+    FAKE_MOUNT_POINT="$VOLUME" \
+    FAKE_EXISTING_APFS_UUID_1=11111111-2222-3333-4444-555555555555
+  schedule_status=$?
+  after_hash="$(/usr/bin/shasum "$config")"
+  schedule_safe=0
+  if [[ "$schedule_status" == "69" && "$before_hash" == "$after_hash" &&
+        ! -s "$OPEN_LOG" && ! -s "$OSASCRIPT_LOG" ]] &&
     { [[ ! -e "$RCLONE_LOG" ]] || ! grep -Eq '^copy( |$)' "$RCLONE_LOG"; }; then
-    unattended_safe=1
+    schedule_safe=1
   fi
 
   prepare_test_environment
+  mkdir -p "$VOLUME"
+  config="$TEST_HOME/path-only-manual.conf"
+  animation_app="$TEST_HOME/Fake Confirmation.app"
+  mkdir -p "$animation_app"
+  cat >"$config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$VOLUME'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+  before_hash="$(/usr/bin/shasum "$config")"
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_TRIGGER=manual \
+    GDRIVE_BACKUP_ANIMATION_APP="$animation_app" \
+    GDRIVE_BACKUP_OPEN_BIN="$FAKE_BIN/open" \
+    BACKUP_ASSUME_YES=1 \
+    FAKE_MOUNT_POINT="$VOLUME" \
+    FAKE_EXISTING_APFS_UUID_1=11111111-2222-3333-4444-555555555555
+  manual_status=$?
+  after_hash="$(/usr/bin/shasum "$config")"
+  open_count="$(/usr/bin/grep -c '^' "$OPEN_LOG" 2>/dev/null || true)"
+
+  if [[ "$schedule_safe" == "1" && "$manual_status" == "69" &&
+        "$before_hash" == "$after_hash" && "$open_count" == "0" &&
+        ! -s "$OSASCRIPT_LOG" ]] &&
+    { [[ ! -e "$RCLONE_LOG" ]] || ! grep -Eq '^copy( |$)' "$RCLONE_LOG"; }; then
+    pass "$name"
+  else
+    fail "$name (schedule $schedule_status/$schedule_safe, manual $manual_status, prompts $open_count)"
+  fi
+}
+
+test_setup_path_only_apfs_binding_persists_uuid_and_reuses_it() {
+  local name="setup path-only APFS binding persists UUID and reuses it without mutation"
+  local config animation_app status_one status_two saved_volume saved_uuid copy_count add_count open_count
+  prepare_test_environment
+  mkdir -p "$VOLUME"
+  animation_app="$TEST_HOME/Fake Confirmation.app"
+  config="$TEST_HOME/manual-path-binding.conf"
+  mkdir -p "$animation_app"
+  cat >"$config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$VOLUME'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_TRIGGER=setup \
+    GDRIVE_BACKUP_ANIMATION_APP="$animation_app" \
+    GDRIVE_BACKUP_OPEN_BIN="$FAKE_BIN/open" \
+    BACKUP_ASSUME_YES=1 \
+    FAKE_CONFIRM_RESPONSE=yes \
+    FAKE_MOUNT_POINT="$VOLUME" \
+    FAKE_EXISTING_APFS_UUID_1=11111111-2222-3333-4444-555555555555
+  status_one=$?
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_TRIGGER=manual \
+    GDRIVE_BACKUP_ANIMATION_APP="$animation_app" \
+    GDRIVE_BACKUP_OPEN_BIN="$FAKE_BIN/open" \
+    BACKUP_ASSUME_YES=1 \
+    FAKE_CONFIRM_RESPONSE=no \
+    FAKE_MOUNT_POINT="$VOLUME" \
+    FAKE_EXISTING_APFS_UUID_1=11111111-2222-3333-4444-555555555555
+  status_two=$?
+  saved_volume="$(/bin/bash -c 'source "$1"; printf "%s" "${GDRIVE_BACKUP_VOLUME:-}"' _ "$config")"
+  saved_uuid="$(/bin/bash -c 'source "$1"; printf "%s" "${GDRIVE_BACKUP_VOLUME_UUID:-}"' _ "$config")"
+  copy_count="$(grep -Fc "$VOLUME/My Drive" "$RCLONE_LOG" 2>/dev/null || true)"
+  add_count="$(grep -Fc 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null || true)"
+  open_count="$(/usr/bin/grep -c '^' "$OPEN_LOG" 2>/dev/null || true)"
+
+  if [[ "$status_one" == "0" && "$status_two" == "0" &&
+        "$saved_volume" == "$VOLUME" &&
+        "$saved_uuid" == "11111111-2222-3333-4444-555555555555" &&
+        "$copy_count" == "2" && "$add_count" == "0" && "$open_count" == "1" ]]; then
+    pass "$name"
+  else
+    fail "$name (statuses $status_one/$status_two, uuid $saved_uuid, copies/add/prompts $copy_count/$add_count/$open_count)"
+  fi
+}
+
+test_setup_path_only_apfs_binding_rejects_duplicate_exact_names() {
+  local name="setup path-only APFS binding rejects duplicate exact-name UUIDs"
+  local config animation_app before_hash after_hash status
+  prepare_test_environment
+  mkdir -p "$VOLUME"
+  animation_app="$TEST_HOME/Fake Confirmation.app"
+  config="$TEST_HOME/duplicate-path-binding.conf"
+  mkdir -p "$animation_app"
+  cat >"$config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$VOLUME'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+  before_hash="$(/usr/bin/shasum "$config")"
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_TRIGGER=setup \
+    GDRIVE_BACKUP_ANIMATION_APP="$animation_app" \
+    GDRIVE_BACKUP_OPEN_BIN="$FAKE_BIN/open" \
+    FAKE_CONFIRM_RESPONSE=yes \
+    FAKE_MOUNT_POINT="$VOLUME" \
+    FAKE_EXISTING_APFS_UUID_1=11111111-2222-3333-4444-555555555555 \
+    FAKE_EXISTING_APFS_UUID_2=dddddddd-dddd-dddd-dddd-dddddddddddd
+  status=$?
+  after_hash="$(/usr/bin/shasum "$config")"
+
+  if [[ "$status" == "69" && "$before_hash" == "$after_hash" &&
+        ! -s "$OPEN_LOG" && ! -s "$OSASCRIPT_LOG" ]] &&
+    ! grep -Fq 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null &&
+    { [[ ! -e "$RCLONE_LOG" ]] || ! grep -Eq '^copy( |$)' "$RCLONE_LOG"; }; then
+    pass "$name"
+  else
+    fail "$name (status $status)"
+  fi
+}
+
+test_nonmanual_apfs_creation_rejects_every_approval_source() {
+  local name="every non-setup trigger rejects APFS creation before approval"
+  local trigger expected_status status all_safe=1 details=""
+  local volumes_root configured_volume source_mount config marker created_mount before_hash after_hash
+
+  for trigger in manual schedule schedule-retry mount menu-bar-only unknown-trigger; do
+    prepare_test_environment
+    volumes_root="$TEST_HOME/Volumes"
+    configured_volume="$volumes_root/Stale Backup Path"
+    source_mount="$volumes_root/TOSHIBA_4TB"
+    config="$TEST_HOME/nonmanual-create.conf"
+    marker="$TEST_HOME/apfs-created"
+    created_mount="$volumes_root/GoogleDrive-Backup"
+    mkdir -p "$source_mount"
+    cat >"$config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$configured_volume'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+GDRIVE_BACKUP_TRIGGER=setup
+CONFIG
+    before_hash="$(/usr/bin/shasum "$config")"
+
+    run_backup \
+      GDRIVE_BACKUP_CONFIG="$config" \
+      GDRIVE_BACKUP_DEST_ROOT= \
+      GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+      GDRIVE_BACKUP_TRIGGER="$trigger" \
+      GDRIVE_BACKUP_RETRY_ORIGIN_STARTED_AT=1757030400 \
+      GDRIVE_BACKUP_RETRY_ATTEMPT=1 \
+      GDRIVE_BACKUP_CONFIRM=1 \
+      BACKUP_ASSUME_YES=1 \
+      GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1 \
+      FAKE_CANDIDATE_MOUNT="$source_mount" \
+      FAKE_EXISTING_APFS_UUID_1= \
+      FAKE_APFS_CREATED_MARKER="$marker" \
+      FAKE_CREATED_MOUNT="$created_mount" \
+      FAKE_NEW_APFS_UUID=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+    status=$?
+    after_hash="$(/usr/bin/shasum "$config")"
+    expected_status=69
+    [[ "$trigger" == "mount" ]] && expected_status=0
+    [[ "$trigger" == "menu-bar-only" || "$trigger" == "unknown-trigger" ]] && expected_status=64
+
+    if [[ "$status" != "$expected_status" || "$before_hash" != "$after_hash" ||
+          -e "$marker" || -s "$OPEN_LOG" || -s "$OSASCRIPT_LOG" ]] ||
+       grep -Fq 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null ||
+       grep -Fq 'Warte auf Benutzerbestaetigung' "$TEST_HOME/backup.log" ||
+       { [[ -e "$RCLONE_LOG" ]] && grep -Eq '^copy( |$)' "$RCLONE_LOG"; }; then
+      all_safe=0
+      details+=" $trigger:$status"
+    fi
+  done
+
+  if [[ "$all_safe" == "1" ]]; then
+    pass "$name"
+  else
+    fail "$name ($details)"
+  fi
+}
+
+test_config_cannot_persist_apfs_creation_approval() {
+  local name="config-contained APFS creation approval has no authority on repeated setup runs"
+  local volumes_root configured_volume source_mount config marker created_mount animation_app
+  local before_hash after_hash status_one status_two open_count
+  prepare_test_environment
   volumes_root="$TEST_HOME/Volumes"
   configured_volume="$volumes_root/Stale Backup Path"
   source_mount="$volumes_root/TOSHIBA_4TB"
-  config="$TEST_HOME/approved-create.conf"
+  config="$TEST_HOME/config-contained-approval.conf"
   marker="$TEST_HOME/apfs-created"
   created_mount="$volumes_root/GoogleDrive-Backup"
-  mkdir -p "$source_mount"
+  animation_app="$TEST_HOME/Fake Confirmation.app"
+  mkdir -p "$source_mount" "$animation_app"
   cat >"$config" <<CONFIG
 GDRIVE_BACKUP_TARGET=apfs
 GDRIVE_BACKUP_VOLUME='$configured_volume'
 GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
 GDRIVE_BACKUP_VOLUME_UUID=
 GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+GDRIVE_BACKUP_TRIGGER=setup
+GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1
 CONFIG
+  before_hash="$(/usr/bin/shasum "$config")"
+
   run_backup \
     GDRIVE_BACKUP_CONFIG="$config" \
     GDRIVE_BACKUP_DEST_ROOT= \
     GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
-    GDRIVE_BACKUP_TRIGGER=schedule-retry \
-    GDRIVE_BACKUP_RETRY_ORIGIN_STARTED_AT=1757030400 \
-    GDRIVE_BACKUP_RETRY_ATTEMPT=1 \
-    GDRIVE_BACKUP_CONFIRM=1 \
-    BACKUP_ASSUME_YES=1 \
+    GDRIVE_BACKUP_TRIGGER=setup \
+    GDRIVE_BACKUP_ANIMATION_APP="$animation_app" \
+    GDRIVE_BACKUP_OPEN_BIN="$FAKE_BIN/open" \
+    FAKE_CONFIRM_RESPONSE=no \
+    FAKE_CANDIDATE_MOUNT="$source_mount" \
+    FAKE_EXISTING_APFS_UUID_1= \
+    FAKE_APFS_CREATED_MARKER="$marker" \
+    FAKE_CREATED_MOUNT="$created_mount"
+  status_one=$?
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
+    GDRIVE_BACKUP_ANIMATION_APP="$animation_app" \
+    GDRIVE_BACKUP_OPEN_BIN="$FAKE_BIN/open" \
+    FAKE_CONFIRM_RESPONSE=no \
+    FAKE_CANDIDATE_MOUNT="$source_mount" \
+    FAKE_EXISTING_APFS_UUID_1= \
+    FAKE_APFS_CREATED_MARKER="$marker" \
+    FAKE_CREATED_MOUNT="$created_mount"
+  status_two=$?
+  after_hash="$(/usr/bin/shasum "$config")"
+  open_count="$(/usr/bin/grep -c '^' "$OPEN_LOG" 2>/dev/null || true)"
+
+  if [[ "$status_one" == "69" && "$status_two" == "69" &&
+        "$before_hash" == "$after_hash" && "$open_count" == "2" &&
+        ! -e "$marker" && ! -s "$OSASCRIPT_LOG" ]] &&
+    ! grep -Fq 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null &&
+    { [[ ! -e "$RCLONE_LOG" ]] || ! grep -Eq '^copy( |$)' "$RCLONE_LOG"; }; then
+    pass "$name"
+  else
+    fail "$name (statuses $status_one/$status_two, prompts $open_count)"
+  fi
+}
+
+test_process_apfs_creation_approval_is_one_invocation_only() {
+  local name="process APFS creation approval works once and is absent on the next invocation"
+  local volumes_root source_mount first_config second_config marker created_mount animation_app
+  local first_status second_status add_count open_count
+  prepare_test_environment
+  volumes_root="$TEST_HOME/Volumes"
+  source_mount="$volumes_root/TOSHIBA_4TB"
+  first_config="$TEST_HOME/approved-once.conf"
+  second_config="$TEST_HOME/no-approval-next.conf"
+  marker="$TEST_HOME/apfs-created"
+  created_mount="$volumes_root/GoogleDrive-Backup"
+  animation_app="$TEST_HOME/Fake Confirmation.app"
+  mkdir -p "$source_mount" "$animation_app"
+  cat >"$first_config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$volumes_root/First Stale Path'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+  cat >"$second_config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$volumes_root/Second Stale Path'
+GDRIVE_BACKUP_VOLUME_NAME=SecondBackup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$first_config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
     GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1 \
     FAKE_CANDIDATE_MOUNT="$source_mount" \
     FAKE_EXISTING_APFS_UUID_1= \
     FAKE_APFS_CREATED_MARKER="$marker" \
     FAKE_CREATED_MOUNT="$created_mount" \
     FAKE_NEW_APFS_UUID=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
-  approved_status=$?
-  approved_add_count="$(grep -Fc 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null || true)"
+  first_status=$?
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$second_config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
+    GDRIVE_BACKUP_ANIMATION_APP="$animation_app" \
+    GDRIVE_BACKUP_OPEN_BIN="$FAKE_BIN/open" \
+    FAKE_CONFIRM_RESPONSE=no \
+    FAKE_CANDIDATE_MOUNT="$source_mount" \
+    FAKE_EXISTING_APFS_UUID_1= \
+    FAKE_APFS_CREATED_MARKER="$marker" \
+    FAKE_CREATED_MOUNT="$created_mount" \
+    FAKE_NEW_APFS_UUID=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb \
+    FAKE_CREATED_NAME=GoogleDrive-Backup
+  second_status=$?
+  add_count="$(grep -Fc 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null || true)"
+  open_count="$(/usr/bin/grep -c '^' "$OPEN_LOG" 2>/dev/null || true)"
 
-  if [[ "$unattended_safe" == "1" && "$approved_status" == "0" &&
-        "$approved_add_count" == "1" ]]; then
+  if [[ "$first_status" == "0" && "$second_status" == "69" &&
+        "$add_count" == "1" && "$open_count" == "1" ]]; then
     pass "$name"
   else
-    fail "$name (unattended status/safe $unattended_status/$unattended_safe, approved status/add $approved_status/$approved_add_count)"
+    fail "$name (statuses $first_status/$second_status, add $add_count, prompts $open_count)"
+  fi
+}
+
+test_setup_interactive_confirmation_can_create_apfs_volume() {
+  local name="setup APFS creation requires and accepts interactive confirmation"
+  local volumes_root configured_volume source_mount config marker created_mount animation_app
+  local status add_count open_count
+  prepare_test_environment
+  volumes_root="$TEST_HOME/Volumes"
+  configured_volume="$volumes_root/Stale Backup Path"
+  source_mount="$volumes_root/TOSHIBA_4TB"
+  config="$TEST_HOME/manual-confirmation.conf"
+  marker="$TEST_HOME/apfs-created"
+  created_mount="$volumes_root/GoogleDrive-Backup"
+  animation_app="$TEST_HOME/Fake Confirmation.app"
+  mkdir -p "$source_mount" "$animation_app"
+  cat >"$config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$configured_volume'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
+    GDRIVE_BACKUP_ANIMATION_APP="$animation_app" \
+    GDRIVE_BACKUP_OPEN_BIN="$FAKE_BIN/open" \
+    BACKUP_ASSUME_YES=1 \
+    FAKE_CONFIRM_RESPONSE=yes \
+    FAKE_CANDIDATE_MOUNT="$source_mount" \
+    FAKE_EXISTING_APFS_UUID_1= \
+    FAKE_APFS_CREATED_MARKER="$marker" \
+    FAKE_CREATED_MOUNT="$created_mount" \
+    FAKE_NEW_APFS_UUID=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+  status=$?
+  add_count="$(grep -Fc 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null || true)"
+  open_count="$(/usr/bin/grep -c '^' "$OPEN_LOG" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" && "$add_count" == "1" && "$open_count" == "1" ]]; then
+    pass "$name"
+  else
+    fail "$name (status $status, add $add_count, prompts $open_count)"
+  fi
+}
+
+test_invalid_process_apfs_creation_approval_is_rejected() {
+  local name="invalid process APFS creation approval is rejected before disk access"
+  local volumes_root configured_volume source_mount config marker created_mount animation_app status
+  prepare_test_environment
+  volumes_root="$TEST_HOME/Volumes"
+  configured_volume="$volumes_root/Stale Backup Path"
+  source_mount="$volumes_root/TOSHIBA_4TB"
+  config="$TEST_HOME/invalid-approval.conf"
+  marker="$TEST_HOME/apfs-created"
+  created_mount="$volumes_root/GoogleDrive-Backup"
+  animation_app="$TEST_HOME/Fake Confirmation.app"
+  mkdir -p "$source_mount" "$animation_app"
+  cat >"$config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$configured_volume'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
+    GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=yes \
+    GDRIVE_BACKUP_ANIMATION_APP="$animation_app" \
+    GDRIVE_BACKUP_OPEN_BIN="$FAKE_BIN/open" \
+    FAKE_CONFIRM_RESPONSE=yes \
+    FAKE_CANDIDATE_MOUNT="$source_mount" \
+    FAKE_EXISTING_APFS_UUID_1= \
+    FAKE_APFS_CREATED_MARKER="$marker" \
+    FAKE_CREATED_MOUNT="$created_mount"
+  status=$?
+
+  if [[ "$status" == "64" && ! -e "$marker" && ! -s "$DISKUTIL_LOG" &&
+        ! -s "$OPEN_LOG" && ! -s "$OSASCRIPT_LOG" && ! -s "$RCLONE_LOG" ]]; then
+    pass "$name"
+  else
+    fail "$name (status $status)"
+  fi
+}
+
+test_apfs_creation_rechecks_inventory_after_confirmation() {
+  local name="APFS creation recovers an exact-name volume that appears during confirmation"
+  local volumes_root configured_volume source_mount config created_marker appeared_marker
+  local created_mount appeared_mount animation_app status open_count saved_volume saved_uuid copy_count
+  prepare_test_environment
+  volumes_root="$TEST_HOME/Volumes"
+  configured_volume="$volumes_root/Stale Backup Path"
+  source_mount="$volumes_root/TOSHIBA_4TB"
+  config="$TEST_HOME/confirmation-race.conf"
+  created_marker="$TEST_HOME/apfs-created"
+  appeared_marker="$TEST_HOME/apfs-appeared"
+  created_mount="$volumes_root/Unexpected Created Volume"
+  appeared_mount="$volumes_root/GoogleDrive-Backup 2"
+  animation_app="$TEST_HOME/Fake Confirmation.app"
+  mkdir -p "$source_mount" "$animation_app"
+  printf '%s\n' 'source-canary' >"$source_mount/canary"
+  cat >"$config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$configured_volume'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
+    GDRIVE_BACKUP_ANIMATION_APP="$animation_app" \
+    GDRIVE_BACKUP_OPEN_BIN="$FAKE_BIN/open" \
+    FAKE_CONFIRM_RESPONSE=yes \
+    FAKE_CONFIRMATION_APPEAR_MARKER="$appeared_marker" \
+    FAKE_CONFIRMATION_APPEAR_MOUNT="$appeared_mount" \
+    FAKE_APFS_APPEARED_MARKER="$appeared_marker" \
+    FAKE_APPEARED_APFS_UUID=cccccccc-cccc-cccc-cccc-cccccccccccc \
+    FAKE_APPEARED_APFS_NAME=GoogleDrive-Backup \
+    FAKE_NAMED_UUID=cccccccc-cccc-cccc-cccc-cccccccccccc \
+    FAKE_NAMED_MOUNT="$appeared_mount" \
+    FAKE_NAMED_CONTAINER=disk99 \
+    FAKE_CANDIDATE_MOUNT="$source_mount" \
+    FAKE_EXISTING_APFS_UUID_1= \
+    FAKE_APFS_CREATED_MARKER="$created_marker" \
+    FAKE_CREATED_MOUNT="$created_mount" \
+    FAKE_NEW_APFS_UUID=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+  status=$?
+  open_count="$(/usr/bin/grep -c '^' "$OPEN_LOG" 2>/dev/null || true)"
+  saved_volume="$(/bin/bash -c 'source "$1"; printf "%s" "${GDRIVE_BACKUP_VOLUME:-}"' _ "$config")"
+  saved_uuid="$(/bin/bash -c 'source "$1"; printf "%s" "${GDRIVE_BACKUP_VOLUME_UUID:-}"' _ "$config")"
+  copy_count="$(grep -Fc "$appeared_mount/My Drive" "$RCLONE_LOG" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" && "$saved_volume" == "$appeared_mount" &&
+        "$saved_uuid" == "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC" &&
+        "$open_count" == "1" && -e "$appeared_marker" &&
+        ! -e "$created_marker" && ! -s "$OSASCRIPT_LOG" ]] &&
+    ! grep -Fq 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null &&
+    [[ "$copy_count" == "1" ]]; then
+    pass "$name"
+  else
+    fail "$name (status $status, volume $saved_volume, uuid $saved_uuid, prompts/copies $open_count/$copy_count)"
   fi
 }
 
 test_auto_created_apfs_volume_uses_the_new_uuid_and_mount_path() {
   local name="auto-created APFS volume persists and uses only the newly added UUID"
   local volumes_root configured_volume created_mount created_real candidate_mount
-  local config marker status saved_volume saved_uuid uuid_lines
+  local config marker status_one status_two saved_volume saved_uuid saved_destination uuid_lines add_count copy_count
   prepare_test_environment
   volumes_root="$TEST_HOME/Volumes"
   configured_volume="$volumes_root/Missing Configured Backup"
@@ -1535,6 +2000,7 @@ GDRIVE_BACKUP_TARGET=apfs
 GDRIVE_BACKUP_VOLUME='$configured_volume'
 GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
 GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_DEST_ROOT='$configured_volume/nested/backup'
 GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
 CONFIG
 
@@ -1542,27 +2008,42 @@ CONFIG
     GDRIVE_BACKUP_CONFIG="$config" \
     GDRIVE_BACKUP_DEST_ROOT= \
     GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
     FAKE_APFS_CREATED_MARKER="$marker" \
     FAKE_CANDIDATE_MOUNT="$candidate_mount" \
     FAKE_EXISTING_APFS_UUID_1= \
     FAKE_CREATED_MOUNT="$created_mount" \
     FAKE_NEW_APFS_UUID=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb \
     GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1
-  status=$?
+  status_one=$?
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=manual \
+    FAKE_APFS_CREATED_MARKER="$marker" \
+    FAKE_CANDIDATE_MOUNT="$candidate_mount" \
+    FAKE_EXISTING_APFS_UUID_1= \
+    FAKE_CREATED_MOUNT="$created_mount" \
+    FAKE_NEW_APFS_UUID=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+  status_two=$?
   created_real="$(cd "$created_mount" 2>/dev/null && /bin/pwd -P || true)"
   saved_volume="$(/bin/bash -c 'source "$1"; printf "%s" "${GDRIVE_BACKUP_VOLUME:-}"' _ "$config")"
   saved_uuid="$(/bin/bash -c 'source "$1"; printf "%s" "${GDRIVE_BACKUP_VOLUME_UUID:-}"' _ "$config")"
+  saved_destination="$(/bin/bash -c 'source "$1"; printf "%s" "${GDRIVE_BACKUP_DEST_ROOT:-}"' _ "$config")"
   uuid_lines="$(grep -Ec '^GDRIVE_BACKUP_VOLUME_UUID=' "$config")"
+  add_count="$(grep -Fc 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null || true)"
+  copy_count="$(grep -Fc "$created_real/nested/backup/My Drive" "$RCLONE_LOG" 2>/dev/null || true)"
 
-  if [[ "$status" == "0" && -n "$created_real" &&
+  if [[ "$status_one" == "0" && "$status_two" == "0" && -n "$created_real" &&
         "$saved_volume" == "$created_real" &&
         "$saved_uuid" == "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB" &&
-        "$uuid_lines" == "1" ]] &&
-    grep -Fq "$created_real/My Drive" "$RCLONE_LOG" &&
+        "$saved_destination" == "$created_real/nested/backup" &&
+        "$uuid_lines" == "1" && "$add_count" == "1" && "$copy_count" == "2" ]] &&
     ! grep -Fq "$volumes_root/GoogleDrive-Backup/My Drive" "$RCLONE_LOG"; then
     pass "$name"
   else
-    fail "$name (status $status, volume $saved_volume, uuid $saved_uuid, lines $uuid_lines)"
+    fail "$name (statuses $status_one/$status_two, volume $saved_volume, destination $saved_destination, uuid $saved_uuid, lines/add/copies $uuid_lines/$add_count/$copy_count)"
   fi
 }
 
@@ -1590,6 +2071,7 @@ CONFIG
     GDRIVE_BACKUP_CONFIG="$config" \
     GDRIVE_BACKUP_DEST_ROOT= \
     GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
     FAKE_APFS_CREATED_MARKER="$marker" \
     FAKE_CANDIDATE_MOUNT="$candidate_mount" \
     FAKE_EXISTING_APFS_UUID_1= \
@@ -1632,6 +2114,7 @@ CONFIG
     GDRIVE_BACKUP_CONFIG="$config" \
     GDRIVE_BACKUP_DEST_ROOT= \
     GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
     FAKE_APFS_CREATED_MARKER="$marker" \
     FAKE_CANDIDATE_MOUNT="$candidate_mount" \
     FAKE_EXISTING_APFS_UUID_1= \
@@ -1649,6 +2132,59 @@ CONFIG
     pass "$name"
   else
     fail "$name (status $status, uuid $saved_uuid)"
+  fi
+}
+
+test_auto_created_apfs_volume_avoids_privileged_race_duplicate() {
+  local name="APFS creation rechecks for a same-name volume before privileged fallback"
+  local volumes_root configured_volume candidate_mount appeared_mount config
+  local created_marker appeared_marker status saved_uuid add_count copy_count
+  prepare_test_environment
+  volumes_root="$TEST_HOME/Volumes"
+  configured_volume="$volumes_root/Missing Configured Backup"
+  candidate_mount="$volumes_root/TOSHIBA_4TB"
+  appeared_mount="$volumes_root/GoogleDrive-Backup 2"
+  config="$TEST_HOME/pre-admin-race.conf"
+  created_marker="$TEST_HOME/apfs-created"
+  appeared_marker="$TEST_HOME/apfs-appeared"
+  mkdir -p "$candidate_mount"
+  cat >"$config" <<CONFIG
+GDRIVE_BACKUP_TARGET=apfs
+GDRIVE_BACKUP_VOLUME='$configured_volume'
+GDRIVE_BACKUP_VOLUME_NAME=GoogleDrive-Backup
+GDRIVE_BACKUP_VOLUME_UUID=
+GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1
+CONFIG
+
+  run_backup \
+    GDRIVE_BACKUP_CONFIG="$config" \
+    GDRIVE_BACKUP_DEST_ROOT= \
+    GDRIVE_BACKUP_VOLUMES_ROOT="$volumes_root" \
+    GDRIVE_BACKUP_TRIGGER=setup \
+    GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1 \
+    FAKE_CANDIDATE_MOUNT="$candidate_mount" \
+    FAKE_EXISTING_APFS_UUID_1= \
+    FAKE_UNPRIVILEGED_ADD_STATUS=1 \
+    FAKE_APFS_APPEAR_AFTER_LIST_COUNT=7 \
+    FAKE_APFS_APPEARED_MARKER="$appeared_marker" \
+    FAKE_APPEARED_MOUNT="$appeared_mount" \
+    FAKE_APPEARED_APFS_UUID=cccccccc-cccc-cccc-cccc-cccccccccccc \
+    FAKE_NAMED_UUID=cccccccc-cccc-cccc-cccc-cccccccccccc \
+    FAKE_NAMED_MOUNT="$appeared_mount" \
+    FAKE_NAMED_CONTAINER=disk99 \
+    FAKE_APFS_CREATED_MARKER="$created_marker" \
+    FAKE_CREATED_MOUNT="$volumes_root/Unexpected Created Volume"
+  status=$?
+  saved_uuid="$(/bin/bash -c 'source "$1"; printf "%s" "${GDRIVE_BACKUP_VOLUME_UUID:-}"' _ "$config")"
+  add_count="$(grep -Fc 'apfs addVolume' "$DISKUTIL_LOG" 2>/dev/null || true)"
+  copy_count="$(grep -Fc "$appeared_mount/My Drive" "$RCLONE_LOG" 2>/dev/null || true)"
+
+  if [[ "$status" == "0" && "$saved_uuid" == "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC" &&
+        "$add_count" == "1" && "$copy_count" == "1" &&
+        -e "$appeared_marker" && ! -e "$created_marker" && ! -s "$OSASCRIPT_LOG" ]]; then
+    pass "$name"
+  else
+    fail "$name (status $status, uuid $saved_uuid, add/copies $add_count/$copy_count)"
   fi
 }
 
@@ -1880,10 +2416,19 @@ test_existing_named_apfs_volume_rejects_read_only_media
 test_existing_named_apfs_volume_rejects_system_image
 test_ambiguous_existing_named_apfs_volumes_fail_closed_twice
 test_multiple_external_apfs_containers_fail_closed
-test_apfs_creation_requires_creation_specific_approval
+test_path_only_apfs_target_rejects_nonsetup_triggers
+test_setup_path_only_apfs_binding_persists_uuid_and_reuses_it
+test_setup_path_only_apfs_binding_rejects_duplicate_exact_names
+test_nonmanual_apfs_creation_rejects_every_approval_source
+test_config_cannot_persist_apfs_creation_approval
+test_process_apfs_creation_approval_is_one_invocation_only
+test_setup_interactive_confirmation_can_create_apfs_volume
+test_invalid_process_apfs_creation_approval_is_rejected
+test_apfs_creation_rechecks_inventory_after_confirmation
 test_auto_created_apfs_volume_uses_the_new_uuid_and_mount_path
 test_auto_created_apfs_volume_rejects_ambiguous_new_uuids
 test_auto_created_apfs_volume_recovers_privileged_partial_failure
+test_auto_created_apfs_volume_avoids_privileged_race_duplicate
 test_saved_apfs_uuid_blocks_retention_after_copy_swap
 test_saved_apfs_uuid_revalidates_before_each_retention_trash
 test_saved_apfs_uuid_blocks_retention_fallback_move_after_swap
@@ -1892,7 +2437,7 @@ test_collision_archive_scans_inventory_once_then_only_mutation_scopes
 test_encrypted_mode_never_auto_creates_plain_volume
 test_unencrypted_apfs_volume_is_rejected
 test_encrypted_apfs_volume_is_accepted
-test_default_mode_preserves_existing_targets
+test_default_mode_preserves_uuid_bound_targets
 test_unreadable_encryption_metadata_is_rejected
 test_mismatched_mount_point_is_rejected
 test_destination_symlink_escape_is_rejected

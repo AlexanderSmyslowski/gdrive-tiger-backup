@@ -5550,7 +5550,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 
 - (BOOL)shouldShowProgressForTrigger:(NSString *)trigger
                    fromVisibleWindow:(BOOL)visibleWindow {
-    if (![trigger isEqualToString:@"manual"] || !visibleWindow) {
+    BOOL foregroundTrigger = [trigger isEqualToString:@"manual"] ||
+        [trigger isEqualToString:@"setup"];
+    if (!foregroundTrigger || !visibleWindow) {
         return NO;
     }
     return self.setupMode || self.setupWindow.isVisible ||
@@ -6626,7 +6628,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     self.manualLaunchPending = YES;
     [self updateSetupActionAvailability];
     self.statusField.stringValue = T(self.language, @"statusBackupPreparing");
-    if (![self launchBackupWithArgument:@"--run" assumeYes:YES]) {
+    if (![self launchBackupWithArgument:@"--run" trigger:@"setup" assumeYes:YES]) {
         self.manualLaunchPending = NO;
         [self updateSetupActionAvailability];
         return;

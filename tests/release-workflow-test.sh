@@ -109,7 +109,8 @@ fi
 if [[ -x "$NOTES_EXTRACTOR" ]]; then
   notes="$("$NOTES_EXTRACTOR" "$tag" 2>/dev/null)"
   previous_notes="$("$NOTES_EXTRACTOR" "v2.4.5" 2>/dev/null)"
-  if [[ "$notes" == *"## v${version} "* && "$notes" != *"## v2.4.3 "* ]]; then
+  heading_count="$(printf '%s\n' "$notes" | /usr/bin/grep -Ec '^## v')"
+  if [[ "$notes" == *"## v${version} "* && "$heading_count" == "1" ]]; then
     printf 'ok - extractor returns only the requested changelog section\n'
   else
     printf 'not ok - extractor returns only the requested changelog section\n'
@@ -150,18 +151,20 @@ if [[ -x "$NOTES_EXTRACTOR" ]]; then
   fi
 
   if [[ "$notes" == *"GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1"* &&
-        "$notes" == *"BACKUP_ASSUME_YES approves backup start only"* &&
-        "$notes" == *"cannot create a volume or open volume-creation UI"* ]]; then
+        "$notes" == *"process-only authorization for one setup invocation"* &&
+        "$notes" == *"BACKUP_ASSUME_YES"* &&
+        "$notes" == *"before confirmation UI, privileged helpers, disk mutation, or copy"* ]]; then
     printf 'ok - v2.4.6 notes restrict APFS creation to explicit one-run approval\n'
   else
     printf 'not ok - v2.4.6 notes restrict APFS creation to explicit one-run approval\n'
     failures=$((failures + 1))
   fi
 
-  if [[ "$notes" == *"one exact-name candidate in one eligible external APFS container"* &&
-        "$notes" == *"binds its UUID, resolves its current mount point, and atomically persists the identity"* &&
-        "$notes" == *"Multiple named candidates or multiple eligible containers abort without mutation or copy"* &&
-        "$notes" == *"prefix-renamed volumes are never guessed"* &&
+  if [[ "$notes" == *"every successful APFS run to be UUID-bound"* &&
+        "$notes" == *"Legacy path-only targets fail closed outside setup"* &&
+        "$notes" == *"rediscover the sole source container and exact-name UUID inventory"* &&
+        "$notes" == *"multiple eligible containers"* &&
+        "$notes" == *"prefix-renamed volumes fail closed"* &&
         "$notes" == *"never deletes, erases, repartitions, renames, or unmounts volumes"* ]]; then
     printf 'ok - v2.4.6 notes describe fail-closed APFS identity and non-destructive boundaries\n'
   else

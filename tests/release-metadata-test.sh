@@ -61,19 +61,19 @@ check_contains "$ROOT/README.md" \
   "Scheduled, retry, mount-triggered, and menu-bar-only runs stay headless and passive, including in full-screen Spaces." \
   "README explicitly keeps automatic retries passive in full-screen Spaces"
 check_contains "$ROOT/README.md" \
-  "\`GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1\` is the narrow, explicit one-run authorization for volume creation." \
-  "README documents the explicit one-run APFS creation authorization"
+  "\`GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1\` is a narrow process-only authorization for one setup invocation; it is ignored when stored in a config file." \
+  "README documents process-only APFS creation authorization"
 check_contains "$ROOT/README.md" \
   "BACKUP_ASSUME_YES approves backup start only and never authorizes \`diskutil apfs addVolume\`." \
   "README keeps automatic backup approval separate from APFS creation"
 check_contains "$ROOT/README.md" \
-  "Scheduled, retry, mount-triggered, and menu-bar-only runs cannot create a volume or open volume-creation UI." \
-  "README prohibits APFS creation and creation UI during automatic runs"
+  "Overview/manual, scheduled, retry, mount-triggered, menu-bar-only, and unknown triggers cannot create or bind a volume or open volume-creation UI." \
+  "README reserves APFS creation and binding for setup"
 check_contains "$ROOT/README.md" \
   "one exact-name candidate in one eligible external APFS container" \
   "README documents unique APFS candidate and container selection"
 check_contains "$ROOT/README.md" \
-  "independently validates it, binds its UUID, resolves its current mount point, and atomically persists the identity." \
+  "independently validates it, binds its UUID, resolves its current mount point and nested destination, and atomically persists the complete identity." \
   "README documents APFS identity validation and atomic persistence"
 check_contains "$ROOT/README.md" \
   "Multiple named candidates or multiple eligible containers abort without mutation or copy, and prefix-renamed volumes are never guessed." \

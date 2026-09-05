@@ -66,6 +66,23 @@ find_nas_mount_for_url() {
   done < <(/sbin/mount)
 }
 
+# These two values are one-shot process capabilities. Capture them before the
+# shell config is loaded so persistent configuration cannot grant setup rights.
+_GDT_PROCESS_TRIGGER_SET=0
+_GDT_PROCESS_TRIGGER_VALUE=""
+if [[ "${GDRIVE_BACKUP_TRIGGER+x}" == "x" ]]; then
+  _GDT_PROCESS_TRIGGER_SET=1
+  _GDT_PROCESS_TRIGGER_VALUE="$GDRIVE_BACKUP_TRIGGER"
+fi
+_GDT_PROCESS_VOLUME_APPROVAL_SET=0
+_GDT_PROCESS_VOLUME_APPROVAL_VALUE=""
+if [[ "${GDRIVE_BACKUP_APPROVE_VOLUME_CREATION+x}" == "x" ]]; then
+  _GDT_PROCESS_VOLUME_APPROVAL_SET=1
+  _GDT_PROCESS_VOLUME_APPROVAL_VALUE="$GDRIVE_BACKUP_APPROVE_VOLUME_CREATION"
+fi
+readonly _GDT_PROCESS_TRIGGER_SET _GDT_PROCESS_TRIGGER_VALUE
+readonly _GDT_PROCESS_VOLUME_APPROVAL_SET _GDT_PROCESS_VOLUME_APPROVAL_VALUE
+
 CONFIG_DIR="${GDRIVE_BACKUP_CONFIG_DIR:-$HOME/.config/gdrive-tiger-backup}"
 LEGACY_CONFIG_FILE="$CONFIG_DIR/config"
 CONFIG_FILE="${GDRIVE_BACKUP_CONFIG:-}"
@@ -102,7 +119,30 @@ if [[ -f "$CONFIG_FILE" ]]; then
   source "$CONFIG_FILE"
 fi
 
-BACKUP_TRIGGER="${GDRIVE_BACKUP_TRIGGER:-manual}"
+if [[ "$_GDT_PROCESS_TRIGGER_SET" == "1" ]]; then
+  BACKUP_TRIGGER="$_GDT_PROCESS_TRIGGER_VALUE"
+else
+  BACKUP_TRIGGER="manual"
+fi
+if [[ "$_GDT_PROCESS_VOLUME_APPROVAL_SET" == "1" ]]; then
+  APPROVE_VOLUME_CREATION="$_GDT_PROCESS_VOLUME_APPROVAL_VALUE"
+else
+  APPROVE_VOLUME_CREATION=0
+fi
+case "$BACKUP_TRIGGER" in
+  manual|setup|schedule|schedule-retry|mount) ;;
+  *)
+    printf 'FEHLER: Unbekannter Backup-Ausloeser: %s\n' "$BACKUP_TRIGGER" >&2
+    exit 64
+    ;;
+esac
+case "$APPROVE_VOLUME_CREATION" in
+  0|1) ;;
+  *)
+    printf 'FEHLER: GDRIVE_BACKUP_APPROVE_VOLUME_CREATION muss 0 oder 1 sein.\n' >&2
+    exit 64
+    ;;
+esac
 AUTOMATIC_BACKUPS_PAUSED="${GDRIVE_BACKUP_PAUSED:-0}"
 NAS_START_ON_MOUNT="${GDRIVE_BACKUP_NAS_START_ON_MOUNT:-0}"
 if [[ "$BACKUP_TRIGGER" == "mount" && "$NAS_START_ON_MOUNT" != "1" ]]; then
@@ -183,7 +223,6 @@ RUN_STARTED_AT=0
 OPEN_BIN="${GDRIVE_BACKUP_OPEN_BIN:-/usr/bin/open}"
 CONFIRM_BACKUP="${GDRIVE_BACKUP_CONFIRM:-1}"
 AUTO_CREATE_VOLUME="${GDRIVE_BACKUP_AUTO_CREATE_VOLUME:-1}"
-APPROVE_VOLUME_CREATION="${GDRIVE_BACKUP_APPROVE_VOLUME_CREATION:-0}"
 BACKUP_LANG="${GDRIVE_BACKUP_LANG:-auto}"
 VERSIONING="${GDRIVE_BACKUP_VERSIONING-1}"
 VERSIONS_SUBDIR="${GDRIVE_BACKUP_VERSIONS_SUBDIR-.gdrive-versions}"
@@ -656,6 +695,10 @@ resolve_configured_apfs_volume() {
   local resolved_destination existing_ancestor mount_device destination_device
 
   [[ "$BACKUP_TARGET" == "apfs" && -n "$BACKUP_VOLUME_UUID" ]] || return 0
+  if [[ -L "$CONFIGURED_APFS_VOLUME" ]]; then
+    log "FEHLER: Der konfigurierte APFS-Volume-Pfad darf kein symbolischer Link sein."
+    return 69
+  fi
   if [[ ! "$BACKUP_VOLUME_UUID" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
     log "FEHLER: GDRIVE_BACKUP_VOLUME_UUID ist keine gueltige APFS-Volume-UUID."
     return 64
@@ -2694,7 +2737,8 @@ find_setup_candidate() {
   local selected_mount=""
   local selected_container=""
   local selected_name=""
-  local mount plist fs external container name system_image writable_media
+  local mount plist fs external container name system_image writable_media mount_point
+  local mount_real reported_mount_real
 
   for mount in "$VOLUMES_ROOT"/*; do
     [[ -d "$mount" ]] || continue
@@ -2712,13 +2756,17 @@ find_setup_candidate() {
     name="$(plist_value "$plist" VolumeName)"
     system_image="$(plist_value "$plist" SystemImage)"
     writable_media="$(plist_value "$plist" WritableMedia)"
+    mount_point="$(plist_value "$plist" MountPoint)"
     cleanup_temp_file "$plist" >/dev/null
 
     [[ "$fs" == "apfs" ]] || continue
     [[ "$external" == "true" ]] || continue
     [[ -n "$container" ]] || continue
-    [[ "$system_image" != "true" ]] || continue
+    [[ "$system_image" == "false" ]] || continue
     [[ "$writable_media" == "true" ]] || continue
+    mount_real="$(canonical_existing_directory "$mount")" || continue
+    reported_mount_real="$(canonical_existing_directory "$mount_point")" || continue
+    [[ "$mount_real" == "$reported_mount_real" ]] || continue
 
     # Several mounted volumes may represent one container; only a second
     # distinct container makes automatic setup ambiguous.
@@ -2735,6 +2783,31 @@ find_setup_candidate() {
   printf '%s\t%s\t%s\n' "$selected_mount" "$selected_container" "$selected_name"
 }
 
+validate_setup_source_mount() {
+  local source_mount="$1"
+  local expected_container="$2"
+  local plist_data filesystem mount_point container external writable_media system_image
+  local source_real mount_real
+
+  if ! plist_data="$(run_with_timeout 8 "$DISKUTIL_BIN" info -plist "$source_mount" 2>/dev/null)"; then
+    return 1
+  fi
+  filesystem="$(plist_data_value "$plist_data" FilesystemType || true)"
+  mount_point="$(plist_data_value "$plist_data" MountPoint || true)"
+  container="$(plist_data_value "$plist_data" APFSContainerReference || true)"
+  external="$(plist_data_value "$plist_data" RemovableMediaOrExternalDevice || true)"
+  writable_media="$(plist_data_value "$plist_data" WritableMedia || true)"
+  system_image="$(plist_data_value "$plist_data" SystemImage || true)"
+  if [[ "$filesystem" != "apfs" || "$container" != "$expected_container" ||
+        "$external" != "true" || "$writable_media" != "true" ||
+        "$system_image" != "false" || -z "$mount_point" ]]; then
+    return 1
+  fi
+  source_real="$(canonical_existing_directory "$source_mount")" || return 1
+  mount_real="$(canonical_existing_directory "$mount_point")" || return 1
+  [[ "$source_real" == "$mount_real" ]]
+}
+
 capture_named_apfs_volume_uuids() {
   local container="$1"
   local output_file="$2"
@@ -2748,10 +2821,21 @@ capture_named_apfs_volume_uuids() {
      ! json_data="$(printf '%s' "$plist_data" |
        /usr/bin/plutil -convert json -o - - 2>/dev/null)" ||
      ! printf '%s' "$json_data" |
-       jq -r --arg name "$BACKUP_VOLUME_NAME" \
-         '.Containers[]?.Volumes[]? |
-          select(.Name == $name) |
-          (.APFSVolumeUUID // empty)' >"$unsorted_file"; then
+       jq -r --arg container "$container" --arg name "$BACKUP_VOLUME_NAME" \
+         '[.Containers[]? | select(.ContainerReference == $container)] as $containers |
+          if ($containers | length) != 1 then
+            error("requested APFS container is not unique")
+          else
+            $containers[0].Volumes[]? |
+            select(.Name == $name) |
+            if (has("APFSVolumeUUID") and
+                ((.APFSVolumeUUID | type) == "string") and
+                ((.APFSVolumeUUID | length) > 0)) then
+              .APFSVolumeUUID
+            else
+              error("exact-name APFS volume has no valid UUID field")
+            end
+          end' >"$unsorted_file"; then
     cleanup_temp_file "$unsorted_file"
     return 1
   fi
@@ -2768,7 +2852,9 @@ capture_named_apfs_volume_uuids() {
   done <"$unsorted_file"
   cleanup_temp_file "$unsorted_file"
   [[ "$invalid_uuid" == "0" ]] || return 1
-  /usr/bin/sort -u -o "$output_file" "$output_file"
+  # Keep duplicate records visible: even a repeated UUID under the exact name
+  # is ambiguous inventory and must be rejected by the caller's record count.
+  /usr/bin/sort -o "$output_file" "$output_file"
 }
 
 new_apfs_volume_uuid_since() {
@@ -2812,6 +2898,7 @@ persist_volume_config() {
     /usr/bin/awk '
       !/^GDRIVE_BACKUP_TARGET=/ &&
       !/^GDRIVE_BACKUP_VOLUME=/ &&
+      !/^GDRIVE_BACKUP_DEST_ROOT=/ &&
       !/^GDRIVE_BACKUP_VOLUME_NAME=/ &&
       !/^GDRIVE_BACKUP_VOLUME_UUID=/ &&
       !/^GDRIVE_BACKUP_AUTO_CREATE_VOLUME=/
@@ -2823,6 +2910,7 @@ persist_volume_config() {
   {
     printf 'GDRIVE_BACKUP_TARGET=apfs\n'
     LC_ALL=C printf 'GDRIVE_BACKUP_VOLUME=%q\n' "$VOLUME"
+    LC_ALL=C printf 'GDRIVE_BACKUP_DEST_ROOT=%q\n' "$DEST_ROOT"
     LC_ALL=C printf 'GDRIVE_BACKUP_VOLUME_NAME=%q\n' "$BACKUP_VOLUME_NAME"
     LC_ALL=C printf 'GDRIVE_BACKUP_VOLUME_UUID=%q\n' "$created_uuid"
     printf 'GDRIVE_BACKUP_AUTO_CREATE_VOLUME=1\n'
@@ -2835,16 +2923,35 @@ persist_volume_config() {
     cleanup_temp_file "$temp_config"
     return 1
   fi
-  BACKUP_VOLUME_UUID="$created_uuid"
+  BACKUP_VOLUME_UUID="$(normalized_apfs_uuid "$created_uuid")"
+  CONFIGURED_APFS_VOLUME="$VOLUME"
+  CONFIGURED_APFS_DEST_ROOT="$DEST_ROOT"
   return 0
 }
 
 recover_existing_named_apfs_volume() {
   local container="$1"
   local candidate_uuid="$2"
-  local plist_data filesystem mount_point volume_uuid volume_name
+  local inventory_file inventory_count inventory_uuid
+  local plist_data filesystem mount_point volume_uuid volume_name encrypted locked
   local candidate_container external writable_media system_image volume_identifier
   local resolved_mount resolve_status
+
+  inventory_file="$(mktemp "${TMPDIR:-/tmp}/gdrive-apfs-recover.XXXXXX")" ||
+    return 1
+  if ! capture_named_apfs_volume_uuids "$container" "$inventory_file"; then
+    cleanup_temp_file "$inventory_file"
+    log "FEHLER: Gleichnamige APFS-Volumes konnten vor der Bindung nicht sicher erfasst werden."
+    return 1
+  fi
+  inventory_count="$(/usr/bin/wc -l <"$inventory_file" | /usr/bin/tr -d '[:space:]')"
+  inventory_uuid="$(cat "$inventory_file")"
+  cleanup_temp_file "$inventory_file"
+  if [[ "$inventory_count" != "1" ||
+        "$(normalized_apfs_uuid "$inventory_uuid")" != "$(normalized_apfs_uuid "$candidate_uuid")" ]]; then
+    log "FEHLER: Das gleichnamige APFS-Volume ist vor der Bindung nicht mehr eindeutig."
+    return 1
+  fi
 
   if ! plist_data="$(run_with_timeout 8 "$DISKUTIL_BIN" info -plist "$candidate_uuid" 2>/dev/null)"; then
     log "FEHLER: Das vorhandene gleichnamige APFS-Volume konnte nicht per UUID geprueft werden."
@@ -2860,6 +2967,8 @@ recover_existing_named_apfs_volume() {
   writable_media="$(plist_data_value "$plist_data" WritableMedia || true)"
   system_image="$(plist_data_value "$plist_data" SystemImage || true)"
   volume_identifier="$(plist_data_value "$plist_data" DeviceIdentifier || true)"
+  encrypted="$(plist_data_value "$plist_data" Encryption || true)"
+  locked="$(plist_data_value "$plist_data" Locked || true)"
   if [[ "$filesystem" != "apfs" ||
         "$(normalized_apfs_uuid "$volume_uuid")" != "$(normalized_apfs_uuid "$candidate_uuid")" ||
         "$volume_name" != "$BACKUP_VOLUME_NAME" ||
@@ -2868,6 +2977,11 @@ recover_existing_named_apfs_volume() {
         "$system_image" != "false" || -z "$mount_point" ||
         -z "$volume_identifier" ]]; then
     log "FEHLER: diskutil bestaetigt das vorhandene gleichnamige APFS-Volume nicht eindeutig."
+    return 1
+  fi
+  if [[ "$ENCRYPTION" == "apfs" &&
+        ( "$encrypted" != "true" || "$locked" != "false" ) ]]; then
+    log "FEHLER: Das zu bindende APFS-Volume ist nicht verschluesselt und entsperrt."
     return 1
   fi
   if ! resolved_mount="$(canonical_existing_directory "$mount_point")"; then
@@ -2891,23 +3005,128 @@ recover_existing_named_apfs_volume() {
   return 0
 }
 
+inspect_path_only_apfs_binding() {
+  local path="$1"
+  local plist_data filesystem mount_point volume_uuid volume_name container
+  local external writable_media system_image volume_identifier encrypted locked
+  local path_real mount_real path_device mount_device inventory_file inventory_count inventory_uuid
+
+  if [[ -L "$path" ]]; then
+    log "FEHLER: Ein APFS-Volume kann nicht ueber einen symbolischen Link gebunden werden."
+    return 1
+  fi
+  if ! plist_data="$(run_with_timeout 8 "$DISKUTIL_BIN" info -plist "$path" 2>/dev/null)"; then
+    log "FEHLER: Das ausgewaehlte APFS-Volume konnte nicht geprueft werden."
+    return 1
+  fi
+  filesystem="$(plist_data_value "$plist_data" FilesystemType || true)"
+  mount_point="$(plist_data_value "$plist_data" MountPoint || true)"
+  volume_uuid="$(plist_data_value "$plist_data" VolumeUUID || true)"
+  volume_name="$(plist_data_value "$plist_data" VolumeName || true)"
+  container="$(plist_data_value "$plist_data" APFSContainerReference || true)"
+  external="$(plist_data_value "$plist_data" RemovableMediaOrExternalDevice || true)"
+  writable_media="$(plist_data_value "$plist_data" WritableMedia || true)"
+  system_image="$(plist_data_value "$plist_data" SystemImage || true)"
+  volume_identifier="$(plist_data_value "$plist_data" DeviceIdentifier || true)"
+  encrypted="$(plist_data_value "$plist_data" Encryption || true)"
+  locked="$(plist_data_value "$plist_data" Locked || true)"
+  if [[ "$filesystem" != "apfs" ||
+        ! "$volume_uuid" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ||
+        "$volume_name" != "$BACKUP_VOLUME_NAME" || -z "$container" ||
+        "$external" != "true" || "$writable_media" != "true" ||
+        "$system_image" != "false" || -z "$mount_point" ||
+        -z "$volume_identifier" ]]; then
+    log "FEHLER: Der ausgewaehlte Pfad ist kein eindeutig geeignetes externes APFS-Backup-Volume."
+    return 1
+  fi
+  if [[ "$ENCRYPTION" == "apfs" &&
+        ( "$encrypted" != "true" || "$locked" != "false" ) ]]; then
+    log "FEHLER: Das ausgewaehlte APFS-Volume ist nicht verschluesselt und entsperrt."
+    return 1
+  fi
+  if ! path_real="$(canonical_existing_directory "$path")" ||
+     ! mount_real="$(canonical_existing_directory "$mount_point")" ||
+     [[ "$path_real" != "$mount_real" ]] ||
+     ! path_device="$(/usr/bin/stat -f '%d' "$path_real" 2>/dev/null)" ||
+     ! mount_device="$(/usr/bin/stat -f '%d' "$mount_real" 2>/dev/null)" ||
+     [[ -z "$path_device" || "$path_device" != "$mount_device" ]]; then
+    log "FEHLER: diskutil bestaetigt den ausgewaehlten APFS-Mountpunkt nicht eindeutig."
+    return 1
+  fi
+
+  inventory_file="$(mktemp "${TMPDIR:-/tmp}/gdrive-apfs-bind.XXXXXX")" ||
+    return 1
+  if ! capture_named_apfs_volume_uuids "$container" "$inventory_file"; then
+    cleanup_temp_file "$inventory_file"
+    log "FEHLER: APFS-Volume-Inventar konnte fuer die Bindung nicht gelesen werden."
+    return 1
+  fi
+  inventory_count="$(/usr/bin/wc -l <"$inventory_file" | /usr/bin/tr -d '[:space:]')"
+  inventory_uuid="$(cat "$inventory_file")"
+  cleanup_temp_file "$inventory_file"
+  if [[ "$inventory_count" != "1" ||
+        "$(normalized_apfs_uuid "$inventory_uuid")" != "$(normalized_apfs_uuid "$volume_uuid")" ]]; then
+    log "FEHLER: Das gleichnamige APFS-Volume ist nicht eindeutig; es wurde nichts gebunden."
+    return 1
+  fi
+
+  INSPECTED_BINDING_UUID="$(normalized_apfs_uuid "$volume_uuid")"
+  INSPECTED_BINDING_CONTAINER="$container"
+  INSPECTED_BINDING_MOUNT="$path_real"
+  INSPECTED_BINDING_IDENTIFIER="$volume_identifier"
+  INSPECTED_BINDING_DEVICE="$path_device"
+  return 0
+}
+
+bind_existing_apfs_volume_by_path() {
+  local initial_uuid initial_container initial_mount initial_identifier initial_device
+
+  if [[ "$BACKUP_TRIGGER" != "setup" ]]; then
+    log "FEHLER: Ein APFS-Ziel ohne gespeicherte UUID darf nur in der interaktiven Einrichtung gebunden werden."
+    return 1
+  fi
+  if ! inspect_path_only_apfs_binding "$VOLUME"; then
+    return 1
+  fi
+  initial_uuid="$INSPECTED_BINDING_UUID"
+  initial_container="$INSPECTED_BINDING_CONTAINER"
+  initial_mount="$INSPECTED_BINDING_MOUNT"
+  initial_identifier="$INSPECTED_BINDING_IDENTIFIER"
+  initial_device="$INSPECTED_BINDING_DEVICE"
+
+  if ! confirm_prompt "$(t use_volume)" "$initial_mount" "$(t start_backup)" 1; then
+    log "APFS-Volume-Bindung abgebrochen."
+    return 1
+  fi
+  if ! inspect_path_only_apfs_binding "$initial_mount" ||
+     [[ "$INSPECTED_BINDING_UUID" != "$initial_uuid" ||
+        "$INSPECTED_BINDING_CONTAINER" != "$initial_container" ||
+        "$INSPECTED_BINDING_MOUNT" != "$initial_mount" ||
+        "$INSPECTED_BINDING_IDENTIFIER" != "$initial_identifier" ||
+        "$INSPECTED_BINDING_DEVICE" != "$initial_device" ]]; then
+    log "FEHLER: Das APFS-Volume hat sich waehrend der Bestaetigung geaendert."
+    return 1
+  fi
+  if ! recover_existing_named_apfs_volume "$initial_container" "$initial_uuid"; then
+    return 1
+  fi
+  TARGET_APPROVED=1
+  return 0
+}
+
 confirm_apfs_volume_creation() {
   local source_name="$1"
 
+  if [[ "$BACKUP_TRIGGER" != "setup" ]]; then
+    log "FEHLER: Nur die interaktive Einrichtung darf ein APFS-Volume anlegen."
+    return 1
+  fi
   # Backup-start approval is intentionally broader than permission to mutate
-  # disk layout. Automatic triggers may only proceed with the narrow setup flag.
+  # disk layout. Only the snapshotted one-shot setup capability can bypass UI.
   if [[ "$APPROVE_VOLUME_CREATION" == "1" ]]; then
     return 0
   fi
-  case "$BACKUP_TRIGGER" in
-    manual|mount)
-      confirm_prompt "$(t create_volume)" "${source_name} -> ${BACKUP_VOLUME_NAME}" "$(t create_volume_action)" 1
-      ;;
-    *)
-      log "FEHLER: Ein automatischer Backup-Lauf darf kein APFS-Volume anlegen. Starte die Einrichtung manuell."
-      return 1
-      ;;
-  esac
+  confirm_prompt "$(t create_volume)" "${source_name} -> ${BACKUP_VOLUME_NAME}" "$(t create_volume_action)" 1
 }
 
 create_apfs_backup_volume() {
@@ -2916,6 +3135,30 @@ create_apfs_backup_volume() {
   local after_file candidate_uuid detect_status admin_status=0
 
   CREATED_APFS_VOLUME_UUID=""
+  # The caller's baseline was captured after confirmation. Close the remaining
+  # scheduling gap with an in-function snapshot immediately before addVolume.
+  after_file="$(mktemp "${TMPDIR:-/tmp}/gdrive-apfs-before-add.XXXXXX")" ||
+    return 1
+  if ! capture_named_apfs_volume_uuids "$container" "$after_file"; then
+    cleanup_temp_file "$after_file"
+    log "FEHLER: APFS-Volumes konnten vor dem Anlegen nicht sicher verglichen werden."
+    return 1
+  fi
+  detect_status=0
+  candidate_uuid="$(new_apfs_volume_uuid_since "$before_file" "$after_file")" ||
+    detect_status=$?
+  cleanup_temp_file "$after_file"
+  case "$detect_status" in
+    0)
+      CREATED_APFS_VOLUME_UUID="$candidate_uuid"
+      return 0
+      ;;
+    1) ;;
+    *)
+      log "FEHLER: Das APFS-Volume ist unmittelbar vor dem Anlegen nicht eindeutig."
+      return 1
+      ;;
+  esac
   if "$DISKUTIL_BIN" apfs addVolume "$container" APFS "$BACKUP_VOLUME_NAME"; then
     return 0
   fi
@@ -2947,7 +3190,33 @@ create_apfs_backup_volume() {
     esac
   done
 
-  log "APFS-Volume konnte ohne Adminrechte nicht angelegt werden; frage nach Administratorrechten."
+  # A sibling process can create the requested name while this process waits
+  # between the unprivileged failure and the administrator authorization UI.
+  # Take one last UUID snapshot immediately before any privileged mutation.
+  log "APFS-Volume konnte ohne Adminrechte nicht angelegt werden; pruefe erneut vor der Administratorfreigabe."
+  after_file="$(mktemp "${TMPDIR:-/tmp}/gdrive-apfs-before-admin.XXXXXX")" ||
+    return 1
+  if ! capture_named_apfs_volume_uuids "$container" "$after_file"; then
+    cleanup_temp_file "$after_file"
+    log "FEHLER: APFS-Volumes konnten vor dem privilegierten Anlegen nicht sicher verglichen werden."
+    return 1
+  fi
+  detect_status=0
+  candidate_uuid="$(new_apfs_volume_uuid_since "$before_file" "$after_file")" ||
+    detect_status=$?
+  cleanup_temp_file "$after_file"
+  case "$detect_status" in
+    0)
+      CREATED_APFS_VOLUME_UUID="$candidate_uuid"
+      return 0
+      ;;
+    1) ;;
+    *)
+      log "FEHLER: Das APFS-Volume ist vor der Administratorfreigabe nicht eindeutig."
+      return 1
+      ;;
+  esac
+
   "$OSASCRIPT_BIN" - "$container" "$BACKUP_VOLUME_NAME" <<'OSA' || admin_status=$?
 on run argv
   set containerRef to item 1 of argv
@@ -2965,8 +3234,16 @@ OSA
 }
 
 ensure_backup_volume() {
+  if [[ -z "$BACKUP_VOLUME_UUID" && "$BACKUP_TRIGGER" != "setup" ]]; then
+    log "FEHLER: Ein APFS-Ziel ohne gespeicherte UUID darf nur durch die interaktive Einrichtung gebunden oder angelegt werden."
+    return 1
+  fi
   if [[ -d "$VOLUME" ]]; then
-    return 0
+    if [[ -n "$BACKUP_VOLUME_UUID" ]]; then
+      return 0
+    fi
+    bind_existing_apfs_volume_by_path
+    return $?
   fi
 
   log "Backup-Volume noch nicht vorhanden: $VOLUME"
@@ -2987,6 +3264,8 @@ ensure_backup_volume() {
   fi
 
   local candidate candidate_status source_mount container source_name named_count
+  local fresh_candidate fresh_candidate_status fresh_container
+  local fresh_file fresh_count
   local before_file after_file candidate_uuid detect_status resolve_status
   candidate_status=0
   candidate="$(find_setup_candidate)" || candidate_status=$?
@@ -3033,6 +3312,54 @@ ensure_backup_volume() {
     log "$(t log_setup_skipped)"
     return 1
   fi
+
+  # Confirmation is an intentional scheduling gap. Re-establish both the sole
+  # source container and the exact-name UUID baseline immediately before add.
+  fresh_candidate_status=0
+  fresh_candidate="$(find_setup_candidate)" || fresh_candidate_status=$?
+  if [[ "$fresh_candidate_status" == "0" ]]; then
+    fresh_container="${fresh_candidate#*$'\t'}"
+    fresh_container="${fresh_container%%$'\t'*}"
+  fi
+  if [[ "$fresh_candidate_status" != "0" || "$fresh_container" != "$container" ]] ||
+     ! validate_setup_source_mount "$source_mount" "$container"; then
+    cleanup_temp_file "$before_file"
+    log "FEHLER: Der APFS-Ausgangscontainer hat sich waehrend der Bestaetigung geaendert."
+    return 1
+  fi
+  fresh_file="$(mktemp "${TMPDIR:-/tmp}/gdrive-apfs-confirmed.XXXXXX")" || {
+    cleanup_temp_file "$before_file"
+    return 1
+  }
+  if ! capture_named_apfs_volume_uuids "$container" "$fresh_file"; then
+    cleanup_temp_file "$fresh_file"
+    cleanup_temp_file "$before_file"
+    log "FEHLER: APFS-Volumes konnten nach der Bestaetigung nicht sicher erfasst werden."
+    return 1
+  fi
+  fresh_count="$(/usr/bin/wc -l <"$fresh_file" | /usr/bin/tr -d '[:space:]')"
+  case "$fresh_count" in
+    0)
+      cleanup_temp_file "$before_file"
+      before_file="$fresh_file"
+      ;;
+    1)
+      candidate_uuid="$(cat "$fresh_file")"
+      cleanup_temp_file "$fresh_file"
+      cleanup_temp_file "$before_file"
+      if recover_existing_named_apfs_volume "$container" "$candidate_uuid"; then
+        TARGET_APPROVED=1
+        return 0
+      fi
+      return 1
+      ;;
+    *)
+      cleanup_temp_file "$fresh_file"
+      cleanup_temp_file "$before_file"
+      log "FEHLER: Mehrere gleichnamige APFS-Volumes wurden nach der Bestaetigung gefunden; es wurde nichts angelegt."
+      return 1
+      ;;
+  esac
 
   log "Lege APFS-Volume '$BACKUP_VOLUME_NAME' im Container $container an (Ausgangsvolume: $source_mount)."
   if ! create_apfs_backup_volume "$container" "$before_file"; then
@@ -3265,7 +3592,8 @@ case "$AUTOMATIC_BACKUPS_PAUSED" in
     exit 64
     ;;
 esac
-if [[ "$AUTOMATIC_BACKUPS_PAUSED" == "1" && "$BACKUP_TRIGGER" != "manual" ]]; then
+if [[ "$AUTOMATIC_BACKUPS_PAUSED" == "1" &&
+      "$BACKUP_TRIGGER" != "manual" && "$BACKUP_TRIGGER" != "setup" ]]; then
   log "Automatische Backups sind pausiert; Lauf wird still uebersprungen."
   RUN_OUTCOME="skipped"
   RUN_STATE_REASON="automatic_backups_paused"

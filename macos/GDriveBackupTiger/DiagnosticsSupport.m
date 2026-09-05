@@ -73,7 +73,7 @@ static NSDictionary<NSString *, id> *GDTHealthRow(NSDictionary<NSString *, id> *
     NSMutableDictionary<NSString *, id> *lastRun = [@{@"status": lastStatus} mutableCopy];
     if (validSummary) {
         NSString *trigger = GDTAllowedString(summary[@"trigger"],
-            [NSSet setWithArray:@[@"manual", @"schedule", @"schedule-retry", @"mount"]]);
+            [NSSet setWithArray:@[@"manual", @"setup", @"schedule", @"schedule-retry", @"mount"]]);
         if (![trigger isEqualToString:@"unknown"]) {
             lastRun[@"trigger"] = trigger;
         }
@@ -219,7 +219,7 @@ static NSDictionary<NSString *, id> *GDTHealthRow(NSDictionary<NSString *, id> *
         @"finished_at": GDTValidatedPattern(lastRun[@"finished_at"], @"^[0-9]+$"),
         @"exit_code": GDTValidatedPattern(lastRun[@"exit_code"], @"^[0-9]+$"),
         @"trigger": GDTAllowedString(lastRun[@"trigger"],
-            [NSSet setWithArray:@[@"manual", @"schedule", @"schedule-retry", @"mount"]]),
+            [NSSet setWithArray:@[@"manual", @"setup", @"schedule", @"schedule-retry", @"mount"]]),
         @"reason": GDTAllowedString(lastRun[@"reason"],
             [NSSet setWithArray:@[
                 @"destination_permission_denied",

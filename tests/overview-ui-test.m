@@ -12,6 +12,7 @@
 @property(nonatomic) NSInteger progressHandoffCalls;
 @property(nonatomic) NSInteger overviewShowCalls;
 @property(nonatomic) NSInteger dockRestoreCalls;
+@property(nonatomic, copy) NSString *lastTrigger;
 @end
 
 @implementation OverviewLaunchDelegate
@@ -20,6 +21,7 @@
     (void)argument;
     (void)assumeYes;
     self.launchCalls++;
+    self.lastTrigger = @"manual";
     TigerOverviewView *view = [self.window.contentView isKindOfClass:TigerOverviewView.class]
         ? (TigerOverviewView *)self.window.contentView : nil;
     self.sawImmediatePreparingState = view &&
@@ -353,7 +355,7 @@ int main(void) {
                @"repeated setup clicks reuse one in-process window and preserve the overview");
         setupPresenter.menubarOnlyMode = YES;
         BOOL setupRequestsForegroundProgress =
-            [setupPresenter shouldShowProgressForTrigger:@"manual" fromVisibleWindow:YES];
+            [setupPresenter shouldShowProgressForTrigger:@"setup" fromVisibleWindow:YES];
         BOOL persistentSetupStaysOwnedByController =
             ![setupPresenter windowShouldClose:firstSetupWindow] &&
             setupPresenter.window == overviewWindow &&
@@ -498,6 +500,7 @@ int main(void) {
         BOOL hiddenOverviewStaysHeadless = NO;
         BOOL menuBarStaysHeadless = NO;
         BOOL automaticTriggerStaysHeadless = NO;
+        BOOL visibleSetupShowsProgress = NO;
         if ([delegate respondsToSelector:showProgressSelector]) {
             typedef BOOL (*ShowProgressMethod)(id, SEL, NSString *, BOOL);
             ShowProgressMethod method = (ShowProgressMethod)[delegate methodForSelector:showProgressSelector];
@@ -508,12 +511,15 @@ int main(void) {
             delegate.menubarOnlyMode = YES;
             menuBarStaysHeadless = !method(delegate, showProgressSelector, @"manual", YES);
             automaticTriggerStaysHeadless = !method(delegate, showProgressSelector, @"mount", YES);
+            delegate.setupMode = YES;
+            visibleSetupShowsProgress = method(delegate, showProgressSelector, @"setup", YES);
+            delegate.setupMode = NO;
             delegate.overviewMode = NO;
             delegate.menubarOnlyMode = NO;
         }
-        Assert(visibleOverviewShowsProgress && hiddenOverviewStaysHeadless &&
+        Assert(visibleOverviewShowsProgress && visibleSetupShowsProgress && hiddenOverviewStaysHeadless &&
                menuBarStaysHeadless && automaticTriggerStaysHeadless,
-               @"only a visible window's direct manual action requests progress UI");
+               @"visible overview and setup actions request progress while background triggers stay headless");
 
         OverviewLaunchDelegate *guardedLaunch = [[OverviewLaunchDelegate alloc] init];
         guardedLaunch.language = @"en";
@@ -525,9 +531,11 @@ int main(void) {
         guardedLaunch.window.contentView = [[TigerOverviewView alloc] initWithFrame:NSMakeRect(0, 0, 620, 420)];
         [guardedLaunch startOverviewBackup:nil];
         [guardedLaunch startOverviewBackup:nil];
-        Assert(guardedLaunch.launchCalls == 1 && guardedLaunch.sawImmediatePreparingState &&
+        Assert(guardedLaunch.launchCalls == 1 &&
+               [guardedLaunch.lastTrigger isEqualToString:@"manual"] &&
+               guardedLaunch.sawImmediatePreparingState &&
                guardedLaunch.progressHandoffCalls == 1,
-               @"overview shows preparation, disables repeats, and yields its Dock icon after launch");
+               @"overview keeps manual authority, shows preparation, disables repeats, and yields its Dock icon");
 
         OverviewLaunchDelegate *failedLaunch = [[OverviewLaunchDelegate alloc] init];
         failedLaunch.language = @"en";

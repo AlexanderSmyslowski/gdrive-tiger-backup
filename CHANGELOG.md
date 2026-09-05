@@ -4,9 +4,11 @@
 
 ## v2.4.6 - 2026-09-05
 
-- `GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1` is the narrow, explicit one-run authorization for volume creation; BACKUP_ASSUME_YES approves backup start only and never authorizes `diskutil apfs addVolume`. Scheduled, retry, mount-triggered, and menu-bar-only runs cannot create a volume or open volume-creation UI.
-- For a new dedicated volume, the routine accepts one exact-name candidate in one eligible external APFS container. It independently validates it, binds its UUID, resolves its current mount point, and atomically persists the identity.
-- Multiple named candidates or multiple eligible containers abort without mutation or copy, and prefix-renamed volumes are never guessed. The routine never deletes, erases, repartitions, renames, or unmounts volumes.
+- Make the process-supplied `setup` trigger the only authority that can create or bind an APFS volume. `GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1` is a narrow process-only authorization for one setup invocation; config files cannot persist it or forge setup authority, and `BACKUP_ASSUME_YES` never authorizes `diskutil apfs addVolume`.
+- Reject overview/manual, scheduled, retry, mount-triggered, menu-bar-only, and unknown creation attempts before confirmation UI, privileged helpers, disk mutation, or copy. Pausing automatic backups does not block a visible setup action.
+- Require every successful APFS run to be UUID-bound. Legacy path-only targets fail closed outside setup; setup validates the exact name, UUID, container, mount, device, media safety and required encryption before and after human confirmation, then atomically persists the complete resolved identity and nested destination.
+- Immediately before creation, rediscover the sole source container and exact-name UUID inventory. Recover one volume that appeared during confirmation, while multiple named candidates, invalid UUID records, multiple eligible containers, and prefix-renamed volumes fail closed without mutation or copy.
+- Keep the setup window's backup action on its distinct foreground trigger while overview and menu-bar starts remain manual. The routine never deletes, erases, repartitions, renames, or unmounts volumes.
 
 ## v2.4.5 - 2026-09-04
 
