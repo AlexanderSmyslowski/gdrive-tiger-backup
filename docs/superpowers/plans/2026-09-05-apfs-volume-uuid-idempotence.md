@@ -48,6 +48,9 @@ test doubles, Objective-C release application.
 - [ ] Add a RED ambiguity test that runs twice and requires exit 69, unchanged
       config and canaries, an actionable log message, and zero disk mutation,
       privileged helper, or rclone copy calls.
+- [ ] Add a RED setup test for the reported renamed logical volumes
+      `GoogleDrive-Backup 1–3`; treat them as conflicting candidates and prove
+      that no fourth base-name volume is created or proposed.
 - [ ] Add a RED test requiring multiple eligible external APFS containers to
       abort instead of selecting by mtime.
 - [ ] Add a RED test proving scheduled/retry `BACKUP_ASSUME_YES=1` cannot
@@ -59,7 +62,11 @@ test doubles, Objective-C release application.
 - [ ] Add a RED confirmation-race test in which an exact-name volume appears
       before mutation; recover it or abort without calling `addVolume`.
 - [ ] Add RED inventory tests that scope matching to the selected container
-      and reject an exact-name record whose UUID is absent or malformed.
+      and reject an exact-name record whose UUID is absent or malformed. Cover
+      foreign and duplicated requested-container records explicitly.
+- [ ] Add a RED race test in which an exact-name volume appears while macOS is
+      waiting for administrator authorization. The privileged path must recheck
+      after the dialog and avoid a second `addVolume`.
 - [ ] Implement deterministic single-container discovery, pre-create UUID-set
       evaluation and refresh, UUID-based recovery/persistence for one
       candidate, fail-closed ambiguity handling, and setup-only authorization.

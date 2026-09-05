@@ -27,6 +27,10 @@ APFS volumes named `GoogleDrive-Backup`, followed by Time Machine error
   or disk mutation. Log that multiple candidates exist, that the user must
   select the intended volume explicitly, and that nothing was created or
   deleted.
+- Treat numeric logical-name variants such as `GoogleDrive-Backup 1`, `2`, and
+  `3` as conflicting candidates for automatic creation. Never guess which one
+  is intended; require explicit setup selection and do not create another base
+  name while any such candidate exists.
 - If more than one eligible external APFS container is present, abort instead
   of choosing one by mount-directory modification time.
 - Only a zero-candidate, one-container setup may create a volume. Automatic
@@ -38,6 +42,10 @@ APFS volumes named `GoogleDrive-Backup`, followed by Time Machine error
   the eligible container and refresh the exact-name UUID inventory. Recover a
   newly appeared unique candidate, abort on ambiguity, and mutate only while
   that fresh inventory is empty.
+- If `addVolume` needs macOS administrator authorization, repeat the container
+  and exact-name checks inside the authorized command after the password dialog
+  and immediately before the privileged mutation. A pre-dialog snapshot is not
+  sufficient.
 - Invocation trigger and one-run creation approval are captured before profile
   configuration is loaded. A profile cannot turn an automatic/menu-bar run
   into setup or persist creation authority, and unknown trigger or approval
@@ -53,7 +61,8 @@ APFS volumes named `GoogleDrive-Backup`, followed by Time Machine error
 
 - Behavior-level regression tests exercise one existing volume, multiple
   existing volumes, multiple source containers, path-only profiles, creation
-  authorization, invalid inventory identities, pre-create inventory races,
+  authorization, missing and malformed inventory UUIDs, foreign or duplicated
+  container records, pre-create and administrator-dialog inventory races,
   nested destinations, and two consecutive runs.
 - Ambiguity tests preserve configuration and canary files and prove that no
   `addVolume`, delete/erase command, privileged helper, or rclone copy ran.
