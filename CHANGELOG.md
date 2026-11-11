@@ -9,6 +9,7 @@
 - Tolerate a single failed writability probe on a busy SMB share instead of discarding a completed copy phase; a NAS destination counts as lost only after three consecutive failed checks.
 - Bound small file operations on a network share to 60 seconds and terminate a run that logs no progress for 45 minutes (`GDRIVE_BACKUP_STALL_SECONDS`), so a blocked SMB call can no longer hold the backup lock for hours and suppress every later run.
 - Delete disposable build and test files under temporary directories directly instead of moving them to the Trash.
+- Delete restore staging items directly instead of moving them to the Trash, so an interrupted restore leaves no partial copies behind.
 - Record interrupted runs (logout, restart, stop) in the log, stop before copying when the destination has less than 1 GB free, and no longer log a user confirmation for unattended runs.
 
 ## v2.5.1 - 2026-09-05

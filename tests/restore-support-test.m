@@ -28,15 +28,16 @@ static NSArray<NSDictionary<NSString *, id> *> *CallList(id object,
     return method(object, selector, relativePath, error);
 }
 
-// The restore code trashes its temporary staging items. In tests these are
-// scratch fixtures, so delete them instead of filling the account's real Trash.
+// Restore staging must be deleted directly and never reach the real Trash.
 @interface GDTScratchFileManager : NSFileManager
+@property(nonatomic) BOOL usedTrash;
 @end
 
 @implementation GDTScratchFileManager
 - (BOOL)trashItemAtURL:(NSURL *)url
       resultingItemURL:(NSURL **)outResultingURL
                  error:(NSError **)error {
+    self.usedTrash = YES;
     if (outResultingURL) *outResultingURL = nil;
     return [self removeItemAtURL:url error:error];
 }
@@ -44,7 +45,7 @@ static NSArray<NSDictionary<NSString *, id> *> *CallList(id object,
 
 int main(void) {
     @autoreleasepool {
-        NSFileManager *fileManager = [[GDTScratchFileManager alloc] init];
+        GDTScratchFileManager *fileManager = [[GDTScratchFileManager alloc] init];
         NSURL *root = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES]
             URLByAppendingPathComponent:[NSString stringWithFormat:@"gdrive-restore-%@", NSUUID.UUID.UUIDString]
                              isDirectory:YES];
@@ -408,6 +409,9 @@ int main(void) {
             Assert(invalidCodecChildren.count == 0 && error != nil,
                    @"restore browser fails closed for an unknown NAS codec manifest");
         }
+
+        Assert(!fileManager.usedTrash,
+               @"restore deletes its staging items instead of using the Trash");
 
         [fileManager removeItemAtURL:root error:nil];
         [fileManager removeItemAtURL:outside error:nil];
