@@ -20,9 +20,7 @@ static NSString *TemporaryPath(NSString *name) {
 }
 
 static void TrashPath(NSString *path) {
-    [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:path]
-                                resultingItemURL:nil
-                                           error:nil];
+    [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:path] error:nil];
 }
 
 int main(void) {

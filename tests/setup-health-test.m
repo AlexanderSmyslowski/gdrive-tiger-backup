@@ -458,9 +458,7 @@ int main(void) {
                @"production setup health stays bounded when a command ignores TERM");
         setenv("PATH", originalPath.fileSystemRepresentation, 1);
 
-        [fileManager trashItemAtURL:[NSURL fileURLWithPath:destination]
-                  resultingItemURL:nil
-                             error:nil];
+        [fileManager removeItemAtURL:[NSURL fileURLWithPath:destination] error:nil];
     }
 
     if (failures > 0) {

@@ -134,10 +134,8 @@ int main(void) {
             printf("not ok - cancel action did not safely terminate the validated process group\n");
             failures++;
         }
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:cancelSentinel]
-                                   resultingItemURL:nil error:nil];
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:cancelState]
-                                   resultingItemURL:nil error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:cancelSentinel] error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:cancelState] error:nil];
 
         NSString *malformedPath = [NSTemporaryDirectory()
             stringByAppendingPathComponent:[NSString stringWithFormat:@"gdrive-malformed-%@", NSUUID.UUID.UUIDString]];
@@ -146,9 +144,7 @@ int main(void) {
                                                  encoding:NSUTF8StringEncoding
                                                     error:nil];
         AssertEqual(RunStatus(delegate, malformedPath), @"pending", @"partial run state remains pending");
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:malformedPath]
-                                   resultingItemURL:nil
-                                              error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:malformedPath] error:nil];
 
         NSString *successPath = [NSTemporaryDirectory()
             stringByAppendingPathComponent:[NSString stringWithFormat:@"gdrive-success-%@", NSUUID.UUID.UUIDString]];
@@ -157,9 +153,7 @@ int main(void) {
                                                   encoding:NSUTF8StringEncoding
                                                      error:nil];
         AssertEqual(RunStatus(delegate, successPath), @"success", @"explicit successful run is accepted");
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:successPath]
-                                   resultingItemURL:nil
-                                              error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:successPath] error:nil];
 
         NSString *permissionPath = [NSTemporaryDirectory()
             stringByAppendingPathComponent:[NSString stringWithFormat:@"gdrive-permission-%@", NSUUID.UUID.UUIDString]];
@@ -193,9 +187,7 @@ int main(void) {
         AssertEqual(permissionView.detailLabel.stringValue,
                     T(@"en", @"failedPermissionHint"),
                     @"specific permission explanation is visible in the terminal state");
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:permissionPath]
-                                   resultingItemURL:nil
-                                              error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:permissionPath] error:nil];
 
         NSString *nasLostPath = [NSTemporaryDirectory()
             stringByAppendingPathComponent:[NSString stringWithFormat:@"gdrive-nas-lost-%@", NSUUID.UUID.UUIDString]];
@@ -221,9 +213,7 @@ int main(void) {
         }
         AssertEqual(nasLostTranslated ? @"yes" : @"no", @"yes",
                     @"lost NAS explanation is localized in every supported language");
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:nasLostPath]
-                                   resultingItemURL:nil
-                                              error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:nasLostPath] error:nil];
 
         NSString *nasNotReadyPath = [NSTemporaryDirectory()
             stringByAppendingPathComponent:[NSString stringWithFormat:@"gdrive-nas-not-ready-%@", NSUUID.UUID.UUIDString]];
@@ -241,9 +231,7 @@ int main(void) {
         AssertEqual(nasNotReadyDetail,
                     T(@"en", @"backupNotificationNASRetryBody"),
                     @"transient NAS readiness failure explains the scheduled retry");
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:nasNotReadyPath]
-                                   resultingItemURL:nil
-                                              error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:nasNotReadyPath] error:nil];
 
         for (NSString *exitCode in @[@"129", @"130", @"143"]) {
             NSString *cancelledPath = [NSTemporaryDirectory()
@@ -253,9 +241,7 @@ int main(void) {
             AssertEqual(RunStatus(delegate, cancelledPath),
                         @"cancelled",
                         [NSString stringWithFormat:@"signal %@ stays cancelled", exitCode]);
-            [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:cancelledPath]
-                                       resultingItemURL:nil
-                                                  error:nil];
+            [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:cancelledPath] error:nil];
         }
 
         NSString *legacyPath = [NSTemporaryDirectory()
@@ -265,9 +251,7 @@ int main(void) {
                                                   encoding:NSUTF8StringEncoding
                                                      error:nil];
         AssertEqual(RunStatus(delegate, legacyPath), @"failure", @"unversioned state fails closed");
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:legacyPath]
-                                   resultingItemURL:nil
-                                              error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:legacyPath] error:nil];
 
         NSString *skippedPath = [NSTemporaryDirectory()
             stringByAppendingPathComponent:[NSString stringWithFormat:@"gdrive-skipped-%@", NSUUID.UUID.UUIDString]];
@@ -276,9 +260,7 @@ int main(void) {
                                                                                                  encoding:NSUTF8StringEncoding
                                                                                                     error:nil];
         AssertEqual(RunStatus(delegate, skippedPath), @"skipped", @"concurrent run stays skipped");
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:skippedPath]
-                                   resultingItemURL:nil
-                                              error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:skippedPath] error:nil];
 
         NSString *declinedPath = [NSTemporaryDirectory()
             stringByAppendingPathComponent:[NSString stringWithFormat:@"gdrive-declined-%@", NSUUID.UUID.UUIDString]];
@@ -287,18 +269,14 @@ int main(void) {
         AssertEqual(RunStatus(delegate, declinedPath),
                     @"skipped",
                     @"declined destination confirmation stays skipped");
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:declinedPath]
-                                   resultingItemURL:nil
-                                              error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:declinedPath] error:nil];
 
         NSString *runningPath = [NSTemporaryDirectory()
             stringByAppendingPathComponent:[NSString stringWithFormat:@"gdrive-running-%@", NSUUID.UUID.UUIDString]];
         NSString *runningContents = [NSString stringWithFormat:@"protocol=1\nstatus=running\npid=%d\n", getpid()];
         [runningContents writeToFile:runningPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
         AssertEqual(RunStatus(delegate, runningPath), @"running", @"live process remains running");
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:runningPath]
-                                   resultingItemURL:nil
-                                              error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:runningPath] error:nil];
 
         NSString *orphanPath = [NSTemporaryDirectory()
             stringByAppendingPathComponent:[NSString stringWithFormat:@"gdrive-orphan-%@", NSUUID.UUID.UUIDString]];
@@ -307,9 +285,7 @@ int main(void) {
                                                               encoding:NSUTF8StringEncoding
                                                                  error:nil];
         AssertEqual(RunStatus(delegate, orphanPath), @"failure", @"orphaned run fails closed");
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:orphanPath]
-                                   resultingItemURL:nil
-                                              error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:orphanPath] error:nil];
 
         NSString *sentinelPath = [NSTemporaryDirectory()
             stringByAppendingPathComponent:[NSString stringWithFormat:@"gdrive-sentinel-%@", NSUUID.UUID.UUIDString]];
@@ -335,9 +311,7 @@ int main(void) {
             printf("not ok - dead sentinel owner did not fail closed\n");
             failures++;
         }
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:sentinelPath]
-                                   resultingItemURL:nil
-                                              error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:sentinelPath] error:nil];
 
         NSString *progressPath = [NSTemporaryDirectory()
             stringByAppendingPathComponent:[NSString stringWithFormat:
@@ -382,8 +356,7 @@ int main(void) {
             printf("not ok - phase-only foreground snapshot retained stale rich progress\n");
             failures++;
         }
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:progressPath]
-                                   resultingItemURL:nil error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:progressPath] error:nil];
 
         TigerBackupView *view = [[TigerBackupView alloc] initWithFrame:NSMakeRect(0, 0, 392, 162)];
         NSData *successImage = RenderedTerminalState(view, @"success");

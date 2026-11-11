@@ -10,7 +10,10 @@ LOG_FILE="$TEST_HOME/Library/Logs/gdrive-backup.log"
 failures=0
 
 cleanup() {
-  /usr/bin/trash "$TEST_HOME" >/dev/null 2>&1 || true
+  # Scratch fixture from mktemp: remove it directly instead of filling the Trash.
+  case "$TEST_HOME" in
+    */gdrive-profile-shell-test.*) /bin/rm -rf "$TEST_HOME" ;;
+  esac
 }
 trap cleanup EXIT
 

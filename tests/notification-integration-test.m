@@ -1274,10 +1274,10 @@ int main(void) {
                @"a durable state change after acceptance retracts success without a watermark");
         unsetenv("GDRIVE_BACKUP_CONFIG");
         unsetenv("GDRIVE_BACKUP_SUMMARY_STATE_FILE");
-        [NSFileManager.defaultManager trashItemAtURL:
-            [NSURL fileURLWithPath:sourceConfigPath] resultingItemURL:nil error:nil];
-        [NSFileManager.defaultManager trashItemAtURL:
-            [NSURL fileURLWithPath:sourceSummaryPath] resultingItemURL:nil error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:
+            [NSURL fileURLWithPath:sourceConfigPath] error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:
+            [NSURL fileURLWithPath:sourceSummaryPath] error:nil];
 
         NotificationTestDelegate *newIssueDuringSuccessReconciliation =
             [[NotificationTestDelegate alloc] init];
@@ -2461,8 +2461,8 @@ int main(void) {
         if (retryLockHeld) (void)flock(retryLockDescriptor, LOCK_UN);
         BOOL releasedLockDetected = [retryLockProbe automaticRetryLockIsAvailable];
         if (retryLockDescriptor >= 0) (void)close(retryLockDescriptor);
-        [NSFileManager.defaultManager trashItemAtURL:
-            [NSURL fileURLWithPath:retryLockProbePath] resultingItemURL:nil error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:
+            [NSURL fileURLWithPath:retryLockProbePath] error:nil];
         Assert(retryLockFixtureCreated && retryLockHeld && busyLockDetected &&
                releasedLockDetected,
                @"the read-only retry probe detects and releases the engine's global lock");
@@ -4202,10 +4202,8 @@ int main(void) {
         [refreshDelegate.overviewRefreshTimer invalidate];
         unsetenv("GDRIVE_BACKUP_CONFIG");
         unsetenv("GDRIVE_BACKUP_SUMMARY_STATE_FILE");
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:configPath]
-                                    resultingItemURL:nil error:nil];
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:summaryPath]
-                                    resultingItemURL:nil error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:configPath] error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:summaryPath] error:nil];
 
         [delegate.testDefaults removePersistentDomainForName:suiteName];
         [markerWriter.testDefaults

@@ -226,7 +226,7 @@ int main(int argc, const char *argv[]) {
         Require(RunWorker("exit-0", 0, -SIGTERM, NO) == 143, "stop before spawn prevents child launch");
         Require(RunWorker("stop-success", 0, 0, NO) == 143, "child success cannot erase a stop request");
         puts("PASS: process groups, HUP/INT/TERM, child reaping, signal restoration and startup races");
-        Require([NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:@(directory)] resultingItemURL:nil error:nil], "recoverable fixture cleanup");
+        Require([NSFileManager.defaultManager removeItemAtPath:@(directory) error:nil], "scratch fixture cleanup");
     }
     return 0;
 }

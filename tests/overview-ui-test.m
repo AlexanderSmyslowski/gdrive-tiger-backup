@@ -413,8 +413,7 @@ int main(void) {
         } else {
             unsetenv("GDRIVE_BACKUP_CONFIG");
         }
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:setupConfigPath]
-                                    resultingItemURL:nil error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:setupConfigPath] error:nil];
 
         NSString *successGlyph = view.statusSymbolLabel.stringValue;
         NSString *successDescription = view.statusSymbolLabel.accessibilityLabel;
@@ -777,10 +776,8 @@ int main(void) {
                [snapshot[@"target"] containsString:capacityPath.lastPathComponent] &&
                ![snapshot[@"storage"] isEqualToString:T(@"en", @"overviewUnavailable")],
                @"one honest snapshot feeds both overview and menu bar values");
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:summaryPath]
-                                    resultingItemURL:nil error:nil];
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:capacityPath]
-                                    resultingItemURL:nil error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:summaryPath] error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:capacityPath] error:nil];
 
         NSDictionary<NSString *, NSString *> *emptySnapshot =
             [delegate overviewSnapshotForConfig:@{@"GDRIVE_BACKUP_SCHEDULE": @"manual"}
@@ -917,8 +914,7 @@ int main(void) {
         Assert([pausedConfig[@"GDRIVE_BACKUP_PAUSED"] isEqualToString:@"1"],
                @"pause action persists the automatic-backup guard without changing the schedule");
         unsetenv("GDRIVE_BACKUP_CONFIG");
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:pauseConfigPath]
-                                    resultingItemURL:nil error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:pauseConfigPath] error:nil];
         Assert([delegate respondsToSelector:NSSelectorFromString(@"showRestoreBrowser:")],
                @"overview and menu bar route to one restore browser workflow");
 

@@ -40,7 +40,9 @@ static NSArray *CallList(id object, NSString *selectorName, NSString *relativePa
             }
         }
     }
-    return [super trashItemAtURL:url resultingItemURL:outResultingURL error:error];
+    // Scratch data only: delete it instead of filling the account's real Trash.
+    if (outResultingURL) *outResultingURL = nil;
+    return [self removeItemAtURL:url error:error];
 }
 @end
 
@@ -275,8 +277,8 @@ int main(void) {
             setenv("PATH", originalPath.fileSystemRepresentation, 1);
         }
 
-        [fm trashItemAtURL:physicalRoot resultingItemURL:nil error:nil];
-        [fm trashItemAtURL:output resultingItemURL:nil error:nil];
+        [fm removeItemAtURL:physicalRoot error:nil];
+        [fm removeItemAtURL:output error:nil];
     }
     if (failures) {
         printf("%d crypt restore support test(s) failed.\n", failures);
