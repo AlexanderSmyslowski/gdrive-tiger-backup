@@ -395,6 +395,9 @@ thinning.
   (`GDRIVE_BACKUP_LOG_MAX_BYTES`, `0` disables rotation). Repeated rclone
   statistics are logged at most every five minutes; copied files, warnings and
   errors are always logged.
+- A run that writes nothing to its log for 45 minutes is treated as hung and
+  terminated (`GDRIVE_BACKUP_STALL_SECONDS`, `0` disables the watchdog). Small
+  file operations on a network share are bounded to 60 seconds and retried.
 - A run stops before copying when the destination has less than 1 GB free
   (`GDRIVE_BACKUP_MIN_FREE_MB`, `0` disables the check) and logs the free
   space of the destination at every start.

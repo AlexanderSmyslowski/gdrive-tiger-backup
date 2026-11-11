@@ -305,6 +305,45 @@ test_signal_is_logged() {
   fi
 }
 
+test_stalled_run_is_terminated() {
+  local name="a run without progress is terminated and releases the backup lock"
+  local status started
+  prepare_test_environment
+  started="$(/bin/date '+%s')"
+
+  run_backup FAKE_RCLONE_SLEEP=60 GDRIVE_BACKUP_STALL_SECONDS=2 \
+    GDRIVE_BACKUP_STALL_CHECK_SECONDS=1
+  status=$?
+
+  if [[ "$status" == "143" ]] && (( $(/bin/date '+%s') - started < 40 )) &&
+     /usr/bin/grep -q 'ABBRUCH: Seit 2 Sekunden ohne Fortschritt' "$BACKUP_LOG" &&
+     [[ "$(summary_value status)" == "cancelled" && -z "$(ls -A "$TEST_TMP")" ]]; then
+    pass "$name"
+  else
+    fail "$name (status=$status)"
+  fi
+}
+
+test_blocked_manifest_read_is_bounded() {
+  local name="a manifest read that never returns is retried and then reported"
+  local status
+  prepare_test_environment
+  mkdir -p "$DEST_ROOT"
+  printf 'protocol=1\n' >"$DEST_ROOT/.gdrive-name-codec"
+  printf '#!/bin/bash\n/bin/sleep 600\n' >"$FAKE_BIN/cmp"
+  chmod +x "$FAKE_BIN/cmp"
+
+  run_backup GDRIVE_BACKUP_CMP_BIN="$FAKE_BIN/cmp" GDRIVE_BACKUP_NAS_FILE_TIMEOUT_SECONDS=1
+  status=$?
+
+  if [[ "$status" == "69" && "$(summary_value reason)" == "destination_unreadable" &&
+        "$(copy_calls)" == "0" ]]; then
+    pass "$name"
+  else
+    fail "$name (status=$status reason=$(summary_value reason))"
+  fi
+}
+
 test_daily_window_catches_up() {
   local name="a daily schedule catches up quietly and runs once per window"
   local status finished_before window
@@ -447,6 +486,8 @@ test_scratch_files_are_removed
 test_log_is_rotated
 test_repeated_statistics_are_not_logged
 test_signal_is_logged
+test_stalled_run_is_terminated
+test_blocked_manifest_read_is_bounded
 test_daily_window_catches_up
 test_other_destination_does_not_complete_window
 test_daily_window_attempts_are_bounded

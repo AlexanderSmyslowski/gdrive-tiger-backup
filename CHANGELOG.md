@@ -7,6 +7,8 @@
 - Stop filling the Trash and the destination: retired version states go to `.gdrive-versions/.retention-trash` and are deleted for good after seven days (`GDRIVE_BACKUP_RETENTION_PURGE_DAYS`); scratch files are removed directly from a private per-run temporary folder that is also cleaned up after signals and stale runs.
 - Rotate the backup log at 5 MB with one compressed predecessor and log repeated rclone statistics at most every five minutes.
 - Tolerate a single failed writability probe on a busy SMB share instead of discarding a completed copy phase; a NAS destination counts as lost only after three consecutive failed checks.
+- Bound small file operations on a network share to 60 seconds and terminate a run that logs no progress for 45 minutes (`GDRIVE_BACKUP_STALL_SECONDS`), so a blocked SMB call can no longer hold the backup lock for hours and suppress every later run.
+- Delete disposable build and test files under temporary directories directly instead of moving them to the Trash.
 - Record interrupted runs (logout, restart, stop) in the log, stop before copying when the destination has less than 1 GB free, and no longer log a user confirmation for unattended runs.
 
 ## v2.5.1 - 2026-09-05

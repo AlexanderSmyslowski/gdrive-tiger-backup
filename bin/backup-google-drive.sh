@@ -300,6 +300,19 @@ CATCHUP_QUIET=0
 BASE_TMPDIR="${TMPDIR:-/tmp}"
 BASE_TMPDIR="${BASE_TMPDIR%/}"
 RUN_TMPDIR=""
+# Upper bound for one small file operation on a network share.
+NAS_FILE_TIMEOUT_SECONDS="${GDRIVE_BACKUP_NAS_FILE_TIMEOUT_SECONDS-60}"
+if [[ ! "$NAS_FILE_TIMEOUT_SECONDS" =~ ^[1-9][0-9]{0,3}$ ]]; then
+  NAS_FILE_TIMEOUT_SECONDS=60
+fi
+# A run that writes nothing to its log for this long is treated as hung and
+# terminated, so it cannot hold the backup lock indefinitely. 0 disables it.
+STALL_SECONDS="${GDRIVE_BACKUP_STALL_SECONDS-2700}"
+if [[ ! "$STALL_SECONDS" =~ ^[0-9]{1,6}$ ]]; then
+  STALL_SECONDS=2700
+fi
+STALL_SECONDS=$((10#$STALL_SECONDS))
+STALL_WATCHDOG_PID=""
 ENCRYPTION="$(lowercase "${GDRIVE_BACKUP_ENCRYPTION-none}")"
 CRYPT_REMOTE="${GDRIVE_BACKUP_CRYPT_REMOTE-}"
 DISKUTIL_BIN="${GDRIVE_BACKUP_DISKUTIL-/usr/sbin/diskutil}"
@@ -437,19 +450,31 @@ nas_name_codec_manifest_content() {
 
 compare_nas_name_codec_manifest() {
   local manifest_path="$1"
-  local attempt compare_status=2
+  local attempt compare_status=2 expected
 
+  # Opening a file on a busy or waking SMB share can block for hours. The
+  # expected content therefore lives in a local file and every comparison is
+  # bounded; a timeout counts as "temporarily unreadable" and is retried.
+  if ! expected="$(mktemp "${TMPDIR:-/tmp}/gdrive-name-codec.XXXXXX")" ||
+     ! nas_name_codec_manifest_content >"$expected"; then
+    cleanup_temp_file "${expected:-}"
+    return 2
+  fi
   for attempt in 1 2 3; do
-    "$CMP_BIN" -s "$manifest_path" <(nas_name_codec_manifest_content)
+    run_with_timeout "$NAS_FILE_TIMEOUT_SECONDS" "$CMP_BIN" -s "$manifest_path" "$expected"
     compare_status=$?
     case "$compare_status" in
-      0|1) return "$compare_status" ;;
+      0|1)
+        cleanup_temp_file "$expected"
+        return "$compare_status"
+        ;;
     esac
     if (( attempt < 3 )); then
       log "WARNUNG: Das NAS-Namenscodec-Manifest ist voruebergehend nicht lesbar; Vergleich wird wiederholt."
       /bin/sleep 0.25
     fi
   done
+  cleanup_temp_file "$expected"
   return "$compare_status"
 }
 
@@ -2777,9 +2802,50 @@ cleanup() {
     warn_state_publication_unavailable
   fi
   stop_animation
+  if [[ -n "$STALL_WATCHDOG_PID" ]]; then
+    kill "$STALL_WATCHDOG_PID" 2>/dev/null || true
+    STALL_WATCHDOG_PID=""
+  fi
   if [[ -n "$RUN_TMPDIR" && -d "$RUN_TMPDIR" && ! -L "$RUN_TMPDIR" ]]; then
     /bin/rm -rf -- "$RUN_TMPDIR" 2>/dev/null || true
   fi
+}
+
+# Watch the log as the run's heartbeat. rclone reports at least every five
+# minutes and every other step logs when it starts, so a silent log means the
+# run is blocked, typically in a network file system call that never returns.
+# The watchdog ends the blocked child first; the engine then records the
+# cancellation itself. Only if that fails is the engine killed.
+start_stall_watchdog() {
+  local engine=$$ interval="${GDRIVE_BACKUP_STALL_CHECK_SECONDS:-60}"
+
+  (( STALL_SECONDS > 0 )) || return 0
+  (
+    # The watchdog must not keep the backup lock alive.
+    exec 9>&-
+    self="$(/bin/sh -c 'echo $PPID')"
+    while kill -0 "$engine" 2>/dev/null; do
+      /bin/sleep "$interval"
+      modified="$(/usr/bin/stat -f '%m' "$LOG" 2>/dev/null || printf '0')"
+      now="$(/bin/date '+%s')"
+      [[ "$modified" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || continue
+      (( now - modified >= STALL_SECONDS )) || continue
+      printf '[%s] ABBRUCH: Seit %s Sekunden ohne Fortschritt; der blockierte Lauf wird beendet.\n' \
+        "$(/bin/date '+%Y-%m-%d %H:%M:%S%z')" "$STALL_SECONDS" >>"$LOG"
+      for signal in TERM KILL; do
+        for child in $(/usr/bin/pgrep -P "$engine" 2>/dev/null); do
+          [[ "$child" == "$self" ]] || kill "-$signal" "$child" 2>/dev/null || true
+        done
+        kill -0 "$engine" 2>/dev/null || exit 0
+        [[ "$signal" == "KILL" ]] || kill -TERM "$engine" 2>/dev/null || true
+        /bin/sleep 10
+        kill -0 "$engine" 2>/dev/null || exit 0
+      done
+      kill -KILL "$engine" 2>/dev/null || true
+      exit 0
+    done
+  ) >/dev/null 2>&1 &
+  STALL_WATCHDOG_PID=$!
 }
 
 # Create this run's scratch directory and drop directories that a killed
@@ -2826,6 +2892,9 @@ run_with_timeout() {
   (
     sleep "$seconds"
     kill "$command_pid" 2>/dev/null || true
+    # A process stuck in a network file system call can ignore TERM.
+    sleep 5
+    kill -KILL "$command_pid" 2>/dev/null || true
   ) >/dev/null 2>&1 &
   local killer_pid=$!
 
@@ -4573,6 +4642,7 @@ if ! flock -n 9; then
 fi
 rotate_log_if_needed "$LOG_MAX_BYTES"
 prepare_run_tmpdir
+start_stall_watchdog
 
 if [[ "$CATCHUP_QUIET" == "1" ]]; then
   # Probe before any progress or "running" record is published; a quiet skip
