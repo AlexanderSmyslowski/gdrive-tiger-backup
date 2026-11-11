@@ -1,5 +1,7 @@
 #import "NotificationSupport.h"
 
+static const NSTimeInterval GDTRetryDelay = 30 * 60;
+
 static NSString *GDTSafeNotificationProfileID(NSString *value) {
     NSString *source = value.length ? value.lowercaseString : @"legacy";
     NSMutableString *safe = [NSMutableString stringWithCapacity:source.length];
@@ -42,6 +44,22 @@ static BOOL GDTIsRetryableNASReason(NSString *reason) {
         // fail-closed check before any copy can start.
         @"destination_unreadable"
     ] containsObject:reason ?: @""];
+}
+
+// One profile can serve a scheduled destination and an additional disk that is
+// backed up when it is attached. The daily watchdog must judge the scheduled
+// destination only; engines that record per-target successes make that possible.
+static NSTimeInterval GDTLastSuccessForScheduledTarget(
+    NSDictionary<NSString *, NSString *> *config,
+    NSDictionary<NSString *, NSString *> *summary,
+    NSTimeInterval fallback) {
+    BOOL perTargetRecorded = summary[@"last_success_at_nas"].length ||
+        summary[@"last_success_at_apfs"].length;
+    if (!perTargetRecorded) return fallback;
+    NSString *target = [config[@"GDRIVE_BACKUP_TARGET"] ?: @"apfs" lowercaseString];
+    NSString *normalized = [@[@"nas", @"network", @"smb", @"afp", @"nfs"] containsObject:target]
+        ? @"nas" : @"apfs";
+    return GDTTimestamp(summary[[@"last_success_at_" stringByAppendingString:normalized]]);
 }
 
 static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
@@ -309,6 +327,14 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
             @"titleKey": @"backupNotificationFailureTitle",
             @"bodyKey": bodyKey
         } mutableCopy];
+        NSDate *retryDate = [GDTAutomaticRetryPolicy retryDateForConfig:config
+            summary:summary status:status now:now];
+        if (retryDate) {
+            decision[@"retryAt"] = [NSString stringWithFormat:@"%.0f",
+                retryDate.timeIntervalSince1970];
+            decision[@"retryOriginStartedAt"] = summary[@"started_at"];
+            decision[@"retrySchedule"] = schedule;
+        }
         if (retryFailure && retryOriginTimestamp > 0 &&
             retryOriginTimestamp < runTimestamp) {
             decision[@"supersedesIdentifier"] = [NSString stringWithFormat:
@@ -333,6 +359,7 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
     if (lastSuccessAt <= 0 && [status isEqualToString:@"success"]) {
         lastSuccessAt = finishedAt;
     }
+    lastSuccessAt = GDTLastSuccessForScheduledTarget(config, summary, lastSuccessAt);
     if (lastSuccessAt >= dueTimestamp && lastSuccessAt <= nowTimestamp + 1) {
         return nil;
     }
@@ -352,6 +379,21 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
 @end
 
 @implementation GDTAutomaticRetryPolicy
+
++ (NSDate * _Nullable)retryDateForConfig:(NSDictionary<NSString *, NSString *> *)config
+                                summary:(NSDictionary<NSString *, NSString *> *)summary
+                                 status:(NSString *)status
+                                    now:(NSDate *)now {
+    NSTimeInterval finishedAt = GDTTimestamp(summary[@"finished_at"]);
+    if (finishedAt <= 0 || now.timeIntervalSince1970 < finishedAt) return nil;
+    NSDate *retryDate = [NSDate dateWithTimeIntervalSince1970:finishedAt + GDTRetryDelay];
+    // Reuse every scheduler eligibility check without authorizing an early
+    // launch. The display can observe the deadline before the delay has elapsed.
+    NSDate *eligibilityDate = [now laterDate:retryDate];
+    return [self decisionForConfig:config summary:summary status:status now:eligibilityDate]
+        ? retryDate : nil;
+}
+
 
 + (NSDictionary<NSString *, NSString *> * _Nullable)
     decisionForConfig:(NSDictionary<NSString *, NSString *> *)config
@@ -382,13 +424,12 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
         return nil;
     }
 
-    static const NSTimeInterval retryDelay = 30 * 60;
     // A sleeping Mac may miss the nominal delay by several hours. The durable
     // run summary keeps one retry eligible until the next daily window, while
     // a newer run or success still supersedes it immediately.
     static const NSTimeInterval retryLifetime = 24 * 60 * 60;
     NSTimeInterval nowTimestamp = now.timeIntervalSince1970;
-    if (nowTimestamp < finishedAt + retryDelay ||
+    if (nowTimestamp < finishedAt + GDTRetryDelay ||
         nowTimestamp > finishedAt + retryLifetime) {
         return nil;
     }

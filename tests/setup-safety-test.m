@@ -1,3 +1,4 @@
+#import "TestApplicationSupport.h"
 #import <Cocoa/Cocoa.h>
 
 #define main GDTApplicationMain
@@ -150,6 +151,7 @@ static SetupSafetyDelegate *Delegate(NSDictionary *saved, NSDictionary *updates)
 
 int main(void) {
     @autoreleasepool {
+        GDTInitializeAccessoryTestApplication();
         SetupIdentityDelegate *legacyIdentityDelegate =
             [[SetupIdentityDelegate alloc] init];
         SEL loadIdentitySelector =

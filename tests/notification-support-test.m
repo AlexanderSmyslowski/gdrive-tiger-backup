@@ -468,6 +468,24 @@ int main(void) {
                         Date(calendar, 21, 21, 5), calendar) == nil,
                @"a successful manual backup after the due time satisfies the daily watchdog");
 
+        NSMutableDictionary<NSString *, NSString *> *dailyNAS = [daily mutableCopy];
+        dailyNAS[@"GDRIVE_BACKUP_TARGET"] = @"nas";
+        NSMutableDictionary<NSString *, NSString *> *diskOnlySuccess =
+            [successfulSummary mutableCopy];
+        diskOnlySuccess[@"trigger"] = @"mount";
+        diskOnlySuccess[@"target"] = @"apfs";
+        diskOnlySuccess[@"last_success_at"] = successfulSummary[@"finished_at"];
+        diskOnlySuccess[@"last_success_target"] = @"apfs";
+        diskOnlySuccess[@"last_success_at_apfs"] = successfulSummary[@"finished_at"];
+        Assert([Decision(policyClass, dailyNAS, diskOnlySuccess, @"success",
+                         Date(calendar, 21, 21, 5), calendar)[@"kind"]
+                    isEqualToString:@"missed"],
+               @"a success on the attached disk does not satisfy the scheduled NAS watchdog");
+        diskOnlySuccess[@"last_success_at_nas"] = successfulSummary[@"finished_at"];
+        Assert(Decision(policyClass, dailyNAS, diskOnlySuccess, @"success",
+                        Date(calendar, 21, 21, 5), calendar) == nil,
+               @"a recorded success of the scheduled destination satisfies its watchdog");
+
         NSDictionary<NSString *, NSString *> *laterManualFailure = @{
             @"protocol": @"1",
             @"status": @"failure",

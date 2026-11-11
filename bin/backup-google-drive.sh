@@ -280,7 +280,26 @@ VERSIONING="${GDRIVE_BACKUP_VERSIONING-1}"
 VERSIONS_SUBDIR="${GDRIVE_BACKUP_VERSIONS_SUBDIR-.gdrive-versions}"
 RETENTION="${GDRIVE_BACKUP_RETENTION-1}"
 RETENTION_TRASH_BIN="${GDRIVE_BACKUP_RETENTION_TRASH_BIN-}"
-RETENTION_APP_TRASH_BIN="${GDRIVE_BACKUP_APP_TRASH_BIN-${ANIMATION_APP%/}/Contents/MacOS/GDriveBackupTiger}"
+# Days a retired version state stays in the quarantine folder before it is
+# deleted for good. 0 keeps quarantined states forever.
+RETENTION_PURGE_DAYS="${GDRIVE_BACKUP_RETENTION_PURGE_DAYS-7}"
+# Abort before copying when the destination has less free space than this.
+MIN_FREE_MB="${GDRIVE_BACKUP_MIN_FREE_MB-1024}"
+SCHEDULE_MODE="$(lowercase "${GDRIVE_BACKUP_SCHEDULE:-manual}")"
+# A daily schedule opens one window per day at this hour. The launch agent
+# fires hourly; later firings only catch up a window without a success.
+DAILY_WINDOW_HOUR=20
+DAILY_WINDOW_MAX_ATTEMPTS=4
+DAILY_WINDOW_STARTED_AT=""
+DAILY_WINDOW_ATTEMPTS=""
+DAILY_RUN_KIND=""
+CATCHUP_QUIET=0
+# Scratch files of one run live in a private directory that is removed when
+# the run ends, including after a signal. Files the progress window reads
+# after the engine has exited stay in the base directory.
+BASE_TMPDIR="${TMPDIR:-/tmp}"
+BASE_TMPDIR="${BASE_TMPDIR%/}"
+RUN_TMPDIR=""
 ENCRYPTION="$(lowercase "${GDRIVE_BACKUP_ENCRYPTION-none}")"
 CRYPT_REMOTE="${GDRIVE_BACKUP_CRYPT_REMOTE-}"
 DISKUTIL_BIN="${GDRIVE_BACKUP_DISKUTIL-/usr/sbin/diskutil}"
@@ -351,20 +370,59 @@ log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S%z')" "$*"
 }
 
+LOG_MAX_BYTES="${GDRIVE_BACKUP_LOG_MAX_BYTES:-5242880}"
+if [[ ! "$LOG_MAX_BYTES" =~ ^[0-9]{1,12}$ ]]; then
+  LOG_MAX_BYTES=5242880
+fi
+
 cleanup_temp_file() {
   local path
-  local trash_bin="${GDRIVE_BACKUP_TEMP_TRASH_BIN:-/usr/bin/trash}"
+  local trash_bin="${GDRIVE_BACKUP_TEMP_TRASH_BIN:-}"
   for path in "$@"; do
-    [[ -n "$path" && -e "$path" ]] || continue
-    # Cleanup stays recoverable; older systems without trash intentionally keep the temp file.
-    if [[ ! -x "$trash_bin" ]]; then
-      log "WARNUNG: Temporaere Datei bleibt erhalten, weil das Papierkorb-Werkzeug fehlt: $path"
+    [[ -n "$path" && ( -e "$path" || -L "$path" ) ]] || continue
+    # Every path handed to this function was created by this run through
+    # mktemp or as a staging name it owns. Such scratch data is removed for
+    # good: routing it through the Trash only filled the Trash on the Mac and
+    # the hidden trash folders of backup disks and NAS shares.
+    if [[ -n "$trash_bin" ]]; then
+      if [[ -x "$trash_bin" ]] && "$trash_bin" "$path" >/dev/null 2>&1; then
+        continue
+      fi
+      log "WARNUNG: Temporaere Datei konnte nicht in den Papierkorb verschoben werden: $path"
       continue
     fi
-    if ! "$trash_bin" "$path" >/dev/null 2>&1; then
-      log "WARNUNG: Temporaere Datei konnte nicht in den Papierkorb verschoben werden: $path"
+    if [[ -d "$path" && ! -L "$path" ]]; then
+      /bin/rm -rf -- "$path" 2>/dev/null ||
+        log "WARNUNG: Temporaerer Ordner konnte nicht entfernt werden: $path"
+    else
+      /bin/rm -f -- "$path" 2>/dev/null ||
+        log "WARNUNG: Temporaere Datei konnte nicht entfernt werden: $path"
     fi
   done
+}
+
+# Keep the log useful and bounded. One compressed predecessor is retained. The
+# live file is emptied in place, so the append-mode descriptor stays valid.
+rotate_log_if_needed() {
+  local limit_bytes="$1" size previous="${LOG}.1.gz"
+
+  (( limit_bytes > 0 )) || return 0
+  [[ -f "$LOG" && ! -L "$LOG" ]] || return 0
+  size="$(/usr/bin/stat -f '%z' "$LOG" 2>/dev/null || printf '0')"
+  [[ "$size" =~ ^[0-9]+$ ]] || return 0
+  (( size > limit_bytes )) || return 0
+  if [[ -L "$previous" || ( -e "$previous" && ! -f "$previous" ) ]]; then
+    return 0
+  fi
+  # gzip -c writes a complete archive before the live log is emptied, so an
+  # interrupted rotation loses nothing.
+  if (umask 077 && /usr/bin/gzip -c "$LOG" >"${previous}.tmp.$$") &&
+     /bin/mv -f "${previous}.tmp.$$" "$previous"; then
+    : >"$LOG"
+  else
+    /bin/rm -f -- "${previous}.tmp.$$" 2>/dev/null
+  fi
+  return 0
 }
 
 nas_name_codec_manifest_content() {
@@ -494,6 +552,17 @@ prepare_nas_name_codec() {
 }
 
 validate_versioning_config() {
+  if [[ ! "$RETENTION_PURGE_DAYS" =~ ^[0-9]{1,4}$ ]]; then
+    log "FEHLER: GDRIVE_BACKUP_RETENTION_PURGE_DAYS muss eine Zahl zwischen 0 und 9999 sein."
+    return 1
+  fi
+  RETENTION_PURGE_DAYS=$((10#$RETENTION_PURGE_DAYS))
+  if [[ ! "$MIN_FREE_MB" =~ ^[0-9]{1,9}$ ]]; then
+    log "FEHLER: GDRIVE_BACKUP_MIN_FREE_MB muss eine nichtnegative Zahl sein."
+    return 1
+  fi
+  MIN_FREE_MB=$((10#$MIN_FREE_MB))
+
   case "$VERSIONING" in
     0|1) ;;
     *)
@@ -1396,6 +1465,8 @@ move_retention_candidate() {
       log "FEHLER: Verschluesselter Aufbewahrungskandidat bleibt erhalten: $name"
       return 1
     fi
+    # The modification time marks the start of the grace period.
+    /usr/bin/touch "$quarantine_target" 2>/dev/null || true
     log "Aufbewahrung: verschluesselter Stand in Quarantaene verschoben: $name ($reason)."
     return 0
   fi
@@ -1409,7 +1480,7 @@ move_retention_candidate() {
       ;;
     2) return 1 ;;
   esac
-  if [[ -n "$RETENTION_TRASH_BIN" || -x /usr/bin/trash || -x "$RETENTION_APP_TRASH_BIN" ]]; then
+  if [[ -n "$RETENTION_TRASH_BIN" ]]; then
     log "WARNUNG: Papierkorb fehlgeschlagen; verwende lokale Quarantaene fuer $name."
   fi
 
@@ -1432,6 +1503,8 @@ move_retention_candidate() {
     log "FEHLER: Aufbewahrungskandidat konnte nicht in die Quarantaene verschoben werden: $name"
     return 1
   fi
+  # The modification time marks the start of the grace period.
+  /usr/bin/touch "$quarantine_target" 2>/dev/null || true
 
   log "Aufbewahrung: $name nach .retention-trash verschoben ($reason)."
 }
@@ -1439,29 +1512,70 @@ move_retention_candidate() {
 trash_retention_path() {
   local path="$1"
 
-  if [[ -n "$RETENTION_TRASH_BIN" ]]; then
-    [[ -x "$RETENTION_TRASH_BIN" ]] || return 1
-    validate_retention_destination_identity "$path" || return 2
-    if "$RETENTION_TRASH_BIN" "$path" >/dev/null 2>&1; then
-      return 0
-    fi
-    return 1
-  fi
-  if [[ -x /usr/bin/trash ]]; then
-    validate_retention_destination_identity "$path" || return 2
-    if /usr/bin/trash "$path" >/dev/null 2>&1; then
-      return 0
-    fi
-    return 1
-  fi
-  if [[ -x "$RETENTION_APP_TRASH_BIN" ]]; then
-    validate_retention_destination_identity "$path" || return 2
-    if "$RETENTION_APP_TRASH_BIN" --trash "$path" >/dev/null 2>&1; then
-      return 0
-    fi
-    return 1
+  # Retired version states leave the history through the quarantine folder on
+  # the backup destination and are deleted for good after the grace period.
+  # The Trash is used only when a tool is configured explicitly, because the
+  # system Trash of an external disk or NAS share is never emptied by itself.
+  [[ -n "$RETENTION_TRASH_BIN" && -x "$RETENTION_TRASH_BIN" ]] || return 1
+  validate_retention_destination_identity "$path" || return 2
+  if "$RETENTION_TRASH_BIN" "$path" >/dev/null 2>&1; then
+    return 0
   fi
   return 1
+}
+
+# Delete quarantined version states whose grace period has elapsed. Only real
+# directories directly inside the quarantine qualify; everything else stays.
+purge_retention_quarantine() {
+  local quarantine="$1"
+  local require_version_name="$2"
+  local now_epoch limit path name stamped purged=0 kept=0
+
+  [[ "$RETENTION_PURGE_DAYS" != "0" ]] || return 0
+  [[ -d "$quarantine" && ! -L "$quarantine" ]] || return 0
+  now_epoch="$(date '+%s')"
+  [[ "$now_epoch" =~ ^[0-9]+$ ]] || return 0
+  limit=$((RETENTION_PURGE_DAYS * 24 * 60 * 60))
+
+  for path in "$quarantine"/* "$quarantine"/.[!.]* "$quarantine"/..?*; do
+    [[ -e "$path" || -L "$path" ]] || continue
+    name="${path##*/}"
+    if [[ -L "$path" || ! -d "$path" ]] ||
+       { [[ "$require_version_name" == "1" ]] &&
+         ! retention_timestamp_for_name "$name" >/dev/null; }; then
+      kept=$((kept + 1))
+      continue
+    fi
+    stamped="$(/usr/bin/stat -f '%m' "$path" 2>/dev/null || true)"
+    if [[ ! "$stamped" =~ ^[0-9]+$ ]] || (( now_epoch - stamped < limit )); then
+      kept=$((kept + 1))
+      continue
+    fi
+    if [[ "$DRY_RUN" == "1" ]]; then
+      log "DRY-RUN Quarantaene wuerde endgueltig geloescht: $(safe_name "$name")"
+      kept=$((kept + 1))
+      continue
+    fi
+    if ! validate_retention_destination_identity "$path" ||
+       ! validate_configured_apfs_tree "$path" ||
+       ! validate_encrypted_destination_tree "$path"; then
+      log "WARNUNG: Quarantaene-Eintrag bleibt erhalten, weil das Ziel nicht sicher bestaetigt ist: $(safe_name "$name")"
+      kept=$((kept + 1))
+      continue
+    fi
+    if /bin/rm -rf -- "$path" 2>/dev/null && [[ ! -e "$path" ]]; then
+      purged=$((purged + 1))
+      log "Aufbewahrung: Quarantaene nach $RETENTION_PURGE_DAYS Tagen endgueltig geloescht: $(safe_name "$name")"
+    else
+      kept=$((kept + 1))
+      log "WARNUNG: Quarantaene-Eintrag konnte nicht geloescht werden: $(safe_name "$name")"
+    fi
+  done
+
+  if (( purged > 0 )); then
+    log "Aufbewahrung: Quarantaene bereinigt, geloescht=$purged verbleibend=$kept"
+  fi
+  return 0
 }
 
 retry_retention_quarantine() {
@@ -1533,6 +1647,7 @@ prune_version_history() {
     if ! retry_crypt_retention_quarantine; then
       return 1
     fi
+    purge_retention_quarantine "${DEST_ROOT%/}/.retention-trash" 0
     if ! listing="$(rclone lsf "${CRYPT_REMOTE}:${VERSIONS_SUBDIR}" --dirs-only --max-depth 1 2>/dev/null)"; then
       log "FEHLER: Verschluesselte Versionsstaende konnten nicht sicher aufgelistet werden."
       return 1
@@ -1577,6 +1692,7 @@ prune_version_history() {
     if ! retry_retention_quarantine "$versions_root"; then
       return 1
     fi
+    purge_retention_quarantine "$versions_root/.retention-trash" 1
 
     if ! validate_encrypted_destination_tree "$versions_root"; then
       log "FEHLER: Versionsbaum enthaelt einen unsicheren Link oder Mount."
@@ -2165,6 +2281,10 @@ write_last_run_summary() {
   local status="$1"
   local exit_code="${2:-}"
   local summary_dir tmp finished_at last_success_at=""
+  local last_success_target="" last_success_destination="" last_success_volume=""
+  local old_protocol="" old_status="" old_started="" old_finished="" old_exit=""
+  local old_target="" old_destination="" key value successful_volume successful_destination
+  local success_nas="" success_apfs="" window_started="" window_attempts=""
 
   [[ "$DRY_RUN" == "0" && "$SETUP_UI" == "0" ]] || return 2
   # A lock-contended process did not perform a backup and must not replace the
@@ -2178,13 +2298,91 @@ write_last_run_summary() {
   tmp="${SUMMARY_STATE_FILE}.$$"
   finished_at="$(date +%s 2>/dev/null || printf '0')"
   if [[ -f "$SUMMARY_STATE_FILE" ]]; then
-    last_success_at="$(awk -F= '
-      $1 == "last_success_at" && $2 ~ /^[0-9]+$/ { value = $2 }
-      END { if (value) print value }
-    ' "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+    while IFS='=' read -r key value; do
+      case "$key" in
+        protocol) old_protocol="$value" ;;
+        status) old_status="$value" ;;
+        started_at) old_started="$value" ;;
+        finished_at) old_finished="$value" ;;
+        exit_code) old_exit="$value" ;;
+        target) old_target="$value" ;;
+        destination) old_destination="$value" ;;
+        last_success_at) last_success_at="$value" ;;
+        last_success_target) last_success_target="$value" ;;
+        last_success_destination) last_success_destination="$value" ;;
+        last_success_volume) last_success_volume="$value" ;;
+        last_success_at_nas) success_nas="$value" ;;
+        last_success_at_apfs) success_apfs="$value" ;;
+        daily_window_started_at) window_started="$value" ;;
+        daily_window_attempts) window_attempts="$value" ;;
+      esac
+    done <"$SUMMARY_STATE_FILE"
+    # Recover the previous successful target before the running record replaces it.
+    # A timestamp left by a failed attempt cannot identify that earlier target.
+    if [[ "$old_protocol" == "1" && "$old_status" == "success" && "$old_exit" == "0" &&
+          "$old_started" =~ ^[0-9]{1,12}$ && "$old_finished" =~ ^[0-9]{1,12}$ ]] &&
+        (( 10#$old_started > 0 && 10#$old_finished >= 10#$old_started )); then
+      if [[ "$last_success_at" != "$old_finished" || -z "$last_success_destination" ]]; then
+        last_success_volume=""
+        last_success_target="$old_target"
+        last_success_destination="$old_destination"
+        if [[ "$old_destination" == /Volumes/* ]]; then
+          last_success_volume="${old_destination#/Volumes/}"
+          last_success_volume="${last_success_volume%%/*}"
+        fi
+      fi
+      last_success_at="$old_finished"
+    fi
+  fi
+  if [[ "$old_protocol" != "1" || ! "$last_success_at" =~ ^[0-9]{1,12}$ ]] ||
+      (( 10#${last_success_at:-0} <= 0 || 10#${last_success_at:-0} > finished_at )); then
+    last_success_at=""
+    last_success_target=""
+    last_success_destination=""
+    last_success_volume=""
+  fi
+  # One profile can back up to its scheduled destination and to an attached
+  # disk. Track each destination's last success separately, so a success on
+  # one never hides that the other is overdue. Older summaries carry only the
+  # most recent success; adopt it for the destination it names.
+  if [[ ! "$success_nas" =~ ^[0-9]{1,12}$ ]] || (( 10#$success_nas > finished_at )); then
+    success_nas=""
+  fi
+  if [[ ! "$success_apfs" =~ ^[0-9]{1,12}$ ]] || (( 10#$success_apfs > finished_at )); then
+    success_apfs=""
+  fi
+  if [[ -n "$last_success_at" ]]; then
+    case "$last_success_target" in
+      nas) [[ -n "$success_nas" ]] || success_nas="$last_success_at" ;;
+      apfs) [[ -n "$success_apfs" ]] || success_apfs="$last_success_at" ;;
+    esac
+  fi
+  if [[ "$status" == "success" ]]; then
+    case "$BACKUP_TARGET" in
+      nas) success_nas="$finished_at" ;;
+      apfs) success_apfs="$finished_at" ;;
+    esac
+  fi
+  if [[ -n "$DAILY_WINDOW_STARTED_AT" && -n "$DAILY_WINDOW_ATTEMPTS" ]]; then
+    window_started="$DAILY_WINDOW_STARTED_AT"
+    window_attempts="$DAILY_WINDOW_ATTEMPTS"
+  elif [[ ! "$window_started" =~ ^[0-9]{1,12}$ || ! "$window_attempts" =~ ^[0-9]{1,3}$ ]]; then
+    window_started=""
+    window_attempts=""
   fi
   if [[ "$status" == "success" ]]; then
     last_success_at="$finished_at"
+    last_success_target="$BACKUP_TARGET"
+    last_success_destination="$DEST_ROOT"
+    last_success_volume=""
+    # A destination override can point outside the selected disk, including via
+    # a symlink. Only name that disk when the successful destination is inside it.
+    if successful_volume="$(canonical_existing_directory "$VOLUME")" &&
+        successful_destination="$(canonical_existing_directory "$DEST_ROOT")" &&
+        [[ "$successful_destination" == "$successful_volume" ||
+           "$successful_destination" == "$successful_volume"/* ]]; then
+      last_success_volume="${successful_volume##*/}"
+    fi
   fi
 
   if (umask 077 && {
@@ -2196,6 +2394,17 @@ write_last_run_summary() {
       printf 'finished_at=%s\n' "$finished_at"
     fi
     [[ -n "$last_success_at" ]] && printf 'last_success_at=%s\n' "$last_success_at"
+    if [[ -n "$last_success_at" ]]; then
+      [[ -n "$last_success_target" ]] && printf 'last_success_target=%s\n' "$(progress_escape "$last_success_target")"
+      [[ -n "$last_success_destination" ]] && printf 'last_success_destination=%s\n' "$(progress_escape "$last_success_destination")"
+      [[ -n "$last_success_volume" ]] && printf 'last_success_volume=%s\n' "$(progress_escape "$last_success_volume")"
+    fi
+    [[ -n "$success_nas" ]] && printf 'last_success_at_nas=%s\n' "$success_nas"
+    [[ -n "$success_apfs" ]] && printf 'last_success_at_apfs=%s\n' "$success_apfs"
+    if [[ -n "$window_started" ]]; then
+      printf 'daily_window_started_at=%s\n' "$window_started"
+      printf 'daily_window_attempts=%s\n' "$window_attempts"
+    fi
     [[ -n "$exit_code" ]] && printf 'exit_code=%s\n' "$exit_code"
     [[ -n "$RUN_STATE_REASON" ]] && printf 'reason=%s\n' "$(progress_escape "$RUN_STATE_REASON")"
     [[ -n "$RUN_STATE_SIGNAL" ]] && printf 'signal=%s\n' "$(progress_escape "$RUN_STATE_SIGNAL")"
@@ -2211,6 +2420,96 @@ write_last_run_summary() {
 
   cleanup_temp_file "$tmp"
   return 1
+}
+
+# Epoch of the most recent daily window boundary at or before the given time.
+daily_window_start_epoch() {
+  local now="$1" day boundary
+
+  day="$(/bin/date -r "$now" '+%Y-%m-%d' 2>/dev/null)" || return 1
+  boundary="$(LC_ALL=C /bin/date -j -f '%Y-%m-%d %H:%M:%S' \
+    "$day $(printf '%02d' "$DAILY_WINDOW_HOUR"):00:00" '+%s' 2>/dev/null)" || return 1
+  [[ "$boundary" =~ ^[0-9]+$ ]] || return 1
+  if (( boundary > now )); then
+    day="$(/bin/date -r "$((now - 86400))" '+%Y-%m-%d' 2>/dev/null)" || return 1
+    boundary="$(LC_ALL=C /bin/date -j -f '%Y-%m-%d %H:%M:%S' \
+      "$day $(printf '%02d' "$DAILY_WINDOW_HOUR"):00:00" '+%s' 2>/dev/null)" || return 1
+    [[ "$boundary" =~ ^[0-9]+$ ]] || return 1
+  fi
+  printf '%s' "$boundary"
+}
+
+# Decide what an hourly firing of the daily schedule should do:
+#   done      - this window already has a success for the destination
+#   primary   - first attempt of the window; failures are reported as before
+#   catchup   - an earlier attempt failed; probe quietly and run if possible
+#   exhausted - the window used all of its attempts
+# Any uncertainty falls back to "primary", which is the previous behavior.
+classify_daily_schedule_run() {
+  local now="$RUN_STARTED_AT" window key value
+  local success="" generic="" generic_target="" recorded_window="" recorded_attempts=""
+
+  DAILY_RUN_KIND="primary"
+  [[ "$now" =~ ^[0-9]+$ ]] && (( now > 0 )) || return 0
+  window="$(daily_window_start_epoch "$now")" || return 0
+  if [[ -f "$SUMMARY_STATE_FILE" && ! -L "$SUMMARY_STATE_FILE" ]]; then
+    while IFS='=' read -r key value; do
+      case "$key" in
+        "last_success_at_$BACKUP_TARGET") success="$value" ;;
+        last_success_at) generic="$value" ;;
+        last_success_target) generic_target="$value" ;;
+        daily_window_started_at) recorded_window="$value" ;;
+        daily_window_attempts) recorded_attempts="$value" ;;
+      esac
+    done <"$SUMMARY_STATE_FILE"
+  fi
+  if [[ -z "$success" && "$generic_target" == "$BACKUP_TARGET" ]]; then
+    success="$generic"
+  fi
+
+  DAILY_WINDOW_STARTED_AT="$window"
+  DAILY_WINDOW_ATTEMPTS=1
+  if [[ "$success" =~ ^[0-9]{1,12}$ ]] &&
+     (( 10#$success >= window && 10#$success <= now )); then
+    DAILY_RUN_KIND="done"
+    return 0
+  fi
+  if [[ "$recorded_window" == "$window" && "$recorded_attempts" =~ ^[0-9]{1,3}$ ]] &&
+     (( 10#$recorded_attempts >= 1 )); then
+    if (( 10#$recorded_attempts >= DAILY_WINDOW_MAX_ATTEMPTS )); then
+      DAILY_RUN_KIND="exhausted"
+      return 0
+    fi
+    DAILY_WINDOW_ATTEMPTS=$((10#$recorded_attempts + 1))
+    DAILY_RUN_KIND="catchup"
+    CATCHUP_QUIET=1
+  fi
+  return 0
+}
+
+# A catch-up firing found the destination still unavailable. That is the
+# expected state while a NAS is off or a disk is detached, so the run ends
+# without touching the recorded result of the real attempt.
+skip_quiet_catchup() {
+  RUN_OUTCOME="skipped"
+  RUN_STATE_REASON="catchup_target_unavailable"
+  log "Nachhol-Lauf: Backup-Ziel weiterhin nicht verfuegbar; der naechste Versuch folgt automatisch."
+  exit 0
+}
+
+check_destination_free_space() {
+  local probe="$DEST_ROOT" available_kb
+
+  [[ -d "$probe" ]] || probe="$VOLUME"
+  available_kb="$(/bin/df -Pk "$probe" 2>/dev/null | /usr/bin/awk 'NR == 2 { print $4 }')"
+  [[ "$available_kb" =~ ^[0-9]+$ ]] || return 0
+  log "Freier Speicher am Ziel: $((available_kb / 1048576)) GB"
+  if (( MIN_FREE_MB > 0 && available_kb / 1024 < MIN_FREE_MB )); then
+    RUN_STATE_REASON="destination_full"
+    log "FEHLER: Am Backup-Ziel sind weniger als $MIN_FREE_MB MB frei; es wird nichts kopiert."
+    return 1
+  fi
+  return 0
 }
 
 finish_run_state() {
@@ -2290,8 +2589,32 @@ run_rclone_with_progress() {
     RUN_STATE_REASON="internal_state_unavailable"
     return 70
   fi
+  # rclone repeats an identical statistics block every ten seconds. The
+  # progress display consumes each one, but the log keeps only the first, one
+  # per five minutes, and every final (NOTICE) block. Per-file lines, warnings
+  # and errors are always logged.
+  local stats_block=0 stats_keep=1 stats_logged_at=-300
   "$@" 2>&1 | while IFS= read -r line; do
-    printf '%s\n' "$line"
+    if [[ "$line" == *" INFO  : " || "$line" == *" NOTICE: " ]]; then
+      stats_block=1
+      if [[ "$line" == *" NOTICE: " ]] || (( SECONDS - stats_logged_at >= 300 )); then
+        stats_keep=1
+        stats_logged_at=$SECONDS
+      else
+        stats_keep=0
+      fi
+    elif [[ "$stats_block" == "1" &&
+            ( -z "$line" || "$line" =~ ^[0-9]{4}/[0-9]{2}/[0-9]{2}[[:space:]] ) ]]; then
+      stats_block=0
+      if [[ -z "$line" && "$stats_keep" == "0" ]]; then
+        update_progress_from_rclone_line "$label" "$phase" "$line"
+        continue
+      fi
+      stats_keep=1
+    fi
+    if [[ "$stats_block" == "0" || "$stats_keep" == "1" ]]; then
+      printf '%s\n' "$line"
+    fi
     update_progress_from_rclone_line "$label" "$phase" "$line"
     if [[ -n "$error_class_file" && "$line" == *"Failed to copy:"* &&
           ( "$line" == *"permission denied"* || "$line" == *"Permission denied"* ||
@@ -2379,13 +2702,13 @@ start_animation() {
     return
   fi
 
-  ANIMATION_SENTINEL="$(mktemp "${TMPDIR:-/tmp}/gdrive-backup-ui.XXXXXX")" || {
+  ANIMATION_SENTINEL="$(mktemp "$BASE_TMPDIR/gdrive-backup-ui.XXXXXX")" || {
     log "WARNUNG: Sentinel fuer Backup-Animation konnte nicht angelegt werden."
     return
   }
   printf '%s\n' "$$" >"$ANIMATION_SENTINEL"
 
-  PROGRESS_FILE="$(mktemp "${TMPDIR:-/tmp}/gdrive-backup-progress.XXXXXX")" || {
+  PROGRESS_FILE="$(mktemp "$BASE_TMPDIR/gdrive-backup-progress.XXXXXX")" || {
     log "WARNUNG: Fortschrittsdatei fuer Backup-Animation konnte nicht angelegt werden."
     PROGRESS_FILE=""
   }
@@ -2394,7 +2717,7 @@ start_animation() {
   fi
 
   if [[ -z "$RUN_STATE_FILE" ]]; then
-    RUN_STATE_FILE="$(mktemp "${TMPDIR:-/tmp}/gdrive-backup-state.XXXXXX")" || {
+    RUN_STATE_FILE="$(mktemp "$BASE_TMPDIR/gdrive-backup-state.XXXXXX")" || {
       log "WARNUNG: Ergebnisdatei fuer Backup-Animation konnte nicht angelegt werden."
       cleanup_temp_file "$ANIMATION_SENTINEL" "$PROGRESS_FILE"
       ANIMATION_SENTINEL=""
@@ -2454,6 +2777,29 @@ cleanup() {
     warn_state_publication_unavailable
   fi
   stop_animation
+  if [[ -n "$RUN_TMPDIR" && -d "$RUN_TMPDIR" && ! -L "$RUN_TMPDIR" ]]; then
+    /bin/rm -rf -- "$RUN_TMPDIR" 2>/dev/null || true
+  fi
+}
+
+# Create this run's scratch directory and drop directories that a killed
+# earlier run (power loss, forced restart) could not remove itself.
+prepare_run_tmpdir() {
+  local stale
+
+  if [[ -d "$BASE_TMPDIR" ]]; then
+    while IFS= read -r stale; do
+      [[ -n "$stale" && -d "$stale" && ! -L "$stale" ]] || continue
+      /bin/rm -rf -- "$stale" 2>/dev/null || true
+    done < <(/usr/bin/find "$BASE_TMPDIR" -maxdepth 1 -type d \
+      -name 'gdrive-backup-run.??????' -user "$(/usr/bin/id -un)" -mtime +1 2>/dev/null)
+  fi
+  if RUN_TMPDIR="$(/usr/bin/mktemp -d "$BASE_TMPDIR/gdrive-backup-run.XXXXXX" 2>/dev/null)"; then
+    TMPDIR="$RUN_TMPDIR"
+    export TMPDIR
+  else
+    RUN_TMPDIR=""
+  fi
 }
 
 on_exit() {
@@ -2464,6 +2810,9 @@ on_exit() {
 cancel_run() {
   RUN_STATE_OVERRIDE="cancelled"
   RUN_STATE_SIGNAL="$2"
+  # Without this line an interrupted run (logout, restart, manual stop) ends
+  # mid-transfer in the log and cannot be told apart from a crash.
+  log "ABBRUCH: Backup wurde durch Signal $2 beendet (Abmelden, Neustart oder Stopp)."
   exit "$1"
 }
 
@@ -2747,7 +3096,7 @@ confirm_prompt() {
   log "Warte auf Benutzerbestaetigung: $title $detail"
 
   if [[ -d "$ANIMATION_APP" ]]; then
-    response="$(mktemp "${TMPDIR:-/tmp}/gdrive-backup-confirm.XXXXXX")" || {
+    response="$(mktemp "$BASE_TMPDIR/gdrive-backup-confirm.XXXXXX")" || {
       log "FEHLER: Bestaetigungsdatei konnte nicht angelegt werden."
       return 1
     }
@@ -2816,7 +3165,18 @@ confirm_backup_target() {
 
   if confirm_prompt "$title" "$detail" "$(t start_backup)"; then
     TARGET_APPROVED=1
-    log "$(t log_confirmed)"
+    # Only an answered backup-consent prompt promotes this mount run. Setup
+    # consent and unattended confirmation bypasses must remain passive.
+    if [[ "$BACKUP_TRIGGER" == "mount" && "$CONFIRM_BACKUP" != "0" &&
+          "${BACKUP_ASSUME_YES:-0}" != "1" ]]; then
+      BACKUP_PROGRESS_FOREGROUND=1
+    fi
+    if [[ "$CONFIRM_BACKUP" == "0" || "${BACKUP_ASSUME_YES:-0}" == "1" ]]; then
+      # Nobody was asked: do not record a user confirmation that never happened.
+      log "Backup-Ziel ohne Rueckfrage freigegeben (automatischer Lauf oder Bestaetigung deaktiviert)."
+    else
+      log "$(t log_confirmed)"
+    fi
     return 0
   fi
 
@@ -4163,9 +4523,31 @@ if [[ "$SETUP_UI" == "1" ]]; then
   exit 69
 fi
 
+if [[ "$BACKUP_TRIGGER" == "schedule" && "$SCHEDULE_MODE" == "daily" &&
+      "$DRY_RUN" == "0" ]]; then
+  classify_daily_schedule_run
+  case "$DAILY_RUN_KIND" in
+    done)
+      # Hourly firings after a successful window are the normal case and
+      # deliberately leave no trace in the log.
+      RUN_OUTCOME="skipped"
+      RUN_STATE_REASON="daily_window_complete"
+      exit 0
+      ;;
+    exhausted)
+      RUN_OUTCOME="skipped"
+      RUN_STATE_REASON="daily_window_exhausted"
+      exit 0
+      ;;
+  esac
+fi
+
 resolve_status=0
 resolve_configured_apfs_volume || resolve_status=$?
 if [[ "$resolve_status" != "0" ]]; then
+  if [[ "$CATCHUP_QUIET" == "1" ]]; then
+    skip_quiet_catchup
+  fi
   exit "$resolve_status"
 fi
 log "Start: remote=${REMOTE}: dry_run=$DRY_RUN target=$BACKUP_TARGET mount=$VOLUME dest=$DEST_ROOT"
@@ -4188,6 +4570,27 @@ if ! flock -n 9; then
   RUN_OUTCOME="skipped"
   RUN_STATE_REASON="already_running"
   exit 0
+fi
+rotate_log_if_needed "$LOG_MAX_BYTES"
+prepare_run_tmpdir
+
+if [[ "$CATCHUP_QUIET" == "1" ]]; then
+  # Probe before any progress or "running" record is published; a quiet skip
+  # must leave the result of the window's real attempt untouched.
+  catchup_reachable=0
+  if [[ "$BACKUP_TARGET" == "nas" ]]; then
+    configured_nas_ready_timeout="$NAS_READY_TIMEOUT_SECONDS"
+    (( NAS_READY_TIMEOUT_SECONDS > 15 )) && NAS_READY_TIMEOUT_SECONDS=15
+    ensure_nas_destination && catchup_reachable=1
+    NAS_READY_TIMEOUT_SECONDS="$configured_nas_ready_timeout"
+  elif [[ "$BACKUP_TARGET" == "apfs" && -d "$VOLUME" ]]; then
+    catchup_reachable=1
+  fi
+  if [[ "$catchup_reachable" != "1" ]]; then
+    skip_quiet_catchup
+  fi
+  RUN_STATE_REASON=""
+  log "Nachhol-Lauf: Backup-Ziel ist wieder verfuegbar; Versuch $DAILY_WINDOW_ATTEMPTS von $DAILY_WINDOW_MAX_ATTEMPTS in diesem Tagesfenster."
 fi
 DURABLE_PROGRESS_OWNED=1
 
@@ -4247,6 +4650,10 @@ if [[ "$DRY_RUN" == "0" ]]; then
     log "FEHLER: Der angelegte Zielordner liegt nicht mehr sicher auf dem konfigurierten APFS-Volume."
     exit 69
   fi
+fi
+
+if ! check_destination_free_space; then
+  exit 73
 fi
 
 if ! validate_rclone_crypt_config; then
@@ -4324,7 +4731,22 @@ fi
 errors=0
 
 validate_live_nas_destination() {
+  local attempt
+
   [[ "$BACKUP_TARGET" == "nas" ]] || return 0
+
+  # SMB shares answer a single probe unreliably while they are busy. One failed
+  # probe must not discard a transfer that just completed, so the destination
+  # counts as lost only when it stays unavailable across three checks.
+  for attempt in 1 2 3; do
+    if nas_mount_is_verified &&
+       [[ "$DRY_RUN" == "1" || -w "$NAS_MOUNT" ]]; then
+      return 0
+    fi
+    if (( attempt < 3 )); then
+      /bin/sleep "${GDRIVE_BACKUP_NAS_RECHECK_SECONDS:-2}"
+    fi
+  done
 
   if ! nas_mount_is_verified; then
     RUN_STATE_REASON="nas_connection_lost"
@@ -4546,7 +4968,7 @@ archive_source_collisions() {
   done
   if ! validate_collision_archive_write_boundary \
       "$archive_root" "$groups_root" "$objects_root"; then
-    log "FEHLER: Das ID-Archiv verlaesst das UUID-gebundene APFS-Backup-Volume."
+    log "FEHLER: Das ID-Archiv konnte auf dem Backup-Ziel nicht sicher bestaetigt werden."
     return 1
   fi
   if [[ "$DRY_RUN" == "0" ]]; then
@@ -4900,26 +5322,33 @@ archive_source_collisions() {
       archive_destination_untrusted=0
       LAST_RCLONE_COLLISION_REPORT=""
       if [[ "$mime_type" == "application/vnd.google-apps.folder" ]]; then
+        object_destination="$object_directory/root"
+        if [[ -L "$object_destination" ||
+              ( -e "$object_destination" && ! -d "$object_destination" ) ]]; then
+          cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
+          log "FEHLER: Eine Drive-ID-Ordnerwurzel ist kein sicherer Ordner."
+          return 1
+        fi
         if [[ "$DRY_RUN" == "0" ]]; then
           if ! validate_collision_archive_write_boundary \
               "$archive_root" "$groups_root" "$objects_root" \
-              "$manifest_path" "$object_directory"; then
+              "$manifest_path" "$object_directory" "$object_destination"; then
             cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
             return 1
           fi
-          if ! mkdir -p "$object_directory"; then
+          # rclone does not create the destination root for an empty source folder.
+          if ! mkdir -p "$object_destination"; then
             cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
             RUN_STATE_REASON="destination_permission_denied"
             return 1
           fi
           if ! validate_collision_archive_write_boundary \
               "$archive_root" "$groups_root" "$objects_root" \
-              "$manifest_path" "$object_directory"; then
+              "$manifest_path" "$object_directory" "$object_destination"; then
             cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"
             return 1
           fi
         fi
-        object_destination="$object_directory/root"
         folder_backup_dir=""
         folder_options=(--drive-root-folder-id "$object_id")
         if [[ "$VERSIONING" == "1" ]]; then

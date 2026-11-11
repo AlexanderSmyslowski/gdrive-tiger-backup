@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Catch up a missed daily backup automatically. The daily launch agent now fires hourly; the engine runs at most one successful backup per 20:00 window and destination, exits silently once the window is complete, and otherwise probes quietly and backs up as soon as the NAS or disk is reachable again (at most four real attempts per window). Existing single-entry daily agents are rewritten on the next app start.
+- Track the last success per destination, so a success on an attached disk no longer satisfies the daily watchdog of a scheduled NAS destination.
+- Stop filling the Trash and the destination: retired version states go to `.gdrive-versions/.retention-trash` and are deleted for good after seven days (`GDRIVE_BACKUP_RETENTION_PURGE_DAYS`); scratch files are removed directly from a private per-run temporary folder that is also cleaned up after signals and stale runs.
+- Rotate the backup log at 5 MB with one compressed predecessor and log repeated rclone statistics at most every five minutes.
+- Tolerate a single failed writability probe on a busy SMB share instead of discarding a completed copy phase; a NAS destination counts as lost only after three consecutive failed checks.
+- Record interrupted runs (logout, restart, stop) in the log, stop before copying when the destination has less than 1 GB free, and no longer log a user confirmation for unattended runs.
+
 ## v2.5.1 - 2026-09-05
 
 This is the first public release of the destination picker developed in the unpublished v2.5.0 intermediate milestone. It includes all of those changes as well as the NAS retry fix below.

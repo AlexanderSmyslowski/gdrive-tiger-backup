@@ -111,7 +111,7 @@ case "${1:-}" in
     previous=""
     for argument in "$@"; do
       if [[ "$previous" == "--combined" ]]; then
-        printf '= verified\n' >"$argument"
+        printf '%s\n' "${FAKE_RCLONE_ARCHIVE_VERIFY_REPORT:-= verified}" >"$argument"
       fi
       previous="$argument"
     done
@@ -173,6 +173,13 @@ SH
 #!/bin/bash
 : "${FAKE_OPEN_LOG:?}"
 printf '%s\n' "$@" >"$FAKE_OPEN_LOG"
+if [[ -n "${FAKE_OPEN_HISTORY_LOG:-}" ]]; then
+  kind=progress
+  [[ " $* " == *" --confirm "* ]] && kind=confirm
+  foreground=0
+  [[ " $* " == *" --foreground "* ]] && foreground=1
+  printf '%s:%s\n' "$kind" "$foreground" >>"$FAKE_OPEN_HISTORY_LOG"
+fi
 if [[ -n "${FAKE_CONFIRM_DETAIL_LOG:-}" ]]; then
   arguments=("$@")
   for ((index = 0; index < ${#arguments[@]}; index++)); do
@@ -478,6 +485,7 @@ run_backup_with_mode() {
     FAKE_RCLONE_PARENT_STATUS="${FAKE_RCLONE_PARENT_STATUS:-0}" \
     FAKE_RCLONE_ARCHIVE_STATUS="${FAKE_RCLONE_ARCHIVE_STATUS:-0}" \
     FAKE_RCLONE_ARCHIVE_CREATE_FOLDER="${FAKE_RCLONE_ARCHIVE_CREATE_FOLDER:-1}" \
+    FAKE_RCLONE_ARCHIVE_VERIFY_REPORT="${FAKE_RCLONE_ARCHIVE_VERIFY_REPORT:-= verified}" \
     FAKE_RCLONE_ARCHIVE_FILE_NAME="${FAKE_RCLONE_ARCHIVE_FILE_NAME:-image.heic}" \
     FAKE_RCLONE_REJECT_SHARED_FOR_ID="${FAKE_RCLONE_REJECT_SHARED_FOR_ID:-0}" \
     FAKE_RCLONE_COPY_OUTPUT_SHARED_ONLY="${FAKE_RCLONE_COPY_OUTPUT_SHARED_ONLY:-0}" \
@@ -691,6 +699,42 @@ test_automatic_backup_does_not_open_progress_ui() {
   else
     fail "$name (exit=$status open=${open_args//$'\n'/,} summary=${summary//$'\n'/,})"
   fi
+}
+
+test_mount_consent_controls_foreground_progress() {
+  local scenario trigger confirm assume decision expected status history
+  for scenario in accepted declined timeout disabled assumed scheduled retry; do
+    prepare_test_environment
+    mkdir -p "$TEST_HOME/GDrive Backup Tiger.app"
+    trigger=mount; confirm=1; assume=0; decision=yes
+    expected=$'confirm:0\nprogress:1'
+    case "$scenario" in
+      declined) decision=no; expected='confirm:0' ;;
+      timeout) decision=''; expected='confirm:0' ;;
+      disabled) confirm=0; expected='' ;;
+      assumed) assume=1; expected='' ;;
+      scheduled) trigger=schedule; expected='confirm:0' ;;
+      retry) trigger=schedule-retry; expected='confirm:0' ;;
+    esac
+    BACKUP_DISABLE_ANIMATION=0 GDRIVE_BACKUP_CONFIRM="$confirm" \
+      FAKE_CONFIRM_DECISION="$decision" run_backup \
+        "GDRIVE_BACKUP_TRIGGER=$trigger" \
+        "GDRIVE_BACKUP_RETRY_ORIGIN_STARTED_AT=1785261605" \
+        "GDRIVE_BACKUP_RETRY_ATTEMPT=1" \
+        "GDRIVE_BACKUP_NAS_START_ON_MOUNT=1" \
+        "BACKUP_ASSUME_YES=$assume" \
+        "BACKUP_PROGRESS_FOREGROUND=0" \
+        "GDRIVE_BACKUP_ANIMATION_APP=$TEST_HOME/GDrive Backup Tiger.app" \
+        "GDRIVE_BACKUP_OPEN_BIN=$FAKE_BIN/open" \
+        "FAKE_OPEN_HISTORY_LOG=$TEST_HOME/open-history"
+    status=$?
+    history="$(cat "$TEST_HOME/open-history" 2>/dev/null || true)"
+    if [[ "$status" == 0 && "$history" == "$expected" ]]; then
+      pass "mount consent foreground policy: $scenario"
+    else
+      fail "mount consent foreground policy: $scenario (exit=$status history=${history//$'\n'/,})"
+    fi
+  done
 }
 
 test_visible_manual_confirmation_requests_foreground() {
@@ -1527,9 +1571,20 @@ test_unparsed_exact_collision_cannot_hide_behind_valid_group() {
 }
 
 test_folder_archive_requires_a_materialized_root() {
-  local name="an ID-rooted folder copy must materialize its archive root"
+  local name="a failed archive-root creation cannot become a successful backup"
   local status summary
   prepare_test_environment
+
+  cat >"$FAKE_BIN/mkdir" <<'SH'
+#!/bin/bash
+for directory in "$@"; do
+  case "$directory" in
+    "${FAKE_NAS_MOUNT}/backup/.gdrive-collisions/"*/objects/*/root) exit 73 ;;
+  esac
+done
+exec /bin/mkdir "$@"
+SH
+  chmod +x "$FAKE_BIN/mkdir"
 
   FAKE_RCLONE_COPY_OUTPUT='NOTICE: EventOS-Backups: Duplicate directory found in source - ignoring' \
     FAKE_RCLONE_COLLISION_QUERY_JSON='[
@@ -1543,10 +1598,111 @@ test_folder_archive_requires_a_materialized_root() {
 
   if [[ "$status" == "1" &&
         "$summary" == *$'status=failure\n'* &&
-        "$summary" == *$'reason=source_name_collision\n'* ]]; then
+        "$summary" == *$'reason=destination_permission_denied\n'* ]]; then
     pass "$name"
   else
     fail "$name (exit=$status summary=${summary//$'\n'/,})"
+  fi
+}
+
+test_empty_duplicate_folders_preserve_separate_archive_roots() {
+  local name="empty duplicate folders retain separate materialized ID roots"
+  local status summary root_count manifest_count
+  prepare_test_environment
+
+  FAKE_RCLONE_COPY_OUTPUT='NOTICE: Empty: Duplicate directory found in source - ignoring' \
+    FAKE_RCLONE_COLLISION_QUERY_JSON='[
+      {"id":"folder-id-a","name":"Empty","mimeType":"application/vnd.google-apps.folder","parents":["parent-id"]},
+      {"id":"folder-id-b","name":"Empty","mimeType":"application/vnd.google-apps.folder","parents":["parent-id"]}
+    ]' \
+    FAKE_RCLONE_ARCHIVE_CREATE_FOLDER=0 \
+    run_backup
+  status=$?
+  summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+  root_count="$(find "$NAS_MOUNT/backup/.gdrive-collisions" -type d \
+    -path '*/objects/*/root' 2>/dev/null | wc -l | tr -d '[:space:]')"
+  manifest_count="$(find "$NAS_MOUNT/backup/.gdrive-collisions" -type f \
+    -path '*/groups/*.json' 2>/dev/null | wc -l | tr -d '[:space:]')"
+  if [[ "$status" == "0" && "$summary" == *$'status=success\n'* &&
+        "$root_count" == "4" && "$manifest_count" == "2" ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status roots=$root_count manifests=$manifest_count)"
+  fi
+}
+
+test_folder_archive_still_rejects_missing_contents() {
+  local name="an existing archive root cannot hide missing folder contents"
+  local status summary manifest_count
+  prepare_test_environment
+
+  FAKE_RCLONE_COPY_OUTPUT='NOTICE: Contents: Duplicate directory found in source - ignoring' \
+    FAKE_RCLONE_COLLISION_QUERY_JSON='[
+      {"id":"folder-id-a","name":"Contents","mimeType":"application/vnd.google-apps.folder","parents":["parent-id"]},
+      {"id":"folder-id-b","name":"Contents","mimeType":"application/vnd.google-apps.folder","parents":["parent-id"]}
+    ]' \
+    FAKE_RCLONE_ARCHIVE_VERIFY_REPORT='+ missing.txt' \
+    run_backup
+  status=$?
+  summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+  manifest_count="$(find "$NAS_MOUNT/backup/.gdrive-collisions" -type f \
+    -path '*/groups/*.json' 2>/dev/null | wc -l | tr -d '[:space:]')"
+  if [[ "$status" == "1" && "$summary" == *$'reason=source_name_collision\n'* &&
+        "$manifest_count" == "0" ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status manifests=$manifest_count)"
+  fi
+}
+
+test_folder_archive_rejects_unsafe_root_before_writing() {
+  local kind scope label object directory status args_file
+  for kind in symlink file; do
+    prepare_test_environment
+    object="$(printf 'drive-object-id\037folder-id-a' | /usr/bin/shasum -a 256)"; object="${object%% *}"
+    for label in 'My Drive' 'Shared with me'; do
+      scope="$(printf '%s' "$label" | /usr/bin/shasum -a 256)"; scope="${scope%% *}"
+      directory="$NAS_MOUNT/backup/.gdrive-collisions/$scope/objects/$object"
+      mkdir -p "$directory" "$TEST_HOME/outside"
+      if [[ "$kind" == symlink ]]; then
+        ln -s "$TEST_HOME/outside" "$directory/root"
+      else
+        : >"$directory/root"
+      fi
+    done
+    args_file="$TEST_HOME/rclone-args"
+    FAKE_RCLONE_ARGS_FILE="$args_file" \
+      FAKE_RCLONE_COPY_OUTPUT='NOTICE: Empty: Duplicate directory found in source - ignoring' \
+      FAKE_RCLONE_COLLISION_QUERY_JSON='[
+        {"id":"folder-id-a","name":"Empty","mimeType":"application/vnd.google-apps.folder","parents":["parent-id"]},
+        {"id":"folder-id-b","name":"Empty","mimeType":"application/vnd.google-apps.folder","parents":["parent-id"]}
+      ]' run_backup
+    status=$?
+    if [[ "$status" == 1 ]] && ! grep -qFx -- '--drive-root-folder-id' "$args_file"; then
+      pass "unsafe folder root is rejected before ID copy: $kind"
+    else
+      fail "unsafe folder root reached ID copy: $kind (exit=$status)"
+    fi
+  done
+}
+
+test_empty_folder_dry_run_does_not_create_archive_roots() {
+  local name="dry-run of empty duplicate folders does not create archive roots"
+  local status
+  prepare_test_environment
+
+  FAKE_RCLONE_COPY_OUTPUT='NOTICE: Empty: Duplicate directory found in source - ignoring' \
+    FAKE_RCLONE_COLLISION_QUERY_JSON='[
+      {"id":"folder-id-a","name":"Empty","mimeType":"application/vnd.google-apps.folder","parents":["parent-id"]},
+      {"id":"folder-id-b","name":"Empty","mimeType":"application/vnd.google-apps.folder","parents":["parent-id"]}
+    ]' \
+    FAKE_RCLONE_ARCHIVE_CREATE_FOLDER=0 \
+    run_backup_with_mode --dry-run
+  status=$?
+  if [[ "$status" == "0" && ! -e "$NAS_MOUNT/backup/.gdrive-collisions" ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status)"
   fi
 }
 
@@ -2303,10 +2459,61 @@ test_later_failure_preserves_last_success_marker() {
 
   if [[ "$status" == "1" && "$success_marker" =~ ^[0-9]+$ &&
         "$summary" == *$'status=failure\n'* &&
-        "$summary" == *"last_success_at=$success_marker"* ]]; then
+        "$summary" == *"last_success_at=$success_marker"* &&
+        "$summary" == *$'last_success_target=nas\n'* &&
+        "$summary" == *"last_success_destination=$NAS_MOUNT/backup"* &&
+        "$summary" == *"last_success_volume=${NAS_MOUNT##*/}"* ]]; then
     pass "$name"
   else
     fail "$name (exit=$status marker=$success_marker summary=${summary//$'\n'/,})"
+  fi
+}
+
+test_legacy_success_destination_survives_failure() {
+  local summary status
+  prepare_test_environment
+  printf 'protocol=1\nstatus=success\npid=123\nstarted_at=100\nfinished_at=200\nexit_code=0\nlast_success_at=200\ntarget=apfs\ndestination=/Volumes/Old=Disk/backup\n' >"$SUMMARY_STATE_FILE"
+  FAKE_RCLONE_COPY_STATUS=23 run_backup
+  status=$?
+  summary="$(cat "$SUMMARY_STATE_FILE")"
+  if [[ "$status" == "1" && "$summary" == *$'last_success_at=200\n'* &&
+        "$summary" == *$'last_success_target=apfs\n'* &&
+        "$summary" == *$'last_success_destination=/Volumes/Old=Disk/backup\n'* &&
+        "$summary" == *$'last_success_volume=Old=Disk\n'* ]]; then
+    pass "legacy successful destination survives a later failed run with equals signs intact"
+  else
+    fail "legacy success destination was lost or mixed with current target"
+  fi
+}
+
+test_success_override_does_not_claim_selected_volume() {
+  prepare_test_environment
+  local alternate="$TEST_HOME/Other/backup" status summary
+  mkdir -p "$alternate"
+  run_backup GDRIVE_BACKUP_DEST_ROOT="$alternate"
+  status=$?
+  summary="$(cat "$SUMMARY_STATE_FILE")"
+  if [[ "$status" == "0" && "$summary" == *"last_success_destination=$alternate"* &&
+        "$summary" != *'last_success_volume='* ]]; then
+    pass "an override outside the selected volume records no guessed medium"
+  else
+    fail "an override claims the selected volume despite writing elsewhere"
+  fi
+}
+
+test_new_success_replaces_previous_destination() {
+  prepare_test_environment
+  printf 'protocol=1\nstatus=failure\nlast_success_at=200\nlast_success_target=apfs\nlast_success_destination=/Volumes/Old/backup\nlast_success_volume=Old\n' >"$SUMMARY_STATE_FILE"
+  run_backup
+  local status=$? summary
+  summary="$(cat "$SUMMARY_STATE_FILE")"
+  if [[ "$status" == "0" && "$summary" == *$'last_success_target=nas\n'* &&
+        "$summary" == *"last_success_destination=$NAS_MOUNT/backup"* &&
+        "$summary" == *"last_success_volume=${NAS_MOUNT##*/}"* &&
+        "$summary" != *$'last_success_at=200\n'* ]]; then
+    pass "a new success replaces the previous timestamp and medium together"
+  else
+    fail "new success did not replace the complete record"
   fi
 }
 
@@ -2687,6 +2894,20 @@ test_terminal_outcomes_invalidate_durable_progress() {
   fi
 }
 
+# Named cases allow focused regression runs without invoking the slower fixtures.
+if (( $# > 0 )); then
+  for selected_test in "$@"; do
+    if [[ "$selected_test" != test_* ]] || ! declare -F "$selected_test" >/dev/null; then
+      printf 'Unknown test: %s\n' "$selected_test" >&2
+      exit 64
+    fi
+    "$selected_test"
+  done
+  (( failures == 0 ))
+  exit $?
+fi
+
+test_mount_consent_controls_foreground_progress
 test_failed_backup_publishes_failure
 test_successful_backup_publishes_success
 test_animation_receives_run_state_file
@@ -2725,6 +2946,10 @@ test_collision_archive_failure_keeps_backup_failed
 test_mixed_collision_notices_cannot_be_partially_archived
 test_unparsed_exact_collision_cannot_hide_behind_valid_group
 test_folder_archive_requires_a_materialized_root
+test_empty_duplicate_folders_preserve_separate_archive_roots
+test_folder_archive_still_rejects_missing_contents
+test_folder_archive_rejects_unsafe_root_before_writing
+test_empty_folder_dry_run_does_not_create_archive_roots
 test_google_workspace_duplicates_use_exported_names
 test_incomplete_drive_query_fails_closed
 test_shared_with_me_ids_drop_the_virtual_root_flag
@@ -2754,6 +2979,9 @@ test_failed_ui_launch_cleans_internal_state
 test_success_persists_private_summary
 test_failure_persists_failed_summary
 test_later_failure_preserves_last_success_marker
+test_legacy_success_destination_survives_failure
+test_new_success_replaces_previous_destination
+test_success_override_does_not_claim_selected_volume
 test_concurrent_start_preserves_previous_summary
 test_lock_loser_preserves_owner_progress
 test_terminal_summary_publish_failure_keeps_progress_live

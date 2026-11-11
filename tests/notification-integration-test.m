@@ -1054,6 +1054,7 @@ static UNNotificationRequest *PendingBackupNotificationRequest(
 
 int main(void) {
     @autoreleasepool {
+        GDTInitializeAccessoryTestApplication();
         NotificationTestDelegate *delegate = [[NotificationTestDelegate alloc] init];
         NSString *suiteName = [@"com.commcats.gdrivebackup.notification-tests."
             stringByAppendingString:NSUUID.UUID.UUIDString];
@@ -3646,10 +3647,10 @@ int main(void) {
             @{@"finished_at": @"150", @"trigger": @"schedule"},
             @"success", nil) : nil;
         Assert([missedStatus isEqualToString:@"missed"] &&
-               [stillMissedWhileRunning isEqualToString:@"missed"] &&
+               [stillMissedWhileRunning isEqualToString:@"running"] &&
                [manualDoesNotClearMissed isEqualToString:@"missed"] &&
                [clearedMissed isEqualToString:@"success"],
-               @"a missed-run warning stays active until a later automatic success");
+               @"a missed-run warning yields to running presentation but remains until later automatic success");
 
         NSDictionary *failureDecision = @{
             @"identifier": @"com.commcats.gdrivebackup.office.failure.200",
@@ -3658,6 +3659,15 @@ int main(void) {
         };
         NSString *failureStatus = alertStatus ? alertStatus(
             delegate, alertStatusSelector, profileConfig, @{}, @"failure", failureDecision) : nil;
+        for (NSString *trigger in @[@"mount", @"manual", @"schedule"]) {
+            NSString *runningStatus = alertStatus(delegate, alertStatusSelector, profileConfig,
+                @{@"trigger": trigger, @"started_at": @"240"}, @"running", nil);
+            Assert([runningStatus isEqualToString:@"running"] &&
+                [delegate.testDefaults doubleForKey:@"GDTBackupNotification.office.activeIssueAt"] == 200 &&
+                [[delegate.testDefaults stringForKey:@"GDTBackupNotification.office.activeIssueKind"] isEqualToString:@"failure"] &&
+                [[delegate.testDefaults stringForKey:@"GDTBackupNotification.office.activeIssueIdentifier"] isEqualToString:failureDecision[@"identifier"]],
+                @"a current run overrides the red warning without acknowledging the previous failure");
+        }
         NSDictionary *runningRetryStatusDecision = @{
             @"identifier": @"com.commcats.gdrivebackup.office.failure.200",
             @"profileID": @"office", @"kind": @"retry-running",
@@ -3686,6 +3696,9 @@ int main(void) {
             delegate, alertStatusSelector, profileConfig,
             @{@"finished_at": @"250", @"trigger": @"manual"},
             @"success", nil) : nil;
+        NSString *mountSuccessDoesNotClear = alertStatus ? alertStatus(
+            delegate, alertStatusSelector, profileConfig,
+            @{@"finished_at": @"250", @"trigger": @"mount"}, @"success", nil) : nil;
         NSString *newSuccessClears = alertStatus ? alertStatus(
             delegate, alertStatusSelector, profileConfig,
             @{@"finished_at": @"250", @"trigger": @"schedule-retry"},
@@ -3695,6 +3708,7 @@ int main(void) {
                failureLatchSurvivedRetryStart &&
                [oldSuccessDoesNotClear isEqualToString:@"failure"] &&
                [manualNewSuccessDoesNotClear isEqualToString:@"failure"] &&
+               [mountSuccessDoesNotClear isEqualToString:@"failure"] &&
                [newSuccessClears isEqualToString:@"success"],
                @"a running retry is non-red without clearing the failure latch, which only a newer automatic success clears");
 
@@ -4068,6 +4082,19 @@ int main(void) {
                [retryStatusItem.button.accessibilityLabel
                    containsString:T(@"en", @"automaticRetryRunning")],
                @"retry-running uses a non-red running symbol and a localized spoken status");
+        typedef void (*RunningPresentationMethod)(id, SEL, NSDictionary *);
+        RunningPresentationMethod presentRunning = (RunningPresentationMethod)
+            [actionDelegate methodForSelector:statusPresentationSelector];
+        presentRunning(actionDelegate, statusPresentationSelector,
+            @{@"status": @"running", @"alertStatus": @"failure", @"lastRun": @"Backup running"});
+        Assert(retryStatusItem.button.image.template &&
+            [retryStatusItem.button.image.TIFFRepresentation isEqualToData:expectedRetrySymbol.TIFFRepresentation] &&
+            [retryStatusItem.button.accessibilityLabel containsString:@"Backup running"],
+            @"a visible external run overrides the unrelated automatic warning in the menu bar");
+        presentRunning(actionDelegate, statusPresentationSelector,
+            @{@"status": @"failure", @"alertStatus": @"failure", @"lastRun": @"Backup failed"});
+        Assert(!retryStatusItem.button.image.template,
+            @"a terminal backup failure still displays the red warning");
         [NSStatusBar.systemStatusBar removeStatusItem:retryStatusItem];
         actionDelegate.statusItem = nil;
 

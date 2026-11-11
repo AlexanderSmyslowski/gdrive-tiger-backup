@@ -36,6 +36,20 @@ int main(void) {
                    isEqualToString:@"/tmp/default/current-progress.status"],
                @"progress path stays beside the profile summary");
 
+        NSMutableDictionary *mountSummary = [summary mutableCopy];
+        NSMutableDictionary *mountProgress = [progress mutableCopy];
+        mountSummary[@"trigger"] = @"mount";
+        mountProgress[@"trigger"] = @"mount";
+        [mountSummary removeObjectForKey:@"retry_attempt"];
+        [mountProgress removeObjectForKey:@"retry_attempt"];
+        Assert(GDTValidatedBackupProgressForValues(mountProgress, mountSummary,
+                   @"running", @"default", now) != nil,
+               @"mount telemetry uses the same live process, profile and freshness validation");
+        mountProgress[@"profile_id"] = @"other-profile";
+        Assert(GDTValidatedBackupProgressForValues(mountProgress, mountSummary,
+                   @"running", @"default", now) == nil,
+               @"mount telemetry cannot cross the profile boundary");
+
         NSMutableDictionary *crossProfile = [progress mutableCopy];
         crossProfile[@"profile_id"] = @"archive";
         Assert(GDTValidatedBackupProgressForValues(

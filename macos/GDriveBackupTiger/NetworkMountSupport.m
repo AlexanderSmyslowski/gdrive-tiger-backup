@@ -71,6 +71,7 @@ static NSData *GDTLookupSMBPassword(
     NSString *account,
     NSString *path,
     BOOL allowUserInteraction) {
+    __block OSStatus interactionStatus = errSecSuccess;
     BOOL interactionConfigured = GDTConfigureLegacyKeychainInteraction(
         allowUserInteraction,
         ^int(BOOL allowInteraction) {
@@ -79,10 +80,12 @@ static NSData *GDTLookupSMBPassword(
             // their ACL prompt on macOS.
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-            return SecKeychainSetUserInteractionAllowed(allowInteraction);
+            interactionStatus = SecKeychainSetUserInteractionAllowed(allowInteraction);
+            return interactionStatus;
 #pragma clang diagnostic pop
         });
     if (!interactionConfigured) {
+        fprintf(stderr, "NAS diagnostic stage=keychain_configuration status=%d\n", (int)interactionStatus);
         return nil;
     }
 
@@ -112,15 +115,19 @@ static NSData *GDTLookupSMBPassword(
         OSStatus status = SecItemCopyMatching(
             (__bridge CFDictionaryRef)query, &result);
         if (status == errSecSuccess && result) {
-            return CFBridgingRelease(result);
+            NSData *data = CFBridgingRelease(result);
+            if (!data.length) fprintf(stderr, "NAS diagnostic stage=credential_data status=0\n");
+            return data;
         }
         if (result) {
             CFRelease(result);
         }
         if (status != errSecItemNotFound) {
+            fprintf(stderr, "NAS diagnostic stage=keychain_lookup status=%d\n", (int)status);
             return nil;
         }
     }
+    fprintf(stderr, "NAS diagnostic stage=keychain_lookup status=%d\n", (int)errSecItemNotFound);
     return nil;
 }
 
@@ -139,6 +146,7 @@ static int GDTNetFSMount(
             false,
             kCFAllocatorNull);
         if (!password) {
+            fprintf(stderr, "NAS diagnostic stage=credential_encoding status=%d\n", EINVAL);
             return EINVAL;
         }
     }
@@ -158,6 +166,8 @@ static int GDTNetFSMount(
         (__bridge CFMutableDictionaryRef)openOptions,
         NULL,
         &mountpoints);
+    // Stage and numeric code identify the failure without exposing NAS or credential details.
+    if (result != 0) fprintf(stderr, "NAS diagnostic stage=netfs_mount status=%d\n", result);
     if (mountpoints) {
         CFRelease(mountpoints);
     }

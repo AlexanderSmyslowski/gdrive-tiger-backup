@@ -1,3 +1,4 @@
+#import "TestApplicationSupport.h"
 #import <Cocoa/Cocoa.h>
 #import <objc/runtime.h>
 
@@ -165,6 +166,7 @@ static void Assert(BOOL condition, NSString *name) {
 
 int main(void) {
     @autoreleasepool {
+        GDTInitializeAccessoryTestApplication();
         TigerOverviewView *view = [[TigerOverviewView alloc] initWithFrame:NSMakeRect(0, 0, 620, 420)];
         view.language = @"en";
         view.lastRunText = @"Successful";
@@ -450,6 +452,23 @@ int main(void) {
         Assert(manualProgressComesForward && scheduledProgressStaysPassive,
                @"only an explicit progress request receives a Dock presence");
 
+        SEL activateSelector = NSSelectorFromString(@"shouldActivateStatusWindow");
+        BOOL activationPolicyCorrect = [delegate respondsToSelector:activateSelector];
+        if (activationPolicyCorrect) {
+            typedef BOOL (*ActivateMethod)(id, SEL);
+            ActivateMethod method = (ActivateMethod)[delegate methodForSelector:activateSelector];
+            for (NSNumber *confirmation in @[@NO, @YES]) {
+                delegate.confirmMode = confirmation.boolValue;
+                delegate.progressForegroundMode = YES;
+                activationPolicyCorrect &= method(delegate, activateSelector);
+                delegate.progressForegroundMode = NO;
+                activationPolicyCorrect &= !method(delegate, activateSelector);
+            }
+        }
+        delegate.confirmMode = NO;
+        Assert(activationPolicyCorrect,
+               @"explicit foreground consent activates progress and confirmation; passive windows never activate");
+
         SEL collectionSelector = NSSelectorFromString(@"statusWindowCollectionBehavior");
         NSWindowCollectionBehavior progressCollectionBehavior = NSWindowCollectionBehaviorDefault;
         if ([delegate respondsToSelector:collectionSelector]) {
@@ -640,6 +659,24 @@ int main(void) {
                    @"1.2 GiB / 1.9 GiB, 12.4 MiB/s, ETA 58s"],
                @"running automatic retry has explicit phase progress");
 
+        NSMutableDictionary *mountSummary = [retrySummary mutableCopy];
+        mountSummary[@"trigger"] = @"mount";
+        NSDictionary *mountSnapshot = [delegate overviewSnapshotForConfig:dailyNAS
+            summary:mountSummary status:@"running" progress:retryProgress now:now calendar:calendar];
+        NSString *mountMenuText = [[[[delegate statusMenuForSnapshot:mountSnapshot]
+            itemArray] valueForKey:@"title"] componentsJoinedByString:@" "];
+        Assert([mountSnapshot[@"progressVisible"] isEqualToString:@"1"] &&
+               [mountSnapshot[@"progressPhase"] isEqualToString:phaseText] &&
+               [mountSnapshot[@"progressPercent"] isEqualToString:@"63"] &&
+               [mountSnapshot[@"retryRunning"] isEqualToString:@"0"] &&
+               [mountMenuText containsString:@"63 %"] &&
+               ![mountMenuText containsString:T(@"en", @"automaticRetryRunningShort")],
+               @"mount backup exposes its actual progress in overview and menu without retry wording");
+        NSDictionary *finishedMountSnapshot = [delegate overviewSnapshotForConfig:dailyNAS
+            summary:mountSummary status:@"success" progress:retryProgress now:now calendar:calendar];
+        Assert([finishedMountSnapshot[@"progressVisible"] isEqualToString:@"0"],
+               @"finished mount backup hides stale progress");
+
         NSMenu *retryMenu = [delegate statusMenuForSnapshot:retrySnapshot];
         NSString *retryMenuText = [[retryMenu.itemArray valueForKey:@"title"]
             componentsJoinedByString:@" "];
@@ -820,6 +857,25 @@ int main(void) {
                [[menuTitles componentsJoinedByString:@" "] containsString:@"/Volumes/Archive"] &&
                [[menuTitles componentsJoinedByString:@" "] containsString:@"812 GB"],
                @"menu bar exposes the same status, schedule, target, storage, and actions");
+
+        for (NSString *language in @[@"de", @"en"]) {
+            delegate.language = language;
+            NSDictionary *retained = @{@"protocol": @"1", @"status": @"failure",
+                @"started_at": @"300", @"finished_at": @"400", @"exit_code": @"1",
+                @"last_success_at": @"200", @"last_success_target": @"apfs",
+                @"last_success_destination": @"/Volumes/TOSHIBA_4TB/Backup",
+                @"last_success_volume": @"TOSHIBA_4TB"};
+            NSDictionary *history = [delegate overviewSnapshotForConfig:@{} summary:retained
+                status:@"failure" now:[NSDate dateWithTimeIntervalSince1970:1000] calendar:calendar];
+            NSMenu *historyMenu = [delegate statusMenuForSnapshot:history];
+            Assert([[historyMenu itemAtIndex:0].title containsString:@"TOSHIBA_4TB"] &&
+                   ![historyMenu itemAtIndex:0].enabled && [historyMenu itemAtIndex:1].title.length > 0 &&
+                   ![historyMenu itemAtIndex:1].enabled &&
+                   [[[historyMenu.itemArray valueForKey:@"title"] componentsJoinedByString:@" "]
+                       containsString:T(language, @"failed")],
+                   @"menu keeps the successful volume and timestamp separate from the latest failure");
+        }
+        delegate.language = @"en";
 
         OverviewLaunchDelegate *reopenDelegate = [[OverviewLaunchDelegate alloc] init];
         reopenDelegate.overviewMode = YES;

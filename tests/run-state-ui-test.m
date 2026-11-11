@@ -1,3 +1,4 @@
+#import "TestApplicationSupport.h"
 #import <Cocoa/Cocoa.h>
 #include <sys/wait.h>
 
@@ -82,6 +83,7 @@ static void AssertEqual(NSString *actual, NSString *expected, NSString *name) {
 
 int main(void) {
     @autoreleasepool {
+        GDTInitializeAccessoryTestApplication();
         AppDelegate *delegate = [[AppDelegate alloc] init];
         AssertEqual(RunStatus(delegate, @"/path/that/does/not/exist"),
                     @"pending",

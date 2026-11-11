@@ -1,6 +1,8 @@
 #import <Foundation/Foundation.h>
 #import <NetFS/NetFS.h>
 #include <errno.h>
+#include <unistd.h>
+#import <Security/Security.h>
 
 typedef NSData * _Nullable (^GDTTestCredentialLookup)(
     NSString *host, NSString *account, NSString *path, BOOL allowUserInteraction);
@@ -24,6 +26,28 @@ extern BOOL GDTConfigureLegacyKeychainInteraction(
     GDTTestKeychainInteractionSetter setter);
 extern int GDTMountSMBURLFromKeychain(NSString *urlString);
 
+static OSStatus TestLookupStatus = errSecInteractionNotAllowed;
+static int TestMountStatus = 0;
+static OSStatus TestInteractionStatus = errSecSuccess;
+static NSUInteger TestLookupCount = 0;
+static NSData *TestCredential = nil;
+OSStatus SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
+    (void)query; TestLookupCount++; *result = TestCredential ? CFBridgingRetain(TestCredential) : NULL; return TestLookupStatus;
+}
+OSStatus SecKeychainSetUserInteractionAllowed(Boolean allowed) {
+    (void)allowed; return TestInteractionStatus;
+}
+static NSString *CaptureMountFailure(NSString *url) {
+    FILE *capture = tmpfile();
+    int saved = dup(STDERR_FILENO);
+    fflush(stderr); dup2(fileno(capture), STDERR_FILENO);
+    int result = GDTMountSMBURLFromKeychain(url);
+    fflush(stderr); dup2(saved, STDERR_FILENO); close(saved);
+    rewind(capture); char bytes[1024] = {0}; size_t count = fread(bytes, 1, sizeof(bytes)-1, capture);
+    fclose(capture);
+    if (result != 69) return @"unexpected exit";
+    return [[NSString alloc] initWithBytes:bytes length:count encoding:NSUTF8StringEncoding];
+}
 static BOOL NetFSGuestModeWasSet = NO;
 static BOOL NetFSNoUIWasSet = NO;
 static BOOL NetFSReceivedEmptyCredentials = NO;
@@ -49,7 +73,7 @@ int NetFSMountURLSync(
     NSString *password = (__bridge NSString *)passwd;
     NetFSReceivedEmptyCredentials = account.length == 0 && password.length == 0;
     NetFSMountCallCount++;
-    return 0;
+    return TestMountStatus;
 }
 
 static void Assert(BOOL condition, NSString *message) {
@@ -335,6 +359,37 @@ int main(void) {
         Assert(result == 64 && handled,
             @"an incomplete mount command fails before the graphical app starts");
 
+        NSUInteger mountsBeforeFailure = NetFSMountCallCount;
+        NSString *lookupDiagnostic = CaptureMountFailure(@"smb://private-account@private-host/private-share");
+        Assert([lookupDiagnostic containsString:@"stage=keychain_lookup status=-25308"] &&
+            ![lookupDiagnostic containsString:@"private"],
+            @"keychain failures report their OS status without account, server or share");
+        Assert(NetFSMountCallCount == mountsBeforeFailure && TestLookupCount == 1,
+            @"denied keychain interaction stops before fallback or network mounting");
+        TestLookupStatus = errSecItemNotFound;
+        TestLookupCount = 0;
+        Assert([CaptureMountFailure(@"smb://private-account@private-host/private-share")
+            containsString:@"stage=keychain_lookup status=-25300"],
+            @"a missing keychain entry is distinguished from denied interaction");
+        Assert(TestLookupCount == 2, @"missing keychain items try both share path variants");
+        TestInteractionStatus = errSecAuthFailed;
+        Assert([CaptureMountFailure(@"smb://private-account@private-host/private-share") containsString:@"stage=keychain_configuration status=-25293"],
+            @"keychain configuration failure is identified before querying credentials");
+        TestInteractionStatus = errSecSuccess;
+        TestLookupStatus = errSecSuccess;
+        TestCredential = [NSData data];
+        Assert([CaptureMountFailure(@"smb://private-account@private-host/private-share") containsString:@"stage=credential_data status=0"],
+            @"an empty credential is reported without attempting a mount");
+        const unsigned char invalidUTF8[] = {0xff};
+        TestCredential = [NSData dataWithBytes:invalidUTF8 length:1];
+        Assert([CaptureMountFailure(@"smb://private-account@private-host/private-share") containsString:@"stage=credential_encoding status="],
+            @"invalid credential encoding is distinguished from NetFS failure");
+        TestCredential = nil;
+        TestMountStatus = ETIMEDOUT;
+        NSString *mountDiagnostic = CaptureMountFailure(@"smb://private-host/private-share");
+        Assert([mountDiagnostic containsString:[NSString stringWithFormat:@"stage=netfs_mount status=%d", ETIMEDOUT]] &&
+            ![mountDiagnostic containsString:@"private"],
+            @"NetFS failure reports its own stage and numeric error without share details");
         __block BOOL interactionAllowed = YES;
         BOOL interactionConfigured = GDTConfigureLegacyKeychainInteraction(
             NO,

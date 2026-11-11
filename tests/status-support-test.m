@@ -2,6 +2,7 @@
 
 #import "BackupStatusSupport.h"
 
+
 static int failures = 0;
 
 static void Assert(BOOL condition, NSString *name) {
@@ -26,6 +27,45 @@ static void TrashPath(NSString *path) {
 
 int main(void) {
     @autoreleasepool {
+        NSDate *successNow = [NSDate dateWithTimeIntervalSince1970:1000];
+        NSDictionary *retained = @{@"protocol": @"1", @"status": @"failure", @"last_success_at": @"200",
+            @"last_success_target": @"nas", @"last_success_destination": @"/Volumes/Archive/Backup",
+            @"last_success_volume": @"Archive", @"target": @"apfs", @"destination": @"/Volumes/Other"};
+        NSDictionary *last = GDTLastSuccessfulBackupForSummary(retained, successNow);
+        Assert([last[@"volume"] isEqual:@"Archive"] && [last[@"at"] isEqual:@"200"],
+            @"last success retains its own target after a later failure on another disk");
+        NSDictionary *legacy = @{@"protocol": @"1", @"status": @"success", @"pid": @"123", @"started_at": @"100",
+            @"finished_at": @"300", @"exit_code": @"0", @"target": @"apfs", @"destination": @"/Volumes/TOSHIBA/Backup"};
+        last = GDTLastSuccessfulBackupForSummary(legacy, successNow);
+        Assert([last[@"volume"] isEqual:@"TOSHIBA"] && [last[@"at"] isEqual:@"300"],
+            @"a legacy successful run identifies its recorded volume without current config");
+        last = GDTLastSuccessfulBackupForSummary(
+            @{@"protocol": @"1", @"status": @"failure", @"last_success_at": @"400", @"destination": @"/Volumes/Wrong"}, successNow);
+        Assert([last[@"at"] isEqual:@"400"] && ![last[@"volume"] length],
+            @"timestamp-only history never borrows the latest failed destination");
+        Assert(!GDTLastSuccessfulBackupForSummary(
+            @{@"protocol": @"1", @"last_success_at": @"1001"}, successNow) &&
+            !GDTLastSuccessfulBackupForSummary(@{@"protocol": @"1", @"last_success_at": @"12junk"}, successNow),
+            @"future and malformed success timestamps are rejected");
+        NSString *historyRoot = TemporaryPath(@"last-success-root");
+        NSString *manualDir = [historyRoot stringByAppendingPathComponent:@"manual/disk-uuid"];
+        [NSFileManager.defaultManager createDirectoryAtPath:manualDir withIntermediateDirectories:YES attributes:nil error:nil];
+        [@"protocol=1\nstatus=success\npid=123\nstarted_at=100\nfinished_at=300\nexit_code=0\ntarget=apfs\ndestination=/Volumes/TOSHIBA/Backup\n"
+            writeToFile:[manualDir stringByAppendingPathComponent:@"last-run.status"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        last = GDTLatestSuccessfulBackupAtRoot(historyRoot, successNow);
+        Assert([last[@"volume"] isEqual:@"TOSHIBA"], @"external-disk success survives restart without in-memory selection");
+        NSString *profileDir = [historyRoot stringByAppendingPathComponent:@"profiles/default"];
+        [NSFileManager.defaultManager createDirectoryAtPath:profileDir withIntermediateDirectories:YES attributes:nil error:nil];
+        [@"protocol=1\nstatus=failure\nlast_success_at=400\n"
+            writeToFile:[profileDir stringByAppendingPathComponent:@"last-run.status"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        last = GDTLatestSuccessfulBackupAtRoot(historyRoot, successNow);
+        Assert([last[@"at"] isEqual:@"400"] && ![last[@"volume"] length],
+            @"newest success wins even when its historical medium is unknown");
+        [@"protocol=1\nstatus=failure\nlast_success_at=1001\n"
+            writeToFile:[profileDir stringByAppendingPathComponent:@"last-run.status"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        last = GDTLatestSuccessfulBackupAtRoot(historyRoot, successNow);
+        Assert([last[@"at"] isEqual:@"300"], @"a future record cannot hide the valid external success");
+        TrashPath(historyRoot);
         NSString *successPath = TemporaryPath(@"summary-success");
         [@"protocol=1\nstatus=success\npid=123\nstarted_at=100\nfinished_at=200\nexit_code=0\ntrigger=manual\ntarget=nas\ndestination=/Volumes/Archive\n"
             writeToFile:successPath atomically:YES encoding:NSUTF8StringEncoding error:nil];

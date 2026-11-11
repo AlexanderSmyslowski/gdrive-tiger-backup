@@ -1,3 +1,4 @@
+#import "TestApplicationSupport.h"
 #import <Cocoa/Cocoa.h>
 
 #define main GDTApplicationMain
@@ -17,6 +18,7 @@ static void Assert(BOOL condition, NSString *name) {
 
 int main(void) {
     @autoreleasepool {
+        GDTInitializeAccessoryTestApplication();
         TigerBackupView *view = [[TigerBackupView alloc] initWithFrame:NSMakeRect(0, 0, 392, 180)];
         view.language = @"en";
         view.primaryActionTitle = @"Start backup";

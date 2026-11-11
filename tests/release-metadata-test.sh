@@ -4,7 +4,9 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INFO_PLIST="$ROOT/macos/GDriveBackupTiger/Info.plist"
 EXPECTED_VERSION="2.5.1"
-EXPECTED_BUILD="32"
+EXPECTED_BUILD="37"
+# The local progress build is newer than the unchanged published 2.5.1 artifact.
+EXPECTED_PUBLISHED_BUILD="32"
 failures=0
 
 check_contains() {
@@ -60,7 +62,7 @@ else
   failures=$((failures + 1))
 fi
 check_contains "$ROOT/README.md" \
-  "Scheduled, retry, mount-triggered, and menu-bar-only runs stay headless and passive, including in full-screen Spaces." \
+  "Scheduled, retry, unattended mount-triggered, and menu-bar-only runs stay headless and passive, including in full-screen Spaces." \
   "README explicitly keeps automatic retries passive in full-screen Spaces"
 check_contains "$ROOT/README.md" \
   "\`GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1\` is a narrow process-only authorization for one setup invocation; it is ignored when stored in a config file." \
@@ -112,7 +114,7 @@ check_contains "$ROOT/README.md" \
   "README ties completion to durable terminal status"
 check_contains "$ROOT/CHANGELOG.md" "## v${version} " \
   "changelog contains the app version"
-check_contains "$ROOT/docs/version-history.md" "| v${version} | ${build} |" \
+check_contains "$ROOT/docs/version-history.md" "| v${version} | ${EXPECTED_PUBLISHED_BUILD} |" \
   "publication history contains the app version and build"
 check_contains "$ROOT/docs/version-history.md" \
   "The v2.4.3, v2.4.4, and v2.4.5 installers are built and verified from their exact tags" \
