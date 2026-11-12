@@ -62,7 +62,9 @@ build:
 	# Restricted notification entitlements require an Apple-issued signing
 	# identity. Embedding one in an ad-hoc signature passes codesign verification
 	# but macOS rejects the app at exec time.
-	codesign --force --deep --sign - "$(APP_DIR)"
+	# A local signing identity, when present, keeps the Keychain and privacy
+	# grants across rebuilds; without one the build falls back to ad-hoc.
+	codesign --force --deep --sign "$$(./scripts/local-signing-identity.sh resolve)" "$(APP_DIR)"
 
 install:
 	./install.sh
@@ -78,6 +80,7 @@ test: test-retry-countdown test-native-scheduled-backup
 	bash tests/adhoc-target-test.sh
 	bash tests/app-launch-status-test.sh
 	bash tests/app-trash-mode-test.sh
+	bash tests/local-signing-identity-test.sh
 	bash tests/backup-control-test.sh
 	bash tests/backup-profile-test.sh
 	bash tests/backup-encryption-test.sh

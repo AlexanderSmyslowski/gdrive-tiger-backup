@@ -459,9 +459,11 @@ test -s "$APP_CONTENTS/Resources/Assets.car"
 "$ROOT/scripts/trash-path.sh" "$ICON_WORK"
 
 /usr/bin/xattr -cr "$APP_DIR"
-# The source installer uses an ad-hoc signature, which cannot carry protected
-# Apple notification entitlements without being rejected at exec time.
-codesign --force --deep --sign - "$APP_DIR" >/dev/null
+# The source installer signs without an Apple-issued identity, which cannot
+# carry protected Apple notification entitlements without being rejected at
+# exec time. A local signing identity, when present, keeps the Keychain and
+# privacy grants across updates; without one the signature is ad-hoc.
+codesign --force --deep --sign "$("$ROOT/scripts/local-signing-identity.sh" resolve)" "$APP_DIR" >/dev/null
 
 sudo install -m 755 "$ROOT/bin/backup-google-drive.sh" /usr/local/bin/backup-google-drive.sh
 install -m 644 "$AGENT_SRC" "$AGENT_DST"

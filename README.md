@@ -547,6 +547,25 @@ Run the complete local test suite:
 make test
 ```
 
+### Keeping permissions across source updates
+
+A source build is signed ad-hoc by default. macOS identifies an ad-hoc app by
+the hash of that one build, so every update looks like a new program and loses
+two grants: Keychain access to the NAS password and the privacy permission for
+network volumes. Until both are granted again, scheduled NAS backups fail.
+
+Create a local signing identity once to keep both grants across updates:
+
+```bash
+./scripts/local-signing-identity.sh create
+```
+
+`make build` and `./install.sh` then sign with it automatically. macOS asks
+once for permission when `codesign` first uses the key. The first build signed
+this way still needs both grants one last time, because the app's identity
+changes from ad-hoc to the certificate. The identity is self-signed, valid only
+on the Mac that created it, and unrelated to Apple notarization.
+
 Build a local installer package:
 
 ```bash

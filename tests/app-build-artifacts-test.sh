@@ -18,6 +18,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Keep the test hermetic: never use (or prompt for) a local signing identity.
+export GDRIVE_FORCE_ADHOC_SIGNATURE=1
+
 if ! /usr/bin/make -C "$ROOT" APP_DIR="$APP" build; then
   printf '%s\n' 'not ok - an isolated app build completes successfully'
   exit 1
