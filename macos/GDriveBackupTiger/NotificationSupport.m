@@ -304,6 +304,8 @@ static NSDate *GDTWatchdogDateForNow(NSDate *now, NSCalendar *calendar) {
             bodyKey = @"backupNotificationNASRetryBody";
         } else if ([reason isEqualToString:@"destination_permission_denied"]) {
             bodyKey = @"failedPermissionHint";
+        } else if ([reason isEqualToString:@"macos_privacy_permission_missing"]) {
+            bodyKey = @"failedPrivacyPermissionHint";
         } else if ([reason isEqualToString:@"nas_connection_lost"]) {
             bodyKey = @"failedNASConnectionHint";
         } else if ([summary[@"exit_code"] integerValue] == 69) {

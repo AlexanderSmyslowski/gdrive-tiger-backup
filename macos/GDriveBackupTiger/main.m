@@ -8097,6 +8097,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSString *reason = values[@"reason"] ?: @"";
     NSSet<NSString *> *safeReasons = [NSSet setWithArray:@[
         @"destination_permission_denied",
+        @"macos_privacy_permission_missing",
         @"nas_connection_lost",
         @"nas_mount_unavailable",
         @"nas_mount_not_ready"
@@ -8107,6 +8108,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 - (NSString *)localizedTerminalDetailForReason:(NSString *)reason {
     if ([reason isEqualToString:@"destination_permission_denied"]) {
         return T(self.language ?: @"en", @"failedPermissionHint");
+    }
+    if ([reason isEqualToString:@"macos_privacy_permission_missing"]) {
+        return T(self.language ?: @"en", @"failedPrivacyPermissionHint");
     }
     if ([reason isEqualToString:@"nas_connection_lost"]) {
         return T(self.language ?: @"en", @"failedNASConnectionHint");

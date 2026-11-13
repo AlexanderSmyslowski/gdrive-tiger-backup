@@ -215,7 +215,7 @@ For authenticated SMB, the account name is stored in `NAS_URL`; the password rem
   --authorize-network-url "smb://backup-user@nas.local/Backups"
 ```
 
-Enter the login-Keychain password and choose **Always Allow**. The next no-UI check must succeed before the authenticated schedule is considered unattended. Because unsigned release builds have no stable Developer ID identity, macOS may require this one-time authorization again after an app update. Automatic runs themselves disable all Keychain and mount UI and fail safely instead of opening a dialog.
+Enter the login-Keychain password and choose **Always Allow**. This authorization is only a fallback: scheduled mounts first let NetFS use the password Finder saved, which needs no per-app grant (see "Keeping permissions across source updates"). The direct read authorized here is tied to the exact build and must be repeated after an app update. Automatic runs themselves disable all Keychain and mount UI and fail safely instead of opening a dialog.
 
 For an accountless guest share, omit the account entirely:
 
@@ -551,20 +551,33 @@ make test
 
 A source build is signed ad-hoc by default. macOS identifies an ad-hoc app by
 the hash of that one build, so every update looks like a new program and loses
-two grants: Keychain access to the NAS password and the privacy permission for
-network volumes. Until both are granted again, scheduled NAS backups fail.
+its privacy permission for network volumes and removable media. Until it is
+granted again, scheduled backups fail.
 
-Create a local signing identity once to keep both grants across updates:
+Create a local signing identity once to keep that permission across updates:
 
 ```bash
 ./scripts/local-signing-identity.sh create
 ```
 
 `make build` and `./install.sh` then sign with it automatically. macOS asks
-once for permission when `codesign` first uses the key. The first build signed
-this way still needs both grants one last time, because the app's identity
-changes from ad-hoc to the certificate. The identity is self-signed, valid only
-on the Mac that created it, and unrelated to Apple notarization.
+once for permission when `codesign` first uses the key. The identity is
+self-signed, valid only on the Mac that created it, and unrelated to Apple
+notarization.
+
+For unattended runs, turn on **Full Disk Access** for GDrive Backup Tiger once
+in System Settings > Privacy & Security. It covers network volumes and
+removable media, and with the stable signature it survives updates, so no
+access dialog can appear in the middle of a nightly run. If the permission is
+missing, the run stops at once with `macos_privacy_permission_missing` and a
+notification that names this setting.
+
+The NAS password needs no per-update grant. Scheduled mounts first let NetFS
+use the password Finder saved: that Keychain item belongs to Apple's NetAuth
+service and is usable without a dialog. Reading the item directly would need a
+grant that macOS ties to the exact build, because Keychain partitions of apps
+without an Apple team ID are per-build hashes even with a stable certificate.
+That direct read is only the fallback.
 
 Build a local installer package:
 

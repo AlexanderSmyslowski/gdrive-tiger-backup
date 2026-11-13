@@ -268,6 +268,9 @@
     } else if ([lastRun[@"reason"] isEqualToString:@"destination_permission_denied"]) {
         lastDetail = [NSString stringWithFormat:@"%@ · %@", lastDetail,
             T(self.language ?: @"en", @"failedPermissionHint")];
+    } else if ([lastRun[@"reason"] isEqualToString:@"macos_privacy_permission_missing"]) {
+        lastDetail = [NSString stringWithFormat:@"%@ · %@", lastDetail,
+            T(self.language ?: @"en", @"failedPrivacyPermissionHint")];
     }
     [self applyStatus:lastHealthy ? @"ready" : @"failure" detail:lastDetail row:4];
 

@@ -7,10 +7,11 @@ typedef NSData * _Nullable (^GDTNASCredentialLookup)(
     NSString *account,
     NSString *path,
     BOOL allowUserInteraction);
+// A nil passwordData for an account asks NetFS to resolve the stored password.
 typedef int (^GDTNASMountOperation)(
     NSURL *url,
     NSString *account,
-    NSData *passwordData);
+    NSData * _Nullable passwordData);
 typedef int (^GDTNetworkMountCLIHandler)(
     NSString *urlString,
     BOOL authorizeCredential);

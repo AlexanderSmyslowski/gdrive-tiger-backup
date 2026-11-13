@@ -1901,6 +1901,56 @@ test_nas_auto_mount_transitions_to_a_writable_share() {
   fi
 }
 
+test_nas_privacy_denial_names_the_macos_grant() {
+  local name="a macOS privacy denial on the NAS names the missing grant before any copy"
+  local status summary log_text fake_ls
+  prepare_test_environment
+  fake_ls="$TEST_HOME/fake-ls-denied"
+  # The fake script must expand its own arguments when it runs.
+  # shellcheck disable=SC2016
+  printf '%s\n' '#!/bin/bash' \
+    'printf "ls: %s: Operation not permitted\n" "${@: -1}" >&2' 'exit 1' >"$fake_ls"
+  chmod +x "$fake_ls"
+
+  GDRIVE_BACKUP_LS_BIN="$fake_ls" run_backup
+  status=$?
+  summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+  log_text="$(cat "$TEST_HOME/Library/Logs/gdrive-backup.log" 2>/dev/null || true)"
+
+  if [[ "$status" != "0" && ! -e "$TEST_HOME/rclone-started" &&
+        "$summary" == *$'reason=macos_privacy_permission_missing\n'* &&
+        "$log_text" == *"Voller Festplattenzugriff"* ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status summary=${summary//$'\n'/,})"
+  fi
+}
+
+test_nas_privacy_probe_timeout_is_retryable() {
+  local name="a NAS listing blocked by an open macOS dialog is bounded and retryable"
+  local status summary fake_ls started finished
+  prepare_test_environment
+  fake_ls="$TEST_HOME/fake-ls-blocked"
+  printf '%s\n' '#!/bin/bash' 'exec /bin/sleep 30' >"$fake_ls"
+  chmod +x "$fake_ls"
+  started="$(date +%s)"
+
+  GDRIVE_BACKUP_LS_BIN="$fake_ls" \
+    GDRIVE_BACKUP_NAS_PRIVACY_PROBE_TIMEOUT_SECONDS=1 \
+    run_backup
+  status=$?
+  finished="$(date +%s)"
+  summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+
+  if [[ "$status" != "0" && ! -e "$TEST_HOME/rclone-started" &&
+        $(( finished - started )) -lt 20 &&
+        "$summary" == *$'reason=destination_unreadable\n'* ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status seconds=$(( finished - started )) summary=${summary//$'\n'/,})"
+  fi
+}
+
 test_nas_auto_mount_not_ready_is_retryable() {
   local name="automatic NAS mount timeout publishes the retryable readiness reason"
   local status summary visible_file
@@ -2959,6 +3009,8 @@ test_lost_nas_mount_is_classified_and_stops_followup_copies
 test_nas_mount_waits_until_it_is_writable
 test_nas_auto_mount_transitions_to_a_writable_share
 test_nas_auto_mount_not_ready_is_retryable
+test_nas_privacy_denial_names_the_macos_grant
+test_nas_privacy_probe_timeout_is_retryable
 test_hung_nas_mount_command_is_bounded
 test_unavailable_nas_mount_has_retryable_reason
 test_permanent_nas_permission_failure_is_not_retryable

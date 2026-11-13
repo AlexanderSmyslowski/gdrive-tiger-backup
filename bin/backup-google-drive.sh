@@ -305,6 +305,12 @@ NAS_FILE_TIMEOUT_SECONDS="${GDRIVE_BACKUP_NAS_FILE_TIMEOUT_SECONDS-60}"
 if [[ ! "$NAS_FILE_TIMEOUT_SECONDS" =~ ^[1-9][0-9]{0,3}$ ]]; then
   NAS_FILE_TIMEOUT_SECONDS=60
 fi
+# Upper bound for the directory listing that detects a missing macOS privacy
+# grant for network volumes before any backup work starts.
+NAS_PRIVACY_PROBE_TIMEOUT_SECONDS="${GDRIVE_BACKUP_NAS_PRIVACY_PROBE_TIMEOUT_SECONDS-30}"
+if [[ ! "$NAS_PRIVACY_PROBE_TIMEOUT_SECONDS" =~ ^[1-9][0-9]{0,3}$ ]]; then
+  NAS_PRIVACY_PROBE_TIMEOUT_SECONDS=30
+fi
 # A run that writes nothing to its log for this long is treated as hung and
 # terminated, so it cannot hold the backup lock indefinitely. 0 disables it.
 STALL_SECONDS="${GDRIVE_BACKUP_STALL_SECONDS-2700}"
@@ -320,6 +326,7 @@ IOREG_BIN="${GDRIVE_BACKUP_IOREG-/usr/sbin/ioreg}"
 OSASCRIPT_BIN="${GDRIVE_BACKUP_OSASCRIPT-/usr/bin/osascript}"
 MOUNT_BIN="${GDRIVE_BACKUP_MOUNT_BIN-/sbin/mount}"
 CMP_BIN="${GDRIVE_BACKUP_CMP_BIN-/usr/bin/cmp}"
+LS_BIN="${GDRIVE_BACKUP_LS_BIN-/bin/ls}"
 ENCRYPTED_VOLUME_REAL=""
 ENCRYPTED_VOLUME_DEVICE=""
 ENCRYPTED_VOLUME_UUID=""
@@ -4438,7 +4445,45 @@ ensure_nas_destination() {
     return 1
   fi
 
+  if [[ "$DRY_RUN" == "0" ]] && ! check_nas_privacy_access; then
+    return 1
+  fi
+
   log "NAS-Ziel bereit: mount=$NAS_MOUNT ziel=$DEST_ROOT"
+  return 0
+}
+
+# macOS asks once per app before it may read files on a network volume. While
+# that grant is missing every read fails with EPERM, and while its dialog is
+# open every read blocks. Both used to surface minutes later as an unreadable
+# codec manifest. One bounded listing names the real cause up front instead.
+check_nas_privacy_access() {
+  local probe_dir="$NAS_MOUNT" error_file status
+
+  [[ -d "$DEST_ROOT" && ! -L "$DEST_ROOT" ]] && probe_dir="$DEST_ROOT"
+  error_file="$(mktemp "${TMPDIR:-/tmp}/gdrive-privacy-probe.XXXXXX")" || return 0
+  run_with_timeout "$NAS_PRIVACY_PROBE_TIMEOUT_SECONDS" \
+    "$LS_BIN" -a "$probe_dir" >/dev/null 2>"$error_file"
+  status=$?
+  if (( status == 0 )); then
+    cleanup_temp_file "$error_file"
+    return 0
+  fi
+  if /usr/bin/grep -Fq "Operation not permitted" "$error_file"; then
+    cleanup_temp_file "$error_file"
+    RUN_STATE_REASON="macos_privacy_permission_missing"
+    log "FEHLER: macOS erlaubt GDrive Backup Tiger keinen Zugriff auf Dateien auf dem NAS. Freigabe einmalig erteilen: Systemeinstellungen > Datenschutz & Sicherheit > Voller Festplattenzugriff > GDrive Backup Tiger einschalten."
+    return 1
+  fi
+  cleanup_temp_file "$error_file"
+  if (( status > 128 )); then
+    # Killed by the timeout: an unanswered macOS access dialog or a NAS that
+    # does not answer. Both are worth a later retry.
+    RUN_STATE_REASON="destination_unreadable"
+    log "FEHLER: Der NAS-Ordner antwortet nicht. Falls ein macOS-Fenster nach Zugriff auf ein Netzwerkvolume fragt, bitte 'Erlauben' waehlen; dauerhaft hilft 'Voller Festplattenzugriff' fuer GDrive Backup Tiger."
+    return 1
+  fi
+  # Other listing errors are judged by the existing destination checks.
   return 0
 }
 

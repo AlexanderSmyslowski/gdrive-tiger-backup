@@ -52,6 +52,8 @@ static BOOL NetFSGuestModeWasSet = NO;
 static BOOL NetFSNoUIWasSet = NO;
 static BOOL NetFSReceivedEmptyCredentials = NO;
 static NSUInteger NetFSMountCallCount = 0;
+static NSUInteger NetFSSystemCredentialCallCount = 0;
+static int TestSystemCredentialMountStatus = EAUTH;
 
 int NetFSMountURLSync(
     CFURLRef url,
@@ -73,6 +75,11 @@ int NetFSMountURLSync(
     NSString *password = (__bridge NSString *)passwd;
     NetFSReceivedEmptyCredentials = account.length == 0 && password.length == 0;
     NetFSMountCallCount++;
+    if (account.length && !passwd) {
+        // An account without a password asks NetFS for the stored credential.
+        NetFSSystemCredentialCallCount++;
+        return TestSystemCredentialMountStatus;
+    }
     return TestMountStatus;
 }
 
@@ -97,6 +104,7 @@ int main(void) {
     @autoreleasepool {
         __block BOOL lookupCalled = NO;
         __block BOOL mountCalled = NO;
+        __block BOOL systemCredentialTried = NO;
         NSMutableData *password = [[@"test-secret"
             dataUsingEncoding:NSUTF8StringEncoding] mutableCopy];
         int result = GDTHandleSMBURLWithHandlers(
@@ -113,6 +121,12 @@ int main(void) {
                 return password;
             },
             ^int(NSURL *url, NSString *account, NSData *passwordData) {
+                if (!passwordData) {
+                    Assert(!lookupCalled,
+                        @"the system credential is tried before our own Keychain read");
+                    systemCredentialTried = YES;
+                    return EAUTH;
+                }
                 mountCalled = YES;
                 Assert([url.absoluteString isEqualToString:
                     @"smb://backup-user@nas.local/Backups"],
@@ -124,10 +138,35 @@ int main(void) {
                     @"the credential reaches the mount operation only in memory");
                 return 0;
             });
-        Assert(result == 0 && lookupCalled && mountCalled,
-            @"a complete account-qualified SMB request mounts successfully");
+        Assert(result == 0 && systemCredentialTried && lookupCalled && mountCalled,
+            @"a failed system-credential mount falls back to the Keychain credential");
         Assert(DataIsZeroed(password),
             @"credential bytes are cleared after the mount operation");
+
+        __block BOOL systemOnlyLookupCalled = NO;
+        __block NSUInteger systemOnlyMountCount = 0;
+        result = GDTHandleSMBURLWithHandlers(
+            @"smb://backup-user@nas.local/Backups",
+            NO,
+            YES,
+            ^NSData *(NSString *host, NSString *account, NSString *path,
+                      BOOL allowUserInteraction) {
+                (void)host;
+                (void)account;
+                (void)path;
+                (void)allowUserInteraction;
+                systemOnlyLookupCalled = YES;
+                return [NSData data];
+            },
+            ^int(NSURL *url, NSString *account, NSData *passwordData) {
+                (void)url;
+                systemOnlyMountCount++;
+                Assert([account isEqualToString:@"backup-user"] && !passwordData,
+                    @"the system-credential mount passes the account without a password");
+                return 0;
+            });
+        Assert(result == 0 && systemOnlyMountCount == 1 && !systemOnlyLookupCalled,
+            @"a successful system-credential mount never reads the Keychain itself");
 
         __block BOOL guestLookupCalled = NO;
         __block BOOL guestMountCalled = NO;
@@ -364,8 +403,12 @@ int main(void) {
         Assert([lookupDiagnostic containsString:@"stage=keychain_lookup status=-25308"] &&
             ![lookupDiagnostic containsString:@"private"],
             @"keychain failures report their OS status without account, server or share");
-        Assert(NetFSMountCallCount == mountsBeforeFailure && TestLookupCount == 1,
-            @"denied keychain interaction stops before fallback or network mounting");
+        Assert([lookupDiagnostic containsString:
+                [NSString stringWithFormat:@"stage=system_credential_mount status=%d", EAUTH]],
+            @"a failed system-credential mount is reported before the Keychain fallback");
+        Assert(NetFSMountCallCount == mountsBeforeFailure + 1 &&
+                   NetFSSystemCredentialCallCount == 1 && TestLookupCount == 1,
+            @"denied keychain interaction stops after the system attempt without a second mount");
         TestLookupStatus = errSecItemNotFound;
         TestLookupCount = 0;
         Assert([CaptureMountFailure(@"smb://private-account@private-host/private-share")
