@@ -319,6 +319,7 @@ if [[ ! "$STALL_SECONDS" =~ ^[0-9]{1,6}$ ]]; then
 fi
 STALL_SECONDS=$((10#$STALL_SECONDS))
 STALL_WATCHDOG_PID=""
+NAS_WATCHDOG_PID=""
 ENCRYPTION="$(lowercase "${GDRIVE_BACKUP_ENCRYPTION-none}")"
 CRYPT_REMOTE="${GDRIVE_BACKUP_CRYPT_REMOTE-}"
 DISKUTIL_BIN="${GDRIVE_BACKUP_DISKUTIL-/usr/sbin/diskutil}"
@@ -2813,6 +2814,10 @@ cleanup() {
     kill "$STALL_WATCHDOG_PID" 2>/dev/null || true
     STALL_WATCHDOG_PID=""
   fi
+  if [[ -n "$NAS_WATCHDOG_PID" ]]; then
+    kill "$NAS_WATCHDOG_PID" 2>/dev/null || true
+    NAS_WATCHDOG_PID=""
+  fi
   if [[ -n "$RUN_TMPDIR" && -d "$RUN_TMPDIR" && ! -L "$RUN_TMPDIR" ]]; then
     /bin/rm -rf -- "$RUN_TMPDIR" 2>/dev/null || true
   fi
@@ -2853,6 +2858,55 @@ start_stall_watchdog() {
     done
   ) >/dev/null 2>&1 &
   STALL_WATCHDOG_PID=$!
+}
+
+# A vanished SMB mount does not stop a running rclone copy: it fails every
+# remaining file one by one, which keeps the log busy for hours and therefore
+# hides the hang from the stall watchdog. This watchdog checks the mount once
+# per interval and, after three consecutive misses, ends only the engine's own
+# rclone processes. The engine's existing post-transfer validation then
+# records nas_connection_lost and skips the remaining areas.
+list_descendant_pids() {
+  local child
+  for child in $(/usr/bin/pgrep -P "$1" 2>/dev/null); do
+    printf '%s\n' "$child"
+    list_descendant_pids "$child"
+  done
+}
+
+start_nas_watchdog() {
+  local engine=$$ interval="${GDRIVE_BACKUP_NAS_WATCH_SECONDS:-60}"
+
+  [[ "$BACKUP_TARGET" == "nas" && "$DRY_RUN" == "0" ]] || return 0
+  [[ "$interval" =~ ^[1-9][0-9]{0,3}$ ]] || interval=60
+  (
+    # The watchdog must not keep the backup lock alive.
+    exec 9>&-
+    misses=0
+    while kill -0 "$engine" 2>/dev/null; do
+      /bin/sleep "$interval"
+      if nas_mount_is_verified; then
+        misses=0
+        continue
+      fi
+      misses=$((misses + 1))
+      (( misses >= 3 )) || continue
+      stopped=0
+      for pid in $(list_descendant_pids "$engine"); do
+        command_line="$(/bin/ps -o command= -p "$pid" 2>/dev/null)" || continue
+        case "$command_line" in
+          rclone\ *|*/rclone\ *)
+            kill -TERM "$pid" 2>/dev/null && stopped=1
+            ;;
+        esac
+      done
+      if (( stopped == 1 )); then
+        printf '[%s] FEHLER: NAS-Verbindung ist seit %s Pruefungen getrennt; die laufende Kopie wird beendet.\n' \
+          "$(/bin/date '+%Y-%m-%d %H:%M:%S%z')" "$misses" >>"$LOG"
+      fi
+    done
+  ) >/dev/null 2>&1 &
+  NAS_WATCHDOG_PID=$!
 }
 
 # Create this run's scratch directory and drop directories that a killed
@@ -4688,6 +4742,7 @@ fi
 rotate_log_if_needed "$LOG_MAX_BYTES"
 prepare_run_tmpdir
 start_stall_watchdog
+start_nas_watchdog
 
 if [[ "$CATCHUP_QUIET" == "1" ]]; then
   # Probe before any progress or "running" record is published; a quiet skip

@@ -136,6 +136,14 @@ case "${1:-}" in
     if [[ -n "${FAKE_RCLONE_STARTED_FILE:-}" ]]; then
       : >"$FAKE_RCLONE_STARTED_FILE"
     fi
+    if [[ -n "${FAKE_RCLONE_HIDE_MOUNT_FILE:-}" ]]; then
+      # Simulates an SMB mount that vanishes while rclone keeps failing files.
+      : >"$FAKE_RCLONE_HIDE_MOUNT_FILE"
+      while :; do
+        printf '%s\n' 'ERROR : file: Failed to copy: mkdir /Volumes/share: permission denied'
+        /bin/sleep 1
+      done
+    fi
     if [[ "${FAKE_RCLONE_SLEEP_SECONDS:-0}" != "0" ]]; then
       /bin/sleep "$FAKE_RCLONE_SLEEP_SECONDS"
     fi
@@ -211,6 +219,10 @@ visible="${FAKE_NAS_MOUNT_VISIBLE:-1}"
 if [[ -n "${FAKE_NAS_MOUNT_VISIBLE_FILE:-}" &&
       -e "$FAKE_NAS_MOUNT_VISIBLE_FILE" ]]; then
   visible=1
+fi
+if [[ -n "${FAKE_NAS_MOUNT_HIDDEN_FILE:-}" &&
+      -e "$FAKE_NAS_MOUNT_HIDDEN_FILE" ]]; then
+  visible=0
 fi
 if [[ "$visible" != "1" ]]; then
   exit 0
@@ -1951,6 +1963,32 @@ test_nas_privacy_probe_timeout_is_retryable() {
   fi
 }
 
+test_vanished_nas_mount_stops_a_running_copy() {
+  local name="a NAS mount that vanishes during a copy ends the copy instead of failing every file"
+  local status summary log_text started finished hidden
+  prepare_test_environment
+  hidden="$TEST_HOME/nas-hidden"
+  started="$(date +%s)"
+
+  FAKE_NAS_MOUNT_HIDDEN_FILE="$hidden" \
+    FAKE_RCLONE_HIDE_MOUNT_FILE="$hidden" \
+    GDRIVE_BACKUP_NAS_WATCH_SECONDS=1 \
+    GDRIVE_BACKUP_NAS_RECHECK_SECONDS=0 \
+    run_backup
+  status=$?
+  finished="$(date +%s)"
+  summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+  log_text="$(cat "$TEST_HOME/Library/Logs/gdrive-backup.log" 2>/dev/null || true)"
+
+  if [[ "$status" != "0" && $(( finished - started )) -lt 30 &&
+        "$summary" == *$'reason=nas_connection_lost\n'* &&
+        "$log_text" == *"die laufende Kopie wird beendet"* ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status seconds=$(( finished - started )) summary=${summary//$'\n'/,})"
+  fi
+}
+
 test_nas_auto_mount_not_ready_is_retryable() {
   local name="automatic NAS mount timeout publishes the retryable readiness reason"
   local status summary visible_file
@@ -3011,6 +3049,7 @@ test_nas_auto_mount_transitions_to_a_writable_share
 test_nas_auto_mount_not_ready_is_retryable
 test_nas_privacy_denial_names_the_macos_grant
 test_nas_privacy_probe_timeout_is_retryable
+test_vanished_nas_mount_stops_a_running_copy
 test_hung_nas_mount_command_is_bounded
 test_unavailable_nas_mount_has_retryable_reason
 test_permanent_nas_permission_failure_is_not_retryable

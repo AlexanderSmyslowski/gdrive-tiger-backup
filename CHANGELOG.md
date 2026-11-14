@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Mount the NAS without any per-update Keychain grant: scheduled mounts first let NetFS use the password Finder saved, and read the Keychain item directly only as a fallback.
+- Stop a running copy within about three minutes when the NAS mount vanishes, instead of letting rclone fail every remaining file for hours while the busy log hides the hang; the run ends with `nas_connection_lost` and is retried later.
 - Detect a missing macOS privacy permission for the NAS before any copy: the run stops at once with `macos_privacy_permission_missing` and a notification that points to Full Disk Access, and a listing blocked by an open access dialog is bounded and retried, instead of failing minutes later with an unreadable codec manifest.
 - Catch up a missed daily backup automatically. The daily launch agent now fires hourly; the engine runs at most one successful backup per 20:00 window and destination, exits silently once the window is complete, and otherwise probes quietly and backs up as soon as the NAS or disk is reachable again (at most four real attempts per window). Existing single-entry daily agents are rewritten on the next app start.
 - Track the last success per destination, so a success on an attached disk no longer satisfies the daily watchdog of a scheduled NAS destination.
