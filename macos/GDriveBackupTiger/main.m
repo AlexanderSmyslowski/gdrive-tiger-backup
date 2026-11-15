@@ -864,6 +864,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, copy) NSArray<NSTextField *> *rowTitleLabels;
 @property(nonatomic, copy) NSArray<NSTextField *> *rowDetailLabels;
 @property(nonatomic, copy) NSArray<NSTextField *> *rowSymbolLabels;
+/// Offers the one next step for a failed row, e.g. "Connect Google".
+@property(nonatomic, strong) NSButton *actionButton;
+@property(nonatomic, copy) NSString *currentAction;
+@property(nonatomic, copy) void (^actionHandler)(NSString *action);
 @end
 
 @implementation TigerSetupHealthView
@@ -962,8 +966,46 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.checkButton.accessibilityRole = NSAccessibilityButtonRole;
     self.checkButton.accessibilityLabel = self.checkButton.title;
     [self addSubview:self.checkButton];
+
+    self.actionButton = [[NSButton alloc] initWithFrame:NSZeroRect];
+    self.actionButton.bezelStyle = NSBezelStyleRounded;
+    self.actionButton.controlSize = NSControlSizeSmall;
+    self.actionButton.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
+    self.actionButton.target = self;
+    self.actionButton.action = @selector(performRowAction:);
+    self.actionButton.hidden = YES;
+    [self addSubview:self.actionButton];
     self.language = @"en";
     return self;
+}
+
+- (void)performRowAction:(id)sender {
+    (void)sender;
+    if (self.currentAction.length && self.actionHandler) {
+        self.actionHandler(self.currentAction);
+    }
+}
+
+- (void)showAction:(NSString *)action titleKey:(NSString *)titleKey row:(NSUInteger)row {
+    self.currentAction = action;
+    BOOL visible = action.length && titleKey.length && row < self.rowDetailLabels.count;
+    self.actionButton.hidden = !visible;
+    CGFloat detailWidth = 276.0;
+    if (visible) {
+        self.actionButton.title = T(self.language ?: @"en", titleKey);
+        self.actionButton.accessibilityLabel = self.actionButton.title;
+        CGFloat width = MIN(170.0, ceil([self.actionButton.title sizeWithAttributes:
+            @{NSFontAttributeName: self.actionButton.font}].width) + 28.0);
+        CGFloat y = 32.0 + row * 25.0 - 2.0;
+        self.actionButton.frame = NSMakeRect(NSWidth(self.bounds) - width - 8.0, y, width, 22.0);
+        detailWidth = MAX(120.0, NSMinX(self.actionButton.frame) - 8.0 - 172.0);
+    }
+    for (NSUInteger index = 0; index < self.rowDetailLabels.count; index++) {
+        NSTextField *detail = self.rowDetailLabels[index];
+        NSRect frame = detail.frame;
+        frame.size.width = (visible && index == row) ? detailWidth : 276.0;
+        detail.frame = frame;
+    }
 }
 
 - (void)startCheck:(id)sender {
@@ -986,6 +1028,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
         [self applySnapshot:self.snapshot ?: @{}];
         return;
     }
+    [self showAction:nil titleKey:nil row:0];
 
     for (NSUInteger index = 0; index < self.rowSymbolLabels.count; index++) {
         NSTextField *symbolLabel = self.rowSymbolLabels[index];
@@ -1069,6 +1112,18 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
         detailLabel.toolTip = detail;
         detailLabel.accessibilityLabel = [NSString stringWithFormat:@"%@: %@",
             titleLabel.stringValue, detail];
+    }
+
+    NSDictionary *dependencies = [snapshot[@"dependencies"] isKindOfClass:NSDictionary.class]
+        ? snapshot[@"dependencies"] : @{};
+    NSDictionary *remote = [snapshot[@"remote"] isKindOfClass:NSDictionary.class]
+        ? snapshot[@"remote"] : @{};
+    if ([dependencies[@"status"] isEqual:@"failure"]) {
+        [self showAction:@"copyInstallCommand" titleKey:@"setupActionCopyInstall" row:0];
+    } else if ([remote[@"action"] isEqual:@"configureRemote"]) {
+        [self showAction:@"connectGoogleDrive" titleKey:@"setupActionConnectDrive" row:1];
+    } else {
+        [self showAction:nil titleKey:nil row:0];
     }
 }
 
@@ -1706,6 +1761,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, strong) NSTextField *cryptRemoteField;
 @property(nonatomic, strong) NSPopUpButton *mountedNasPopup;
 @property(nonatomic, strong) NSPopUpButton *discoveredNasPopup;
+@property(nonatomic, copy) NSArray<NSView *> *nasSetupViews;
 @property(nonatomic, strong) NSPopUpButton *schedulePopup;
 @property(nonatomic, strong) NSButton *notificationCheckbox;
 @property(nonatomic, strong) NSButton *successNotificationCheckbox;
@@ -1724,6 +1780,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, strong) NSButton *profileRenameButton;
 @property(nonatomic, strong) NSButton *profileDeleteButton;
 @property(nonatomic) BOOL setupHealthCheckInFlight;
+@property(nonatomic) BOOL googleDriveConnectInFlight;
 @property(nonatomic) NSUInteger setupHealthGeneration;
 @property(nonatomic) BOOL manualLaunchPending;
 @property(nonatomic) BOOL dryRunPending;
@@ -1841,6 +1898,27 @@ static BOOL GDTShouldDisplayManualRun(NSTimeInterval manualStartedAt,
     return manualPending || manualStartedAt >= [automaticSummary[@"started_at"] doubleValue];
 }
 
+static NSString *GDTOverviewStorageText(NSDictionary<NSString *, NSNumber *> *capacity,
+                                        BOOL backupExists,
+                                        NSString *language) {
+    if (!capacity) {
+        return T(language, @"overviewUnavailable");
+    }
+    long long freeBytes = capacity[@"freeBytes"].longLongValue;
+    long long totalBytes = capacity[@"totalBytes"].longLongValue;
+    // A share that reports no used space although a backup exists there is
+    // reporting a quota (for example a Time Machine size limit), not the disk.
+    // "X free of X" would suggest that the backup is empty.
+    if (backupExists && totalBytes - freeBytes < 1000000LL) {
+        return T(language, @"overviewStorageNotMeasurable");
+    }
+    NSByteCountFormatter *formatter = [[NSByteCountFormatter alloc] init];
+    formatter.countStyle = NSByteCountFormatterCountStyleDecimal;
+    return [NSString stringWithFormat:T(language, @"overviewFreeOf"),
+        [formatter stringFromByteCount:freeBytes],
+        [formatter stringFromByteCount:totalBytes]];
+}
+
 static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *> *config,
                                              NSString *language) {
     NSString *rawTarget = [config[@"GDRIVE_BACKUP_TARGET"] ?: @"apfs" lowercaseString];
@@ -1857,12 +1935,9 @@ static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *
     if (isNAS) {
         NSURLComponents *components = [NSURLComponents
             componentsWithString:config[@"GDRIVE_BACKUP_NAS_URL"] ?: @""];
-        // Reading only the parsed host keeps SMB user names and passwords out of
-        // the status UI even when the saved URL contains legacy credentials.
-        NSString *host = GDTSafeDestinationLabelComponent(components.host);
-        if (host.length) {
-            [parts addObject:host];
-        }
+        // The host name is network jargon for most users; the share and
+        // folder identify the destination. User names and passwords in a
+        // legacy URL never reach the status UI because only the path is read.
 
         NSString *share = GDTSafeDestinationLabelComponent(components.URL.path);
         while ([share hasPrefix:@"/"]) {
@@ -4595,7 +4670,10 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSString *lastRunDetail = @"";
     if (timestamp.longLongValue > 0) {
         NSDate *date = [NSDate dateWithTimeIntervalSince1970:timestamp.longLongValue];
-        lastRunDetail = [[self overviewDateFormatterWithCalendar:calendar] stringFromDate:date] ?: @"";
+        NSDateFormatter *formatter = [self overviewDateFormatterWithCalendar:calendar];
+        // Match the menu bar wording ("Yesterday, 21:38") for recent runs.
+        formatter.doesRelativeDateFormatting = YES;
+        lastRunDetail = [formatter stringFromDate:date] ?: @"";
     }
 
     NSString *schedule = [config[@"GDRIVE_BACKUP_SCHEDULE"] ?: @"manual" lowercaseString];
@@ -4616,18 +4694,21 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         nextRun = T(language, @"scheduleManual");
     }
 
-    NSString *target = GDTBackupTargetOverviewText(config, language);
+    // A fresh installation has no saved destination and no backup history.
+    // Say so plainly instead of presenting a default destination the user
+    // never chose.
+    BOOL setupNeeded = !config[@"GDRIVE_BACKUP_TARGET"].length && !summary.count;
+    NSString *target = setupNeeded
+        ? T(language, @"overviewNotSetUp")
+        : GDTBackupTargetOverviewText(config, language);
+    if (setupNeeded) {
+        lastRunDetail = T(language, @"overviewSetUpFirst");
+    }
 
     NSDictionary<NSString *, NSNumber *> *capacity =
         GDTStorageCapacityForPath(GDTBackupCapacityPathForConfig(config));
-    NSString *storage = T(language, @"overviewUnavailable");
-    if (capacity) {
-        NSByteCountFormatter *formatter = [[NSByteCountFormatter alloc] init];
-        formatter.countStyle = NSByteCountFormatterCountStyleDecimal;
-        NSString *free = [formatter stringFromByteCount:capacity[@"freeBytes"].longLongValue];
-        NSString *total = [formatter stringFromByteCount:capacity[@"totalBytes"].longLongValue];
-        storage = [NSString stringWithFormat:T(language, @"overviewFreeOf"), free, total];
-    }
+    NSString *storage = GDTOverviewStorageText(
+        capacity, GDTLastSuccessfulBackupForSummary(summary, now) != nil, language);
 
     NSMutableDictionary *snapshot = [@{
         @"status": status,
@@ -4646,7 +4727,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         @"nextRun": nextRun ?: T(language, @"overviewUnavailable"),
         @"automaticBackupsPaused": automaticBackupsPaused ? @"1" : @"0",
         @"target": target,
-        @"storage": storage
+        @"storage": setupNeeded ? T(language, @"overviewUnavailable") : storage,
+        @"setupNeeded": setupNeeded ? @"1" : @"0"
     } mutableCopy];
     [snapshot addEntriesFromDictionary:[self lastSuccessPresentationForRecord:
         GDTLastSuccessfulBackupForSummary(summary, now) calendar:calendar]];
@@ -4674,6 +4756,11 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     view.progressPercent = progressPercent.length ? progressPercent.doubleValue : -1.0;
     view.progressVisible = [snapshot[@"progressVisible"] isEqualToString:@"1"];
     view.backupButton.enabled = !self.overviewLaunchPending && ![status isEqualToString:@"running"];
+    // Before the first setup, "Set up backup" is the one sensible next step,
+    // so it becomes the highlighted default button.
+    BOOL setupNeeded = [snapshot[@"setupNeeded"] isEqualToString:@"1"];
+    view.settingsButton.keyEquivalent = setupNeeded ? @"\r" : @"";
+    view.backupButton.keyEquivalent = setupNeeded ? @"" : @"\r";
     [self refreshAdHocPicker];
 }
 
@@ -5725,7 +5812,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                 return;
             }
             strongSelf.restoreView.entries = entries;
-            strongSelf.restoreView.statusText = entries.count ? @"" :
+            strongSelf.restoreView.statusText = entries.count
+                ? T(strongSelf.language ?: @"en", @"restoreSelectHint") :
                 T(strongSelf.language ?: @"en", @"restoreEmpty");
         });
     });
@@ -6644,7 +6732,63 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     self.setupHealthView.checkHandler = ^{
         [weakSelf runSetupHealthCheck:nil];
     };
+    self.setupHealthView.actionHandler = ^(NSString *action) {
+        [weakSelf performSetupHealthAction:action];
+    };
     [contentView addSubview:self.setupHealthView];
+}
+
+- (void)performSetupHealthAction:(NSString *)action {
+    if (!self.setupHealthChecker) {
+        self.setupHealthChecker = [GDTSetupHealthChecker productionChecker];
+    }
+    GDTSetupHealthChecker *checker = self.setupHealthChecker;
+    NSString *language = self.language ?: @"en";
+
+    if ([action isEqualToString:@"copyInstallCommand"]) {
+        NSDictionary *dependencies = [self.setupHealthView.snapshot[@"dependencies"]
+            isKindOfClass:NSDictionary.class] ? self.setupHealthView.snapshot[@"dependencies"] : @{};
+        NSArray *missing = [dependencies[@"missing"] isKindOfClass:NSArray.class]
+            ? dependencies[@"missing"] : @[];
+        NSString *command = GDTSetupInstallCommand(checker.homebrewAvailable, missing);
+        [NSPasteboard.generalPasteboard clearContents];
+        [NSPasteboard.generalPasteboard setString:command forType:NSPasteboardTypeString];
+        NSURL *terminal = [NSWorkspace.sharedWorkspace
+            URLForApplicationWithBundleIdentifier:@"com.apple.Terminal"];
+        if (terminal) {
+            [NSWorkspace.sharedWorkspace openApplicationAtURL:terminal
+                configuration:NSWorkspaceOpenConfiguration.configuration
+            completionHandler:nil];
+        }
+        self.statusField.stringValue = T(language, @"setupInstallCopied");
+        self.statusField.toolTip = command;
+        return;
+    }
+
+    if ([action isEqualToString:@"connectGoogleDrive"]) {
+        if (self.googleDriveConnectInFlight) {
+            return;
+        }
+        self.googleDriveConnectInFlight = YES;
+        self.setupHealthView.actionButton.enabled = NO;
+        self.statusField.stringValue = T(language, @"setupConnectRunning");
+        NSMutableDictionary<NSString *, NSString *> *config = [[self savedSetupConfig] mutableCopy];
+        [config addEntriesFromDictionary:[self currentSetupUpdates]];
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            NSDictionary<NSString *, id> *result = [checker connectGoogleDriveForConfig:config];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                typeof(self) strongSelf = weakSelf;
+                if (!strongSelf) return;
+                strongSelf.googleDriveConnectInFlight = NO;
+                strongSelf.setupHealthView.actionButton.enabled = YES;
+                BOOL connected = [result[@"status"] integerValue] == 0;
+                strongSelf.statusField.stringValue = T(strongSelf.language ?: @"en",
+                    connected ? @"setupConnectDone" : @"setupConnectFailed");
+                [strongSelf runSetupHealthCheck:nil];
+            });
+        });
+    }
 }
 
 - (void)rebuildSetupWindowPreservingVisibility {
@@ -6766,38 +6910,53 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     self.cryptRemoteField.accessibilityHelp = self.cryptRemoteField.toolTip;
     [content addSubview:self.cryptRemoteField];
 
-    [content addSubview:[self label:T(self.language, @"mountedNas") frame:NSMakeRect(34, 376, 124, 22)]];
+    NSMutableArray<NSView *> *nasViews = [NSMutableArray array];
+    [nasViews addObject:[self label:T(self.language, @"mountedNas") frame:NSMakeRect(34, 376, 124, 22)]];
     self.mountedNasPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 372, 300, 28)];
     self.mountedNasPopup.target = self;
     self.mountedNasPopup.action = @selector(selectMountedNAS:);
-    [content addSubview:self.mountedNasPopup];
-    [content addSubview:[self button:T(self.language, @"refresh") frame:NSMakeRect(474, 372, 130, 28) action:@selector(refreshMountedNAS:)]];
+    [nasViews addObject:self.mountedNasPopup];
+    [nasViews addObject:[self button:T(self.language, @"refresh") frame:NSMakeRect(474, 372, 130, 28) action:@selector(refreshMountedNAS:)]];
 
-    [content addSubview:[self label:T(self.language, @"nasUrl") frame:NSMakeRect(34, 414, 124, 22)]];
+    [nasViews addObject:[self label:T(self.language, @"nasUrl") frame:NSMakeRect(34, 414, 124, 22)]];
     self.nasURLField = [self fieldWithFrame:NSMakeRect(164, 410, 300, 26)];
     self.nasURLField.stringValue = config[@"GDRIVE_BACKUP_NAS_URL"] ?: @"";
     self.nasURLField.delegate = self;
-    [content addSubview:self.nasURLField];
-    [content addSubview:[self button:T(self.language, @"openFinder") frame:NSMakeRect(474, 409, 130, 28) action:@selector(openNASInFinder:)]];
+    [nasViews addObject:self.nasURLField];
+    [nasViews addObject:[self button:T(self.language, @"openFinder") frame:NSMakeRect(474, 409, 130, 28) action:@selector(openNASInFinder:)]];
 
-    [content addSubview:[self label:T(self.language, @"nasMount") frame:NSMakeRect(34, 450, 124, 22)]];
+    [nasViews addObject:[self label:T(self.language, @"nasMount") frame:NSMakeRect(34, 450, 124, 22)]];
     self.nasMountField = [self fieldWithFrame:NSMakeRect(164, 446, 300, 26)];
     self.nasMountField.stringValue = config[@"GDRIVE_BACKUP_NAS_MOUNT"] ?: @"";
     self.nasMountField.delegate = self;
-    [content addSubview:self.nasMountField];
+    [nasViews addObject:self.nasMountField];
 
-    [content addSubview:[self label:T(self.language, @"nasSubdir") frame:NSMakeRect(34, 486, 124, 22)]];
+    [nasViews addObject:[self label:T(self.language, @"nasSubdir") frame:NSMakeRect(34, 486, 124, 22)]];
     self.nasSubdirField = [self fieldWithFrame:NSMakeRect(164, 482, 300, 26)];
     self.nasSubdirField.stringValue = config[@"GDRIVE_BACKUP_NAS_SUBDIR"] ?: @"GoogleDrive-Backup";
     self.nasSubdirField.delegate = self;
-    [content addSubview:self.nasSubdirField];
+    [nasViews addObject:self.nasSubdirField];
+    // Plain-language help for the technical NAS fields.
+    self.nasURLField.toolTip = T(self.language, @"nasUrlTip");
+    self.nasMountField.toolTip = T(self.language, @"nasMountTip");
+    self.nasSubdirField.toolTip = T(self.language, @"nasSubdirTip");
+    for (NSTextField *field in @[self.nasURLField, self.nasMountField, self.nasSubdirField]) {
+        field.accessibilityHelp = field.toolTip;
+    }
 
     self.discoveredNasPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 518, 300, 28)];
-    [self.discoveredNasPopup addItemWithTitle:@"Bonjour"];
+    [self.discoveredNasPopup addItemWithTitle:T(self.language ?: @"en", @"discoveredNasPlaceholder")];
     self.discoveredNasPopup.target = self;
     self.discoveredNasPopup.action = @selector(selectDiscoveredNAS:);
-    [content addSubview:self.discoveredNasPopup];
-    [content addSubview:[self button:T(self.language, @"discover") frame:NSMakeRect(474, 518, 130, 28) action:@selector(discoverNAS:)]];
+    [nasViews addObject:self.discoveredNasPopup];
+    [nasViews addObject:[self button:T(self.language, @"discover") frame:NSMakeRect(474, 518, 130, 28) action:@selector(discoverNAS:)]];
+
+    for (NSView *view in nasViews) {
+        [content addSubview:view];
+    }
+    // NAS fields only matter for a NAS destination; an external disk user
+    // should not have to wonder what a mount point or SMB address is.
+    self.nasSetupViews = nasViews;
 
     [content addSubview:[self label:T(self.language, @"schedule") frame:NSMakeRect(34, 580, 124, 22)]];
     self.schedulePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(164, 576, 300, 28)];
@@ -6847,6 +7006,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     [content addSubview:self.statusField];
 
     NSButton *saveButton = [self button:T(self.language, @"save") frame:NSMakeRect(312, 673, 88, 30) action:@selector(saveSetup:)];
+    saveButton.toolTip = T(self.language, @"saveTip");
     self.setupDryRunButton = [self button:T(self.language, @"dryRun") frame:NSMakeRect(408, 673, 112, 30) action:@selector(startDryRun:)];
     self.setupDryRunButton.toolTip = T(self.language, @"dryRunTip");
     self.setupBackupButton = [self button:T(self.language, @"backupNow") frame:NSMakeRect(528, 673, 96, 30) action:@selector(startBackupNow:)];
@@ -6854,11 +7014,18 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     [content addSubview:saveButton];
     [content addSubview:self.setupDryRunButton];
     [content addSubview:self.setupBackupButton];
+    [self updateNASSetupVisibility];
     [self updateSetupActionAvailability];
 
     [self.setupWindow makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
     [self refreshMountedNASAllowingTargetAutoSelection:!preserveConfiguredAPFSTarget];
+    // Check an existing setup right away instead of greeting the user with
+    // "Not checked yet" on every row. Only inside the running app, so test
+    // harnesses that build the window never start real rclone checks.
+    if (configuredTarget.length && NSApp.isRunning) {
+        [self runSetupHealthCheck:nil];
+    }
 }
 
 - (void)targetChanged:(id)sender {
@@ -6899,11 +7066,21 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     self.cryptRemoteField.enabled = usesRcloneCrypt;
     self.encryptionPopup.toolTip = [encryption isEqualToString:@"apfs"]
         ? T(self.language ?: @"en", @"encryptionAPFSTip")
-        : (usesRcloneCrypt ? T(self.language ?: @"en", @"encryptionRcloneTip") : @"");
+        : (usesRcloneCrypt ? T(self.language ?: @"en", @"encryptionRcloneTip")
+                           : T(self.language ?: @"en", @"encryptionNoneTip"));
     self.encryptionPopup.accessibilityHelp = self.encryptionPopup.toolTip;
 }
 
+- (void)updateNASSetupVisibility {
+    NSString *target = self.targetPopup.selectedItem.representedObject ?: @"apfs";
+    BOOL isNAS = [target isEqualToString:@"nas"];
+    for (NSView *view in self.nasSetupViews) {
+        view.hidden = !isNAS;
+    }
+}
+
 - (void)updateTargetControls {
+    [self updateNASSetupVisibility];
     [self updateEncryptionControls];
     [self updateDestinationPreview];
     [self invalidateSetupHealth:nil];
@@ -7077,14 +7254,14 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 - (void)discoverNAS:(id)sender {
     self.statusField.stringValue = T(self.language, @"statusSearching");
     [self.discoveredNasPopup removeAllItems];
-    [self.discoveredNasPopup addItemWithTitle:@"Bonjour"];
+    [self.discoveredNasPopup addItemWithTitle:T(self.language ?: @"en", @"discoveredNasPlaceholder")];
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSArray<NSDictionary<NSString *, NSString *> *> *services = DiscoverBonjourStorage();
         dispatch_async(dispatch_get_main_queue(), ^{
             [self.discoveredNasPopup removeAllItems];
             if (!services.count) {
-                [self.discoveredNasPopup addItemWithTitle:@"Bonjour"];
+                [self.discoveredNasPopup addItemWithTitle:T(self.language ?: @"en", @"discoveredNasPlaceholder")];
             }
             for (NSDictionary<NSString *, NSString *> *service in services) {
                 NSString *title = [NSString stringWithFormat:@"%@: %@", service[@"scheme"], service[@"name"]];

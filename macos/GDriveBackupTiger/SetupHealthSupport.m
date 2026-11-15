@@ -179,7 +179,8 @@ static NSString *GDTExecutablePath(NSString *command) {
 
 static NSDictionary<NSString *, id> *GDTRunSetupCommand(NSString *command,
                                                          NSArray<NSString *> *arguments,
-                                                         NSTimeInterval commandTimeout) {
+                                                         NSTimeInterval commandTimeout,
+                                                         BOOL interactive) {
     NSString *launchPath = GDTExecutablePath(command);
     if (!launchPath.length) {
         return @{@"status": @127, @"output": @"", @"timedOut": @NO};
@@ -228,8 +229,10 @@ static NSDictionary<NSString *, id> *GDTRunSetupCommand(NSString *command,
         }
     });
 
-    NSTimeInterval effectiveTimeout =
-        commandTimeout > 0.0 ? MIN(commandTimeout, 20.0) : 20.0;
+    // Health probes stay bounded to 20 seconds; only the explicit,
+    // user-started Google sign-in may wait longer for the browser consent.
+    NSTimeInterval effectiveTimeout = commandTimeout > 0.0
+        ? (interactive ? commandTimeout : MIN(commandTimeout, 20.0)) : 20.0;
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:effectiveTimeout];
     while (task.running && [deadline timeIntervalSinceNow] > 0) {
         [NSThread sleepForTimeInterval:0.05];
@@ -285,7 +288,46 @@ static NSDictionary<NSString *, id> *GDTRunSetupCommand(NSString *command,
     };
 }
 
+static const NSTimeInterval GDTInteractiveTimeout = 600.0;
+
+NSString *GDTSetupInstallCommand(BOOL homebrewAvailable, NSArray<NSString *> *missingCommands) {
+    NSMutableArray<NSString *> *packages = [NSMutableArray array];
+    for (NSString *command in missingCommands ?: @[]) {
+        if ([@[@"rclone", @"flock", @"jq"] containsObject:command] &&
+            ![packages containsObject:command]) {
+            [packages addObject:command];
+        }
+    }
+    if (!packages.count) {
+        [packages addObjectsFromArray:@[@"rclone", @"flock", @"jq"]];
+    }
+    NSString *install = [@"brew install " stringByAppendingString:
+        [packages componentsJoinedByString:@" "]];
+    if (homebrewAvailable) {
+        return install;
+    }
+    return [NSString stringWithFormat:
+        @"/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\" && "
+        @"eval \"$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv)\" && %@",
+        install];
+}
+
 @implementation GDTSetupHealthChecker
+
+- (BOOL)homebrewAvailable {
+    return self.commandAvailability && self.commandAvailability(@"brew");
+}
+
+- (NSDictionary<NSString *, id> *)connectGoogleDriveForConfig:(NSDictionary<NSString *, NSString *> *)config {
+    GDTSetupCommandRunner runner = self.interactiveCommandRunner ?: self.commandRunner;
+    if (!runner) {
+        return @{@"status": @127, @"output": @""};
+    }
+    NSString *remote = GDTNormalizedRemote(config[@"RCLONE_REMOTE"]);
+    // Read-only scope: the backup never needs to change anything in Drive.
+    return runner(@"rclone", @[@"config", @"create", remote, @"drive",
+                               @"scope=drive.readonly"]);
+}
 
 - (instancetype)init {
     self = [super init];
@@ -307,7 +349,11 @@ static NSDictionary<NSString *, id> *GDTRunSetupCommand(NSString *command,
     };
     checker.commandRunner = ^NSDictionary<NSString *, id> *(NSString *command,
                                                              NSArray<NSString *> *arguments) {
-        return GDTRunSetupCommand(command, arguments, commandTimeout);
+        return GDTRunSetupCommand(command, arguments, commandTimeout, NO);
+    };
+    checker.interactiveCommandRunner = ^NSDictionary<NSString *, id> *(NSString *command,
+                                                                        NSArray<NSString *> *arguments) {
+        return GDTRunSetupCommand(command, arguments, GDTInteractiveTimeout, YES);
     };
     return checker;
 }

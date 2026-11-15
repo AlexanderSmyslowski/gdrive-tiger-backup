@@ -20,6 +20,22 @@
 @property(nonatomic, strong) NSURL *verifiedDestinationURL;
 @end
 
+// Google's own localized names for the three backup areas. Display only:
+// paths and restore requests keep the English folder names on disk.
+static NSString *GDTRestoreDisplayPath(NSString *path, NSString *language) {
+    NSDictionary<NSString *, NSString *> *keys = @{
+        @"My Drive": @"restoreAreaMyDrive",
+        @"Shared Drives": @"restoreAreaSharedDrives",
+        @"Shared with me": @"restoreAreaSharedWithMe"
+    };
+    NSArray<NSString *> *components = [path componentsSeparatedByString:@"/"];
+    NSString *key = keys[components.firstObject ?: @""];
+    if (!key) return path ?: @"";
+    NSMutableArray<NSString *> *display = [components mutableCopy];
+    display[0] = T(language ?: @"en", key);
+    return [display componentsJoinedByString:@"/"];
+}
+
 @implementation GDTRestoreBrowserView
 
 - (BOOL)isFlipped {
@@ -212,7 +228,8 @@
 
 - (void)setCurrentRelativePath:(NSString *)currentRelativePath {
     _currentRelativePath = [currentRelativePath copy] ?: @"";
-    self.pathLabel.stringValue = _currentRelativePath.length ? _currentRelativePath : @"Backup";
+    self.pathLabel.stringValue = _currentRelativePath.length
+        ? GDTRestoreDisplayPath(_currentRelativePath, self.language) : @"Backup";
     self.pathLabel.toolTip = self.pathLabel.stringValue;
     self.pathLabel.accessibilityLabel = self.pathLabel.stringValue;
     [self updateControlStates];
@@ -225,6 +242,8 @@
     self.openButton.enabled = NO;
     if (!_entries.count && !self.loading) {
         self.statusText = T(self.language ?: @"en", @"restoreEmpty");
+    } else if (_entries.count && !self.loading) {
+        self.statusText = T(self.language ?: @"en", @"restoreSelectHint");
     }
 }
 
@@ -278,7 +297,10 @@
         if (row >= (NSInteger)self.entries.count) return @"";
         NSDictionary *entry = self.entries[(NSUInteger)row];
         NSString *prefix = [entry[@"kind"] isEqualToString:@"directory"] ? @"▸  " : @"";
-        return [prefix stringByAppendingString:entry[@"name"] ?: @""];
+        NSString *name = self.currentRelativePath.length
+            ? (entry[@"name"] ?: @"")
+            : GDTRestoreDisplayPath(entry[@"name"] ?: @"", self.language);
+        return [prefix stringByAppendingString:name];
     }
     if (row >= (NSInteger)self.versions.count) return @"";
     NSDictionary *version = self.versions[(NSUInteger)row];

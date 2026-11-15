@@ -13,7 +13,9 @@ static inline NSString *GDTAdHocText(NSString *language, NSString *key) {
         @"addDetail": @[@"Wähle ein vorhandenes APFS-Volume. Es wird als zusätzliches manuelles Ziel gespeichert. Vorhandene Daten bleiben erhalten. Es wird nichts formatiert.", @"Choose an existing APFS volume. It will be saved as an additional manual destination. Existing data is kept. Nothing is formatted."],
         @"save": @[@"Als manuelles Ziel hinzufügen", @"Add as manual destination"],
         @"checking": @[@"Ziel wird geprüft …", @"Checking destination …"],
-        @"unavailable": @[@"Das gewählte Ziel ist nicht mehr eindeutig verfügbar. Bitte erneut anschließen oder ein anderes Ziel wählen.", @"The selected destination is no longer uniquely available. Reconnect it or choose another destination."],
+        @"unavailable": @[@"Das gewählte Ziel ist gerade nicht erreichbar oder nicht eindeutig. Bitte anschließen oder ein anderes Ziel wählen.", @"The selected destination is not reachable or not unique right now. Connect it or choose another destination."],
+        @"notSetUp": @[@"Noch kein Backup-Ziel eingerichtet. Lege es über „Backup einrichten …“ fest.", @"No backup destination set up yet. Choose one with “Set up backup …”."],
+        @"onlyAutomatic": @[@"Sichert auf dein automatisches Ziel. Über die Liste kannst du ein weiteres Ziel hinzufügen.", @"Saves to your automatic destination. Use the list to add another destination."],
         @"on": @[@"Backup auf %@", @"Backup to %@"],
         @"none": @[@"Keine geeignete externe APFS-Festplatte angeschlossen.", @"No suitable external APFS disk connected."],
         @"volume": @[@"Volume", @"Volume"]

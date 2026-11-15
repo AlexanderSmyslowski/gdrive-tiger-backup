@@ -104,8 +104,14 @@
     if (self.adHocInspectionPending) view.destinationHint.stringValue = GDTAdHocText(self.language, @"checking");
     else if (busy && self.adHocRunChoice) view.destinationHint.stringValue = [NSString stringWithFormat:
         GDTAdHocText(self.language, @"on"), self.adHocRunChoice[@"label"]];
+    else if (!self.adHocChoices.count) view.destinationHint.stringValue =
+        GDTAdHocText(self.language, @"notSetUp");
+    else if (!selected || ![selected[@"available"] boolValue]) view.destinationHint.stringValue =
+        GDTAdHocText(self.language, @"unavailable");
+    // With a single destination the "this run only" choice adds nothing, so
+    // the hint says where the backup goes instead.
     else view.destinationHint.stringValue = GDTAdHocText(self.language,
-        selected && [selected[@"available"] boolValue] ? @"once" : @"unavailable");
+        self.adHocChoices.count == 1 ? @"onlyAutomatic" : @"once");
     view.destinationHint.toolTip = view.destinationHint.stringValue;
 }
 

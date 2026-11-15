@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Connect Google Drive from the setup window: **Connect Google** creates the read-only `gdrive` remote and opens Google's sign-in in the browser, so no `rclone config` in the Terminal is needed. When helper tools are missing, **Copy command** copies the exact install command (including Homebrew when needed) and opens Terminal.
+- Show a fresh installation as "Not set up yet" with "Set up backup …" as the highlighted default button, instead of a default external disk the user never chose and a "no longer available" warning.
+- Stop showing "X free of X" for shares that report a quota (for example a Time Machine size limit) instead of the disk; such destinations now read "Not reliably measurable".
+- Name the destination in plain language without the network host name, show the last run relative to today ("Yesterday, 21:38") like the menu bar, and explain the one-run picker when only one destination exists.
+- Setup window: everyday labels ("Back up to", "Saved to", "Folder on Mac", "Test run", "Automatically"), help texts for NAS fields, encryption and Save, NAS fields hidden for external disks, and an automatic setup check when the window opens.
+- Diagnostics shows neutral "Checking …" rows while loading instead of red failure marks; restore shows Google's localized names for My Drive, Shared drives and Shared with me and tells the user to select a file to see its versions.
+- Use a single typographic ellipsis in all menu and status texts.
+- Add an English and German quick start to the README with the Gatekeeper steps next to the download.
+
 ## v2.6.0 - 2026-11-15
 
 This is the first public release since v2.4.6. It includes the unpublished v2.5.0 and v2.5.1 milestones (one-run destination selection and the deferred NAS retry) as well as the reliability changes for unattended scheduled backups.
