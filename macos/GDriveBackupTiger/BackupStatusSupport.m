@@ -180,3 +180,65 @@ NSDictionary<NSString *, NSNumber *> *GDTStorageCapacityForPath(NSString *path) 
     }
     return @{ @"freeBytes": freeBytes, @"totalBytes": totalBytes };
 }
+
+NSDictionary<NSString *, NSString *> *GDTLastSuccessfulBackupForSummary(
+    NSDictionary<NSString *, NSString *> *summary, NSDate *now) {
+    if (![summary[@"protocol"] isEqualToString:@"1"]) return nil;
+    BOOL success = [GDTBackupSummaryStatusForValues(summary) isEqualToString:@"success"];
+    NSString *timestamp = summary[@"last_success_at"];
+    if (!timestamp.length && success) timestamp = summary[@"finished_at"];
+    if (!GDTIsUnsignedInteger(timestamp, YES) || timestamp.length > 12 ||
+        timestamp.doubleValue > now.timeIntervalSince1970) return nil;
+    NSString *target = summary[@"last_success_target"] ?: @"";
+    NSString *destination = summary[@"last_success_destination"] ?: @"";
+    NSString *volume = summary[@"last_success_volume"] ?: @"";
+    if (!destination.length && success && [timestamp isEqualToString:summary[@"finished_at"]]) {
+        target = summary[@"target"] ?: @"";
+        destination = summary[@"destination"] ?: @"";
+        NSArray *components = destination.pathComponents;
+        if (components.count >= 3 && [components[1] isEqualToString:@"Volumes"])
+            volume = components[2];
+    }
+    // Never attach the current destination to a timestamp preserved from another run.
+    NSCharacterSet *controls = NSCharacterSet.controlCharacterSet;
+    if (![@[@"nas", @"apfs"] containsObject:target] || !destination.isAbsolutePath ||
+        !volume.length || volume.length > 255 ||
+        [volume rangeOfCharacterFromSet:controls].location != NSNotFound) {
+        target = @""; destination = @""; volume = @"";
+    }
+    return @{@"at": timestamp, @"target": target, @"destination": destination, @"volume": volume};
+}
+
+NSDictionary<NSString *, NSString *> *GDTLatestSuccessfulBackupAtRoot(NSString *root, NSDate *now) {
+    NSFileManager *manager = NSFileManager.defaultManager;
+    BOOL (^plainDirectory)(NSString *) = ^BOOL(NSString *path) {
+        return [[manager attributesOfItemAtPath:path error:nil][NSFileType] isEqualToString:NSFileTypeDirectory];
+    };
+    if (!plainDirectory(root)) return nil;
+    NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithObject:
+        [root stringByAppendingPathComponent:@"last-run.status"]];
+    NSCharacterSet *safe = [NSCharacterSet characterSetWithCharactersInString:
+        @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"];
+    for (NSString *kind in @[@"profiles", @"manual"]) {
+        NSString *directory = [root stringByAppendingPathComponent:kind];
+        if (!plainDirectory(directory)) continue;
+        NSArray *children = [[manager contentsOfDirectoryAtPath:directory error:nil]
+            sortedArrayUsingSelector:@selector(compare:)];
+        for (NSString *name in children) {
+            if (!name.length || name.length > 64 ||
+                [name rangeOfCharacterFromSet:safe.invertedSet].location != NSNotFound) continue;
+            NSString *child = [directory stringByAppendingPathComponent:name];
+            if (plainDirectory(child)) [paths addObject:[child stringByAppendingPathComponent:@"last-run.status"]];
+        }
+    }
+    NSDictionary *latest = nil;
+    for (NSString *path in paths) {
+        NSDictionary *attributes = [manager attributesOfItemAtPath:path error:nil];
+        if (![attributes[NSFileType] isEqualToString:NSFileTypeRegular] ||
+            [attributes[NSFileSize] unsignedLongLongValue] > 65536) continue;
+        NSDictionary *record = GDTLastSuccessfulBackupForSummary(GDTReadBackupSummaryAtPath(path), now);
+        if (record && (!latest || [record[@"at"] longLongValue] > [latest[@"at"] longLongValue] ||
+            ([record[@"at"] isEqual:latest[@"at"]] && ![latest[@"volume"] length] && [record[@"volume"] length]))) latest = record;
+    }
+    return latest;
+}

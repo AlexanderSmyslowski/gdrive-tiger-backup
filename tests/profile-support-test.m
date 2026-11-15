@@ -137,15 +137,13 @@ int main(void) {
         NSString *outsidePointer = [root stringByAppendingPathComponent:@"outside-active"];
         [@"default\n" writeToFile:outsidePointer atomically:YES
                          encoding:NSUTF8StringEncoding error:nil];
-        [fileManager trashItemAtURL:[NSURL fileURLWithPath:activePointer]
-                   resultingItemURL:nil error:nil];
+        [fileManager removeItemAtURL:[NSURL fileURLWithPath:activePointer] error:nil];
         [fileManager createSymbolicLinkAtPath:activePointer
                           withDestinationPath:outsidePointer error:nil];
         Assert(store.activeProfileID == nil &&
                ![store selectProfileID:@"default" error:nil],
                @"a symlinked active pointer is rejected instead of followed");
-        [fileManager trashItemAtURL:[NSURL fileURLWithPath:activePointer]
-                   resultingItemURL:nil error:nil];
+        [fileManager removeItemAtURL:[NSURL fileURLWithPath:activePointer] error:nil];
         [store selectProfileID:createdID error:nil];
 
         Assert(![store deleteProfileID:createdID error:nil] &&
@@ -166,17 +164,14 @@ int main(void) {
             @"GDRIVE_BACKUP_PROFILE_ID": @"default",
             @"GDRIVE_BACKUP_PROFILE_NAME": @"Outside"
         }, [outsideProfiles stringByAppendingPathComponent:@"default.conf"], nil);
-        [fileManager trashItemAtURL:[NSURL fileURLWithPath:profilesDirectory]
-                   resultingItemURL:nil error:nil];
+        [fileManager removeItemAtURL:[NSURL fileURLWithPath:profilesDirectory] error:nil];
         [fileManager createSymbolicLinkAtPath:profilesDirectory
                           withDestinationPath:outsideProfiles error:nil];
         Assert(store.profiles.count == 0 && store.activeProfileID == nil,
                @"a symlinked profile directory cannot become a trusted store");
 
-        [fileManager trashItemAtURL:[NSURL fileURLWithPath:root]
-                   resultingItemURL:nil error:nil];
-        [fileManager trashItemAtURL:[NSURL fileURLWithPath:outside]
-                   resultingItemURL:nil error:nil];
+        [fileManager removeItemAtURL:[NSURL fileURLWithPath:root] error:nil];
+        [fileManager removeItemAtURL:[NSURL fileURLWithPath:outside] error:nil];
     }
 
     if (failures > 0) {

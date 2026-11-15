@@ -22,12 +22,20 @@ static NSArray *CallList(id object, NSString *selectorName, NSString *relativePa
 
 @interface GDTInspectingFileManager : NSFileManager
 @property(nonatomic) BOOL trashedNonemptyFilesList;
+@property(nonatomic) BOOL usedTrash;
 @end
 
 @implementation GDTInspectingFileManager
+// Restore staging must be deleted directly and never reach the real Trash.
 - (BOOL)trashItemAtURL:(NSURL *)url
       resultingItemURL:(NSURL **)outResultingURL
                  error:(NSError **)error {
+    self.usedTrash = YES;
+    if (outResultingURL) *outResultingURL = nil;
+    return [super removeItemAtURL:url error:error];
+}
+
+- (BOOL)removeItemAtURL:(NSURL *)url error:(NSError **)error {
     if ([url.lastPathComponent hasPrefix:@".gdrive-files-"]) {
         NSData *contents = [NSData dataWithContentsOfURL:url];
         self.trashedNonemptyFilesList |= contents.length > 0;
@@ -40,7 +48,7 @@ static NSArray *CallList(id object, NSString *selectorName, NSString *relativePa
             }
         }
     }
-    return [super trashItemAtURL:url resultingItemURL:outResultingURL error:error];
+    return [super removeItemAtURL:url error:error];
 }
 @end
 
@@ -198,7 +206,9 @@ int main(void) {
             Assert(usedCopy && usedCryptcheck && !exposedSecret,
                    @"crypt restore delegates decryption and integrity checking to rclone without passwords");
             Assert(!fm.trashedNonemptyFilesList,
-                   @"crypt restore clears its temporary plaintext file list before Trash");
+                   @"crypt restore clears its temporary plaintext file list before deleting it");
+            Assert(!fm.usedTrash,
+                   @"crypt restore deletes its staging items instead of using the Trash");
 
             SEL customInitSelector = NSSelectorFromString(
                 @"initWithRemoteName:backupRootURL:versionsSubdirectory:fileManager:commandRunner:");
@@ -234,6 +244,8 @@ int main(void) {
                    @"failed cryptcheck never publishes a restored file");
             Assert(!fm.trashedNonemptyFilesList,
                    @"failed cryptcheck also clears its temporary plaintext file list");
+            Assert(!fm.usedTrash,
+                   @"failed crypt restore also keeps its staging out of the Trash");
 
             NSUInteger callsBefore = restoreCalls.count;
             error = nil;
@@ -275,8 +287,8 @@ int main(void) {
             setenv("PATH", originalPath.fileSystemRepresentation, 1);
         }
 
-        [fm trashItemAtURL:physicalRoot resultingItemURL:nil error:nil];
-        [fm trashItemAtURL:output resultingItemURL:nil error:nil];
+        [fm removeItemAtURL:physicalRoot error:nil];
+        [fm removeItemAtURL:output error:nil];
     }
     if (failures) {
         printf("%d crypt restore support test(s) failed.\n", failures);

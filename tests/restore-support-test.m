@@ -28,9 +28,24 @@ static NSArray<NSDictionary<NSString *, id> *> *CallList(id object,
     return method(object, selector, relativePath, error);
 }
 
+// Restore staging must be deleted directly and never reach the real Trash.
+@interface GDTScratchFileManager : NSFileManager
+@property(nonatomic) BOOL usedTrash;
+@end
+
+@implementation GDTScratchFileManager
+- (BOOL)trashItemAtURL:(NSURL *)url
+      resultingItemURL:(NSURL **)outResultingURL
+                 error:(NSError **)error {
+    self.usedTrash = YES;
+    if (outResultingURL) *outResultingURL = nil;
+    return [self removeItemAtURL:url error:error];
+}
+@end
+
 int main(void) {
     @autoreleasepool {
-        NSFileManager *fileManager = [[NSFileManager alloc] init];
+        GDTScratchFileManager *fileManager = [[GDTScratchFileManager alloc] init];
         NSURL *root = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES]
             URLByAppendingPathComponent:[NSString stringWithFormat:@"gdrive-restore-%@", NSUUID.UUID.UUIDString]
                              isDirectory:YES];
@@ -395,12 +410,15 @@ int main(void) {
                    @"restore browser fails closed for an unknown NAS codec manifest");
         }
 
-        [fileManager trashItemAtURL:root resultingItemURL:nil error:nil];
-        [fileManager trashItemAtURL:outside resultingItemURL:nil error:nil];
-        [fileManager trashItemAtURL:output resultingItemURL:nil error:nil];
-        [fileManager trashItemAtURL:linkedRoot resultingItemURL:nil error:nil];
-        [fileManager trashItemAtURL:codecRoot resultingItemURL:nil error:nil];
-        [fileManager trashItemAtURL:codecOutput resultingItemURL:nil error:nil];
+        Assert(!fileManager.usedTrash,
+               @"restore deletes its staging items instead of using the Trash");
+
+        [fileManager removeItemAtURL:root error:nil];
+        [fileManager removeItemAtURL:outside error:nil];
+        [fileManager removeItemAtURL:output error:nil];
+        [fileManager removeItemAtURL:linkedRoot error:nil];
+        [fileManager removeItemAtURL:codecRoot error:nil];
+        [fileManager removeItemAtURL:codecOutput error:nil];
     }
 
     if (failures > 0) {

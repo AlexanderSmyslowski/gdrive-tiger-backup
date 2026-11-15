@@ -22,8 +22,23 @@ APP_OBJC_FLAGS := $(OBJC_FLAGS) -mmacosx-version-min=$(MACOS_DEPLOYMENT_TARGET) 
 USER_NOTIFICATIONS_FRAMEWORK := -framework UserNotifications -framework Security \
 	-framework NetFS
 NETWORK_MOUNT_SOURCE := macos/GDriveBackupTiger/NetworkMountSupport.m
+.DEFAULT_GOAL := test-adhoc
 
-.PHONY: build install dry-run pkg test clean
+.PHONY: build install dry-run pkg test clean test-test-application-support
+
+test-test-application-support:
+	@set -e; TEST_APPLICATION_SUPPORT_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-test-application-support.XXXXXX")"; \
+		clang $(OBJC_FLAGS) -framework Cocoa -I tests \
+			tests/test-application-support-test.m -o "$$TEST_APPLICATION_SUPPORT_TEST_BIN"; \
+		RESULT=0; "$$TEST_APPLICATION_SUPPORT_TEST_BIN" || RESULT=$$?; \
+		./scripts/trash-path.sh "$$TEST_APPLICATION_SUPPORT_TEST_BIN"; exit "$$RESULT"
+
+test-adhoc:
+	@set -e; TEST_BIN="$$(mktemp "$${TMPDIR:-/tmp}/gdrive-adhoc-test.XXXXXX")"; \
+		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
+			tests/adhoc-ui-test.m $(filter-out macos/GDriveBackupTiger/main.m,$(APP_SOURCES)) -o "$$TEST_BIN"; \
+		RESULT=0; "$$TEST_BIN" || RESULT=$$?; \
+		./scripts/trash-path.sh "$$TEST_BIN"; exit "$$RESULT"
 
 build:
 	mkdir -p "$(APP_DIR)/Contents/MacOS" "$(APP_DIR)/Contents/Resources"
@@ -47,7 +62,9 @@ build:
 	# Restricted notification entitlements require an Apple-issued signing
 	# identity. Embedding one in an ad-hoc signature passes codesign verification
 	# but macOS rejects the app at exec time.
-	codesign --force --deep --sign - "$(APP_DIR)"
+	# A local signing identity, when present, keeps the Keychain and privacy
+	# grants across rebuilds; without one the build falls back to ad-hoc.
+	codesign --force --deep --sign "$$(./scripts/local-signing-identity.sh resolve)" "$(APP_DIR)"
 
 install:
 	./install.sh
@@ -58,14 +75,18 @@ dry-run:
 pkg:
 	./packaging/build-pkg.sh
 
-test:
+test: test-retry-countdown test-native-scheduled-backup
+	$(MAKE) test-adhoc
+	bash tests/adhoc-target-test.sh
 	bash tests/app-launch-status-test.sh
 	bash tests/app-trash-mode-test.sh
+	bash tests/local-signing-identity-test.sh
 	bash tests/backup-control-test.sh
 	bash tests/backup-profile-test.sh
 	bash tests/backup-encryption-test.sh
 	bash tests/backup-outcome-test.sh
 	bash tests/backup-versioning-test.sh
+	bash tests/backup-robustness-test.sh
 	bash tests/nas-name-codec-integration-test.sh
 	bash tests/encryption-ui-test.sh
 	bash tests/test-harness-safety-test.sh
@@ -76,6 +97,9 @@ test:
 	bash tests/package-entitlement-safety-test.sh
 	bash tests/app-build-artifacts-test.sh
 	bash tests/update-flow-safety-test.sh
+	$(MAKE) test-native
+
+test-native: test-test-application-support
 	@set -e; RUN_STATE_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-run-state-test.XXXXXX")"; \
 		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
 			tests/run-state-ui-test.m macos/GDriveBackupTiger/ConfigSupport.m $(NETWORK_MOUNT_SOURCE) \
@@ -315,3 +339,20 @@ test:
 
 clean:
 	@for path in build dist; do if [ -e "$$path" ]; then ./scripts/trash-path.sh "$$path"; fi; done
+
+.PHONY: test-retry-countdown
+test-retry-countdown:
+	@set -e; RETRY_COUNTDOWN_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-retry-countdown-test.XXXXXX")"; \
+		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
+			tests/retry-countdown-test.m $(filter-out macos/GDriveBackupTiger/main.m,$(APP_SOURCES)) \
+			-o "$$RETRY_COUNTDOWN_TEST_BIN"; \
+		RESULT=0; "$$RETRY_COUNTDOWN_TEST_BIN" || RESULT=$$?; \
+		./scripts/trash-path.sh "$$RETRY_COUNTDOWN_TEST_BIN"; exit "$$RESULT"
+
+.PHONY: test-native-scheduled-backup
+test-native-scheduled-backup:
+	@set -e; SCHEDULED_TEST_BIN="$$(/usr/bin/mktemp "$${TMPDIR:-/tmp}/gdrive-scheduled-test.XXXXXX")"; \
+		clang $(OBJC_FLAGS) -framework Cocoa $(USER_NOTIFICATIONS_FRAMEWORK) -I macos/GDriveBackupTiger \
+			tests/native-scheduled-backup-test.m $(filter-out macos/GDriveBackupTiger/main.m,$(APP_SOURCES)) -o "$$SCHEDULED_TEST_BIN"; \
+		RESULT=0; "$$SCHEDULED_TEST_BIN" || RESULT=$$?; \
+		./scripts/trash-path.sh "$$SCHEDULED_TEST_BIN"; exit "$$RESULT"

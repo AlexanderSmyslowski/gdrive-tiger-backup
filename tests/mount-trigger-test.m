@@ -1,3 +1,4 @@
+#import "TestApplicationSupport.h"
 #import <Cocoa/Cocoa.h>
 
 #define main GDTApplicationMain
@@ -289,6 +290,7 @@ static NSDictionary<NSString *, id> *DescriptorFromDiskutilInfo(
 
 int main(void) {
     @autoreleasepool {
+        GDTInitializeAccessoryTestApplication();
         MountTriggerDelegate *delegate = [[MountTriggerDelegate alloc] init];
         delegate.testConfig = @{
             @"GDRIVE_BACKUP_TARGET": @"apfs",

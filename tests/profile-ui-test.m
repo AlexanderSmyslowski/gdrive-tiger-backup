@@ -148,8 +148,7 @@ int main(void) {
                [overview[@"target"] rangeOfString:@"/Volumes/"].location == NSNotFound,
                @"overview and menu status identify the profile, device kind, and NAS folder");
 
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:root]
-                                    resultingItemURL:nil error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:root] error:nil];
     }
 
     if (failures > 0) {

@@ -95,15 +95,15 @@ check_absent \
   'self.window.level = NSFloatingWindowLevel;' \
   'normal progress startup does not unconditionally float the window'
 
-safe_progress_presentation=$'if (self.confirmMode && self.progressForegroundMode) {\n        [self.window makeKeyAndOrderFront:nil];\n        [NSApp activateIgnoringOtherApps:YES];\n    } else {\n        [self.window orderFront:nil];\n    }'
+safe_progress_presentation=$'if ([self shouldActivateStatusWindow]) {\n        [self.window makeKeyAndOrderFront:nil];\n        [NSApp activateIgnoringOtherApps:YES];\n    } else {\n        [self.window orderFront:nil];\n    }'
 check_contains "$safe_progress_presentation" \
-  'only an explicitly requested confirmation activates the app or becomes key'
+  'only an explicit foreground request activates the app or becomes key'
 
 activation_count="$(/usr/bin/grep -Fc '[NSApp activateIgnoringOtherApps:YES];' <<<"$startup_method")"
 if [[ "$activation_count" == "1" ]]; then
-  printf '%s\n' 'ok - startup has one explicit-confirmation activation path'
+  printf '%s\n' 'ok - startup has one explicit-foreground activation path'
 else
-  printf 'not ok - expected one confirmation-only startup activation, found %s\n' "$activation_count"
+  printf 'not ok - expected one foreground-only startup activation, found %s\n' "$activation_count"
   failures=$((failures + 1))
 fi
 
@@ -241,6 +241,14 @@ if [[ "$status_item_method" == *'if (self.statusItem)'* &&
   printf '%s\n' 'ok - one accessible status item reuses the same overview snapshot'
 else
   printf '%s\n' 'not ok - menu bar state is missing, duplicated, or disconnected from the overview'
+  failures=$((failures + 1))
+fi
+
+restore_method="$(sed -n '/^- (void)restoreWindowFromDock {/,/^- (void)finishConfirmation:/p' "$MAIN_SOURCE")"
+if [[ "$restore_method" == *'if (!self.completing && !self.progressForegroundMode)'* ]]; then
+  printf '%s\n' 'ok - restoring foreground progress preserves its Dock presence'
+else
+  printf '%s\n' 'not ok - restoring foreground progress loses its Dock presence'
   failures=$((failures + 1))
 fi
 

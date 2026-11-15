@@ -18,6 +18,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Keep the test hermetic: never use (or prompt for) a local signing identity.
+export GDRIVE_FORCE_ADHOC_SIGNATURE=1
+
 if ! /usr/bin/make -C "$ROOT" APP_DIR="$APP" build; then
   printf '%s\n' 'not ok - an isolated app build completes successfully'
   exit 1
@@ -59,26 +62,15 @@ if /usr/bin/grep -Fq 'GDriveBackupTiger.entitlements' \
   exit 1
 fi
 
-# Give the isolated copy its own Launch Services identity so this test can run
-# beside an installed controller with the production bundle identifier.
-/usr/libexec/PlistBuddy \
-  -c 'Set :CFBundleIdentifier com.commcats.gdrivebackup.smoketest' \
-  "$APP/Contents/Info.plist"
-/usr/bin/codesign --force --deep --sign - "$APP" >/dev/null
-"$APP/Contents/MacOS/GDriveBackupTiger" --menubar >/dev/null 2>&1 &
-SMOKE_PID=$!
-for _ in {1..20}; do
-  if ! /bin/kill -0 "$SMOKE_PID" 2>/dev/null; then
-    wait "$SMOKE_PID" 2>/dev/null || true
-    printf '%s\n' \
-      'not ok - macOS rejected or immediately terminated the isolated menu bar app'
-    exit 1
-  fi
-  /bin/sleep 0.1
-done
-/bin/kill -TERM "$SMOKE_PID"
-wait "$SMOKE_PID" 2>/dev/null || true
-SMOKE_PID=""
+# Exercise a headless validation failure: no controller, config, mount or engine
+# can start, even though Foundation may derive HOME from the real account.
+SMOKE_STATUS=0
+"$APP/Contents/MacOS/GDriveBackupTiger" --run-scheduled-backup --unexpected \
+  >"$STAGE/launch-smoke.log" 2>&1 || SMOKE_STATUS=$?
+if [[ "$SMOKE_STATUS" != "64" ]]; then
+  printf 'not ok - signed headless CLI returned %s instead of usage status 64\n' "$SMOKE_STATUS"
+  exit 1
+fi
 
 printf '%s\n' \
   'ok - isolated app build is Universal 2, signed, launchable, and free of restricted entitlements'

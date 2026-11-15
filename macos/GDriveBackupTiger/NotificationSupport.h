@@ -35,6 +35,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface GDTAutomaticRetryPolicy : NSObject
 
++ (NSDate * _Nullable)retryDateForConfig:(NSDictionary<NSString *, NSString *> *)config
+                                summary:(NSDictionary<NSString *, NSString *> *)summary
+                                 status:(NSString *)status
+                                    now:(NSDate *)now;
+
 + (NSDictionary<NSString *, NSString *> * _Nullable)
     decisionForConfig:(NSDictionary<NSString *, NSString *> *)config
                summary:(NSDictionary<NSString *, NSString *> *)summary

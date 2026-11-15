@@ -6,8 +6,40 @@ if [[ $# -eq 0 ]]; then
   exit 64
 fi
 
-if [[ "${GDRIVE_FORCE_TRASH_FALLBACK:-0}" != "1" && -x /usr/bin/trash ]]; then
-  exec /usr/bin/trash "$@"
+# Build products and test fixtures created under a temporary directory are
+# disposable by definition. Deleting them directly keeps hundreds of scratch
+# items per test run out of the user's Trash; everything else stays recoverable.
+is_temporary_path() {
+  local path="$1" parent real root
+  parent="$(/usr/bin/dirname "$path")"
+  real="$(cd "$parent" 2>/dev/null && /bin/pwd -P)" || return 1
+  for root in "${TMPDIR:-}" /tmp /private/tmp /var/folders /private/var/folders; do
+    [[ -n "$root" ]] || continue
+    root="$(cd "$root" 2>/dev/null && /bin/pwd -P)" || continue
+    # Never the temporary root itself, only something strictly inside it.
+    if [[ "$real" == "$root" || "$real" == "$root"/* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+if [[ "${GDRIVE_FORCE_TRASH_FALLBACK:-0}" != "1" ]]; then
+  remaining=()
+  for path in "$@"; do
+    if [[ ( -e "$path" || -L "$path" ) ]] && is_temporary_path "$path"; then
+      /bin/rm -rf -- "$path"
+    else
+      remaining+=("$path")
+    fi
+  done
+  if (( ${#remaining[@]} == 0 )); then
+    exit 0
+  fi
+  set -- "${remaining[@]}"
+  if [[ -x /usr/bin/trash ]]; then
+    exec /usr/bin/trash "$@"
+  fi
 fi
 
 # macOS 13 and 14 do not provide /usr/bin/trash. Moving items into the user's

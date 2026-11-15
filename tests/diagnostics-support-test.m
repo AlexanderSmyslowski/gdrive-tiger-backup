@@ -18,7 +18,7 @@ int main(void) {
         if (builderClass) {
             NSDictionary *config = @{
                 @"GDRIVE_BACKUP_TARGET": @"nas",
-                @"GDRIVE_BACKUP_NAS_MOUNT": @"/Volumes/alexander",
+                @"GDRIVE_BACKUP_NAS_MOUNT": @"/Volumes/backup-share",
                 @"GDRIVE_BACKUP_NAS_URL": @"smb://private-user:secret-password@nas.local/private-share",
                 @"GDRIVE_BACKUP_NAS_SUBDIR": @"Customer Files",
                 @"GDRIVE_BACKUP_SCHEDULE": @"daily",
@@ -33,7 +33,7 @@ int main(void) {
                 @"exit_code": @"1",
                 @"trigger": @"manual",
                 @"target": @"nas",
-                @"destination": @"/Volumes/alexander/GoogleDrive-Backup/Customer Files",
+                @"destination": @"/Volumes/backup-share/GoogleDrive-Backup/Customer Files",
                 @"reason": @"nas_connection_lost",
                 @"raw_error": @"token=very-secret customer-report.docx"
             };
@@ -50,7 +50,7 @@ int main(void) {
                 },
                 @"destination": @{
                     @"status": @"ready",
-                    @"detail": @"/Volumes/alexander/GoogleDrive-Backup"
+                    @"detail": @"/Volumes/backup-share/GoogleDrive-Backup"
                 }
             };
             NSDictionary *appInfo = @{

@@ -694,9 +694,12 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
     return nil;
 }
 
-- (void)trashTemporaryURL:(NSURL *)url {
+// Staging items are created by this class in an item-replacement directory and
+// hold at most a partial copy. Delete them directly: moving them to the Trash
+// would leave partial restores and plaintext behind and fill the user's Trash.
+- (void)removeTemporaryURL:(NSURL *)url {
     if ([self.fileManager fileExistsAtPath:url.path]) {
-        [self.fileManager trashItemAtURL:url resultingItemURL:nil error:nil];
+        [self.fileManager removeItemAtURL:url error:nil];
     }
 }
 
@@ -757,7 +760,7 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
         ![self.fileManager setAttributes:@{NSFilePosixPermissions: @(0700)}
                             ofItemAtPath:temporaryDirectory.path error:&fileError]) {
         if (temporaryDirectory) {
-            [self trashTemporaryURL:temporaryDirectory];
+            [self removeTemporaryURL:temporaryDirectory];
         }
         if (error) *error = fileError;
         return nil;
@@ -767,7 +770,7 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
         @"copyto", remotePath, temporaryFile.path, @"--no-traverse", @"--retries", @"3"
     ]);
     if ([copyResult[@"status"] integerValue] != 0 || !GDTURLIsSafeRegularFile(temporaryFile)) {
-        [self trashTemporaryURL:temporaryDirectory];
+        [self removeTemporaryURL:temporaryDirectory];
         GDTSetRestoreError(error, GDTRestoreErrorCopyFailure, @"The encrypted backup file could not be copied.");
         return nil;
     }
@@ -779,7 +782,7 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
         ![self.fileManager setAttributes:@{NSFilePosixPermissions: @(0600)}
                             ofItemAtPath:filesList.path error:&fileError]) {
         [self clearPlaintextListAtURL:filesList];
-        [self trashTemporaryURL:temporaryDirectory];
+        [self removeTemporaryURL:temporaryDirectory];
         if (error) *error = fileError;
         return nil;
     }
@@ -790,26 +793,26 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
     ]);
     if ([checkResult[@"status"] integerValue] != 0) {
         [self clearPlaintextListAtURL:filesList];
-        [self trashTemporaryURL:temporaryDirectory];
+        [self removeTemporaryURL:temporaryDirectory];
         GDTSetRestoreError(error, GDTRestoreErrorIntegrityFailure,
                            @"The restored file did not match the encrypted backup.");
         return nil;
     }
     [self clearPlaintextListAtURL:filesList];
-    [self trashTemporaryURL:filesList];
+    [self removeTemporaryURL:filesList];
     NSString *digest = [self sha256ForURL:temporaryFile];
     if (!digest.length) {
-        [self trashTemporaryURL:temporaryDirectory];
+        [self removeTemporaryURL:temporaryDirectory];
         GDTSetRestoreError(error, GDTRestoreErrorIntegrityFailure,
                            @"The restored file could not be verified.");
         return nil;
     }
     if (![self.fileManager moveItemAtURL:temporaryFile toURL:destination error:&fileError]) {
-        [self trashTemporaryURL:temporaryDirectory];
+        [self removeTemporaryURL:temporaryDirectory];
         if (error) *error = fileError;
         return nil;
     }
-    [self trashTemporaryURL:temporaryDirectory];
+    [self removeTemporaryURL:temporaryDirectory];
     NSNumber *size = nil;
     [destination getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
     return @{ @"destinationURL": destination, @"sha256": digest, @"size": size ?: @0 };
@@ -1140,9 +1143,12 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
     return nil;
 }
 
-- (void)trashTemporaryURL:(NSURL *)url {
+// Staging items are created by this class in an item-replacement directory and
+// hold at most a partial copy. Delete them directly: moving them to the Trash
+// would leave partial restores and plaintext behind and fill the user's Trash.
+- (void)removeTemporaryURL:(NSURL *)url {
     if ([self.fileManager fileExistsAtPath:url.path]) {
-        [self.fileManager trashItemAtURL:url resultingItemURL:nil error:nil];
+        [self.fileManager removeItemAtURL:url error:nil];
     }
 }
 
@@ -1210,7 +1216,7 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
     NSError *digestError = nil;
     NSString *sourceDigestBefore = self.digestProvider(standardSource, &digestError);
     if (!sourceDigestBefore.length) {
-        [self trashTemporaryURL:stagingDirectory];
+        [self removeTemporaryURL:stagingDirectory];
         if (error) {
             *error = digestError;
         }
@@ -1218,7 +1224,7 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
     }
     NSError *copyError = nil;
     if (![self.fileManager copyItemAtURL:standardSource toURL:temporaryURL error:&copyError]) {
-        [self trashTemporaryURL:stagingDirectory];
+        [self removeTemporaryURL:stagingDirectory];
         if (error) {
             *error = copyError;
         }
@@ -1230,19 +1236,19 @@ static BOOL GDTURLContainsSymlinkBelowRoot(NSURL *url, NSURL *rootURL) {
     if (!sourceDigestAfter.length || !copiedDigest.length ||
         ![sourceDigestBefore isEqualToString:sourceDigestAfter] ||
         ![sourceDigestBefore isEqualToString:copiedDigest]) {
-        [self trashTemporaryURL:stagingDirectory];
+        [self removeTemporaryURL:stagingDirectory];
         GDTSetRestoreError(error, GDTRestoreErrorIntegrityFailure,
                            @"The restored file did not match the backup copy.");
         return nil;
     }
     if (![self.fileManager moveItemAtURL:temporaryURL toURL:destinationURL error:&copyError]) {
-        [self trashTemporaryURL:stagingDirectory];
+        [self removeTemporaryURL:stagingDirectory];
         if (error) {
             *error = copyError;
         }
         return nil;
     }
-    [self trashTemporaryURL:stagingDirectory];
+    [self removeTemporaryURL:stagingDirectory];
     NSNumber *size = nil;
     [destinationURL getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
     return @{

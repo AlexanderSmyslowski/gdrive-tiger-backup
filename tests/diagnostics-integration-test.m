@@ -102,8 +102,7 @@ int main(void) {
             privateWrite = written && !error && [saved isEqualToString:report] &&
                 ([attributes[NSFilePosixPermissions] unsignedShortValue] & 0777) == 0600;
             if ([NSFileManager.defaultManager fileExistsAtPath:reportURL.path]) {
-                [NSFileManager.defaultManager trashItemAtURL:reportURL
-                                            resultingItemURL:nil error:nil];
+                [NSFileManager.defaultManager removeItemAtURL:reportURL error:nil];
             }
         }
         Assert(privateWrite,

@@ -1,3 +1,4 @@
+#import "TestApplicationSupport.h"
 #import <Cocoa/Cocoa.h>
 #import <objc/runtime.h>
 
@@ -22,11 +23,8 @@
     (void)assumeYes;
     self.launchCalls++;
     self.lastTrigger = @"manual";
-    TigerOverviewView *view = [self.window.contentView isKindOfClass:TigerOverviewView.class]
-        ? (TigerOverviewView *)self.window.contentView : nil;
-    self.sawImmediatePreparingState = view &&
-        [view.lastRunValueLabel.stringValue isEqualToString:T(self.language ?: @"en", @"statusBackupPreparing")] &&
-        !view.backupButton.enabled;
+    self.sawImmediatePreparingState = self.overviewLaunchPending &&
+        [self.lastOverviewSnapshot[@"lastRun"] isEqualToString:T(self.language ?: @"en", @"statusBackupPreparing")];
     return self.launchSucceeds;
 }
 
@@ -168,6 +166,7 @@ static void Assert(BOOL condition, NSString *name) {
 
 int main(void) {
     @autoreleasepool {
+        GDTInitializeAccessoryTestApplication();
         TigerOverviewView *view = [[TigerOverviewView alloc] initWithFrame:NSMakeRect(0, 0, 620, 420)];
         view.language = @"en";
         view.lastRunText = @"Successful";
@@ -414,8 +413,7 @@ int main(void) {
         } else {
             unsetenv("GDRIVE_BACKUP_CONFIG");
         }
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:setupConfigPath]
-                                    resultingItemURL:nil error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:setupConfigPath] error:nil];
 
         NSString *successGlyph = view.statusSymbolLabel.stringValue;
         NSString *successDescription = view.statusSymbolLabel.accessibilityLabel;
@@ -452,6 +450,23 @@ int main(void) {
         }
         Assert(manualProgressComesForward && scheduledProgressStaysPassive,
                @"only an explicit progress request receives a Dock presence");
+
+        SEL activateSelector = NSSelectorFromString(@"shouldActivateStatusWindow");
+        BOOL activationPolicyCorrect = [delegate respondsToSelector:activateSelector];
+        if (activationPolicyCorrect) {
+            typedef BOOL (*ActivateMethod)(id, SEL);
+            ActivateMethod method = (ActivateMethod)[delegate methodForSelector:activateSelector];
+            for (NSNumber *confirmation in @[@NO, @YES]) {
+                delegate.confirmMode = confirmation.boolValue;
+                delegate.progressForegroundMode = YES;
+                activationPolicyCorrect &= method(delegate, activateSelector);
+                delegate.progressForegroundMode = NO;
+                activationPolicyCorrect &= !method(delegate, activateSelector);
+            }
+        }
+        delegate.confirmMode = NO;
+        Assert(activationPolicyCorrect,
+               @"explicit foreground consent activates progress and confirmation; passive windows never activate");
 
         SEL collectionSelector = NSSelectorFromString(@"statusWindowCollectionBehavior");
         NSWindowCollectionBehavior progressCollectionBehavior = NSWindowCollectionBehaviorDefault;
@@ -524,18 +539,15 @@ int main(void) {
         OverviewLaunchDelegate *guardedLaunch = [[OverviewLaunchDelegate alloc] init];
         guardedLaunch.language = @"en";
         guardedLaunch.launchSucceeds = YES;
-        guardedLaunch.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 620, 420)
-                                                           styleMask:NSWindowStyleMaskTitled
-                                                             backing:NSBackingStoreBuffered
-                                                               defer:NO];
-        guardedLaunch.window.contentView = [[TigerOverviewView alloc] initWithFrame:NSMakeRect(0, 0, 620, 420)];
+        // Headless menu-bar launches retain their progress handoff. The visible
+        // destination picker and its in-window progress are covered by adhoc-ui-test.
         [guardedLaunch startOverviewBackup:nil];
         [guardedLaunch startOverviewBackup:nil];
         Assert(guardedLaunch.launchCalls == 1 &&
                [guardedLaunch.lastTrigger isEqualToString:@"manual"] &&
                guardedLaunch.sawImmediatePreparingState &&
                guardedLaunch.progressHandoffCalls == 1,
-               @"overview keeps manual authority, shows preparation, disables repeats, and yields its Dock icon");
+               @"headless manual launch prepares status, disables repeats, and hands off progress");
 
         OverviewLaunchDelegate *failedLaunch = [[OverviewLaunchDelegate alloc] init];
         failedLaunch.language = @"en";
@@ -617,7 +629,7 @@ int main(void) {
         NSDictionary *dailyNAS = @{
             @"GDRIVE_BACKUP_PROFILE_ID": @"default",
             @"GDRIVE_BACKUP_TARGET": @"nas",
-            @"GDRIVE_BACKUP_NAS_MOUNT": @"/Volumes/alexander",
+            @"GDRIVE_BACKUP_NAS_MOUNT": @"/Volumes/backup-share",
             @"GDRIVE_BACKUP_NAS_SUBDIR": @"GoogleDrive-Backup",
             @"GDRIVE_BACKUP_SCHEDULE": @"daily"
         };
@@ -645,6 +657,24 @@ int main(void) {
                [retrySnapshot[@"progressDetail"] isEqualToString:
                    @"1.2 GiB / 1.9 GiB, 12.4 MiB/s, ETA 58s"],
                @"running automatic retry has explicit phase progress");
+
+        NSMutableDictionary *mountSummary = [retrySummary mutableCopy];
+        mountSummary[@"trigger"] = @"mount";
+        NSDictionary *mountSnapshot = [delegate overviewSnapshotForConfig:dailyNAS
+            summary:mountSummary status:@"running" progress:retryProgress now:now calendar:calendar];
+        NSString *mountMenuText = [[[[delegate statusMenuForSnapshot:mountSnapshot]
+            itemArray] valueForKey:@"title"] componentsJoinedByString:@" "];
+        Assert([mountSnapshot[@"progressVisible"] isEqualToString:@"1"] &&
+               [mountSnapshot[@"progressPhase"] isEqualToString:phaseText] &&
+               [mountSnapshot[@"progressPercent"] isEqualToString:@"63"] &&
+               [mountSnapshot[@"retryRunning"] isEqualToString:@"0"] &&
+               [mountMenuText containsString:@"63 %"] &&
+               ![mountMenuText containsString:T(@"en", @"automaticRetryRunningShort")],
+               @"mount backup exposes its actual progress in overview and menu without retry wording");
+        NSDictionary *finishedMountSnapshot = [delegate overviewSnapshotForConfig:dailyNAS
+            summary:mountSummary status:@"success" progress:retryProgress now:now calendar:calendar];
+        Assert([finishedMountSnapshot[@"progressVisible"] isEqualToString:@"0"],
+               @"finished mount backup hides stale progress");
 
         NSMenu *retryMenu = [delegate statusMenuForSnapshot:retrySnapshot];
         NSString *retryMenuText = [[retryMenu.itemArray valueForKey:@"title"]
@@ -746,10 +776,8 @@ int main(void) {
                [snapshot[@"target"] containsString:capacityPath.lastPathComponent] &&
                ![snapshot[@"storage"] isEqualToString:T(@"en", @"overviewUnavailable")],
                @"one honest snapshot feeds both overview and menu bar values");
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:summaryPath]
-                                    resultingItemURL:nil error:nil];
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:capacityPath]
-                                    resultingItemURL:nil error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:summaryPath] error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:capacityPath] error:nil];
 
         NSDictionary<NSString *, NSString *> *emptySnapshot =
             [delegate overviewSnapshotForConfig:@{@"GDRIVE_BACKUP_SCHEDULE": @"manual"}
@@ -764,8 +792,8 @@ int main(void) {
         NSDictionary<NSString *, NSString *> *nasSnapshot =
             [delegate overviewSnapshotForConfig:@{
                 @"GDRIVE_BACKUP_TARGET": @"nas",
-                @"GDRIVE_BACKUP_NAS_URL": @"smb://private-user:secret-password@wdmycloudex2100.local/alexander",
-                @"GDRIVE_BACKUP_NAS_MOUNT": @"/Volumes/alexander",
+                @"GDRIVE_BACKUP_NAS_URL": @"smb://private-user:secret-password@nas-example.local/backup-share",
+                @"GDRIVE_BACKUP_NAS_MOUNT": @"/Volumes/backup-share",
                 @"GDRIVE_BACKUP_NAS_SUBDIR": @"GoogleDrive-Backup",
                 @"GDRIVE_BACKUP_PROFILE_NAME": @"Default",
                 @"GDRIVE_BACKUP_SCHEDULE": @"manual"
@@ -774,7 +802,7 @@ int main(void) {
                                              now:now
                                         calendar:calendar];
         Assert([nasSnapshot[@"target"] isEqualToString:
-                   @"NAS / Network · wdmycloudex2100.local · alexander/GoogleDrive-Backup"] &&
+                   @"NAS / Network · nas-example.local · backup-share/GoogleDrive-Backup"] &&
                [nasSnapshot[@"target"] rangeOfString:@"private-user"].location == NSNotFound &&
                [nasSnapshot[@"target"] rangeOfString:@"secret-password"].location == NSNotFound,
                @"NAS target identifies the server and share without exposing credentials");
@@ -827,6 +855,25 @@ int main(void) {
                [[menuTitles componentsJoinedByString:@" "] containsString:@"812 GB"],
                @"menu bar exposes the same status, schedule, target, storage, and actions");
 
+        for (NSString *language in @[@"de", @"en"]) {
+            delegate.language = language;
+            NSDictionary *retained = @{@"protocol": @"1", @"status": @"failure",
+                @"started_at": @"300", @"finished_at": @"400", @"exit_code": @"1",
+                @"last_success_at": @"200", @"last_success_target": @"apfs",
+                @"last_success_destination": @"/Volumes/TOSHIBA_4TB/Backup",
+                @"last_success_volume": @"TOSHIBA_4TB"};
+            NSDictionary *history = [delegate overviewSnapshotForConfig:@{} summary:retained
+                status:@"failure" now:[NSDate dateWithTimeIntervalSince1970:1000] calendar:calendar];
+            NSMenu *historyMenu = [delegate statusMenuForSnapshot:history];
+            Assert([[historyMenu itemAtIndex:0].title containsString:@"TOSHIBA_4TB"] &&
+                   ![historyMenu itemAtIndex:0].enabled && [historyMenu itemAtIndex:1].title.length > 0 &&
+                   ![historyMenu itemAtIndex:1].enabled &&
+                   [[[historyMenu.itemArray valueForKey:@"title"] componentsJoinedByString:@" "]
+                       containsString:T(language, @"failed")],
+                   @"menu keeps the successful volume and timestamp separate from the latest failure");
+        }
+        delegate.language = @"en";
+
         OverviewLaunchDelegate *reopenDelegate = [[OverviewLaunchDelegate alloc] init];
         reopenDelegate.overviewMode = YES;
         reopenDelegate.menubarOnlyMode = YES;
@@ -867,8 +914,7 @@ int main(void) {
         Assert([pausedConfig[@"GDRIVE_BACKUP_PAUSED"] isEqualToString:@"1"],
                @"pause action persists the automatic-backup guard without changing the schedule");
         unsetenv("GDRIVE_BACKUP_CONFIG");
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:pauseConfigPath]
-                                    resultingItemURL:nil error:nil];
+        [NSFileManager.defaultManager removeItemAtURL:[NSURL fileURLWithPath:pauseConfigPath] error:nil];
         Assert([delegate respondsToSelector:NSSelectorFromString(@"showRestoreBrowser:")],
                @"overview and menu bar route to one restore browser workflow");
 

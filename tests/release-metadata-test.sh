@@ -3,8 +3,9 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INFO_PLIST="$ROOT/macos/GDriveBackupTiger/Info.plist"
-EXPECTED_VERSION="2.4.6"
-EXPECTED_BUILD="30"
+EXPECTED_VERSION="2.6.0"
+EXPECTED_BUILD="38"
+EXPECTED_PUBLISHED_BUILD="38"
 failures=0
 
 check_contains() {
@@ -45,6 +46,8 @@ fi
 
 check_contains "$ROOT/README.md" "Current release: \`v${version}\`" \
   "README release matches the app version"
+check_not_contains "$ROOT/README.md" "Current release candidate: \`v${version}\`" \
+  "README no longer presents the release as a candidate"
 check_contains "$ROOT/README.md" "GDrive-Backup-Tiger-${EXPECTED_VERSION}.pkg" \
   "README names the exact release installer"
 installer_names="$(
@@ -58,7 +61,7 @@ else
   failures=$((failures + 1))
 fi
 check_contains "$ROOT/README.md" \
-  "Scheduled, retry, mount-triggered, and menu-bar-only runs stay headless and passive, including in full-screen Spaces." \
+  "Scheduled, retry, unattended mount-triggered, and menu-bar-only runs stay headless and passive, including in full-screen Spaces." \
   "README explicitly keeps automatic retries passive in full-screen Spaces"
 check_contains "$ROOT/README.md" \
   "\`GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1\` is a narrow process-only authorization for one setup invocation; it is ignored when stored in a config file." \
@@ -110,14 +113,17 @@ check_contains "$ROOT/README.md" \
   "README ties completion to durable terminal status"
 check_contains "$ROOT/CHANGELOG.md" "## v${version} " \
   "changelog contains the app version"
-check_contains "$ROOT/docs/version-history.md" "| v${version} | ${build} |" \
+check_contains "$ROOT/docs/version-history.md" "| v${version} | ${EXPECTED_PUBLISHED_BUILD} |" \
   "publication history contains the app version and build"
 check_contains "$ROOT/docs/version-history.md" \
   "The v2.4.3, v2.4.4, and v2.4.5 installers are built and verified from their exact tags" \
   "publication history explains the exact-tag installer builds"
 check_contains "$ROOT/docs/version-history.md" \
-  "v2.4.6 is the current release." \
-  "publication history identifies v2.4.6 as the current release"
+  "v2.6.0 is the current release." \
+  "publication history identifies v2.6.0 as the current release"
+check_contains "$ROOT/docs/version-history.md" \
+  "Unpublished intermediate milestone; destination selection first ships publicly in v2.6.0" \
+  "publication history does not invent a public v2.5.0 release"
 check_contains "$ROOT/docs/version-history.md" \
   "No retrospectively built installer is presented as an original historical artifact." \
   "publication history labels retrospectively built installers honestly"

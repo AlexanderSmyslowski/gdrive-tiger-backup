@@ -48,6 +48,20 @@ int GDTHandleSMBURLWithHandlers(
         return result == 0 ? 0 : 69;
     }
 
+    if (performMount) {
+        // Finder saves SMB passwords with Apple's "apple:" Keychain partition,
+        // so Apple's NetAuth service may use them silently for any build of
+        // this app. Reading the item ourselves needs a grant tied to the exact
+        // build (apps without an Apple team ID get cdhash partitions), which
+        // every update loses. Let NetFS resolve the stored password first and
+        // keep our own Keychain read only as the fallback.
+        int systemResult = mountOperation(components.URL, account, nil);
+        if (systemResult == 0) {
+            return 0;
+        }
+        fprintf(stderr, "NAS diagnostic stage=system_credential_mount status=%d\n", systemResult);
+    }
+
     NSData *credential = credentialLookup(
         host, account, path, allowCredentialUI);
     if (!credential.length) {
@@ -71,6 +85,7 @@ static NSData *GDTLookupSMBPassword(
     NSString *account,
     NSString *path,
     BOOL allowUserInteraction) {
+    __block OSStatus interactionStatus = errSecSuccess;
     BOOL interactionConfigured = GDTConfigureLegacyKeychainInteraction(
         allowUserInteraction,
         ^int(BOOL allowInteraction) {
@@ -79,10 +94,12 @@ static NSData *GDTLookupSMBPassword(
             // their ACL prompt on macOS.
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-            return SecKeychainSetUserInteractionAllowed(allowInteraction);
+            interactionStatus = SecKeychainSetUserInteractionAllowed(allowInteraction);
+            return interactionStatus;
 #pragma clang diagnostic pop
         });
     if (!interactionConfigured) {
+        fprintf(stderr, "NAS diagnostic stage=keychain_configuration status=%d\n", (int)interactionStatus);
         return nil;
     }
 
@@ -112,25 +129,30 @@ static NSData *GDTLookupSMBPassword(
         OSStatus status = SecItemCopyMatching(
             (__bridge CFDictionaryRef)query, &result);
         if (status == errSecSuccess && result) {
-            return CFBridgingRelease(result);
+            NSData *data = CFBridgingRelease(result);
+            if (!data.length) fprintf(stderr, "NAS diagnostic stage=credential_data status=0\n");
+            return data;
         }
         if (result) {
             CFRelease(result);
         }
         if (status != errSecItemNotFound) {
+            fprintf(stderr, "NAS diagnostic stage=keychain_lookup status=%d\n", (int)status);
             return nil;
         }
     }
+    fprintf(stderr, "NAS diagnostic stage=keychain_lookup status=%d\n", (int)errSecItemNotFound);
     return nil;
 }
 
 static int GDTNetFSMount(
     NSURL *url,
     NSString *account,
-    NSData *passwordData) {
+    NSData * _Nullable passwordData) {
     BOOL useGuest = !account.length;
     CFStringRef password = NULL;
-    if (!useGuest) {
+    // A nil password with an account asks NetFS to use the stored credential.
+    if (!useGuest && passwordData) {
         password = CFStringCreateWithBytesNoCopy(
             kCFAllocatorDefault,
             passwordData.bytes,
@@ -139,6 +161,7 @@ static int GDTNetFSMount(
             false,
             kCFAllocatorNull);
         if (!password) {
+            fprintf(stderr, "NAS diagnostic stage=credential_encoding status=%d\n", EINVAL);
             return EINVAL;
         }
     }
@@ -158,6 +181,8 @@ static int GDTNetFSMount(
         (__bridge CFMutableDictionaryRef)openOptions,
         NULL,
         &mountpoints);
+    // Stage and numeric code identify the failure without exposing NAS or credential details.
+    if (result != 0) fprintf(stderr, "NAS diagnostic stage=netfs_mount status=%d\n", result);
     if (mountpoints) {
         CFRelease(mountpoints);
     }

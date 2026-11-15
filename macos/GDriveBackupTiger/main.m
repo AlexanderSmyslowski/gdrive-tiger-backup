@@ -2,7 +2,9 @@
 #import <Security/SecTask.h>
 #import <UserNotifications/UserNotifications.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
+#include <sys/file.h>
 #include <unistd.h>
 
 #import "ConfigSupport.h"
@@ -18,6 +20,8 @@
 #import "UpdateSupport.h"
 #import "Localization.h"
 #import "NetworkMountSupport.h"
+#import "AdHocStrings.h"
+#import "ScheduledBackupSupport.h"
 
 static NSImage *CreateApplicationIcon(void) {
     NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(128, 128)];
@@ -1168,6 +1172,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, strong) NSButton *backupButton;
 @property(nonatomic, strong) NSButton *settingsButton;
 @property(nonatomic, strong) NSButton *restoreButton;
+@property(nonatomic, strong) NSPopUpButton *destinationPopup;
+@property(nonatomic, strong) NSTextField *destinationCaption;
+@property(nonatomic, strong) NSTextField *destinationHint;
+@property(nonatomic, copy) void (^destinationHandler)(void);
 @end
 
 @implementation TigerOverviewView
@@ -1299,6 +1307,27 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.restoreButton.nextKeyView = self.backupButton;
     self.backupButton.nextKeyView = self.settingsButton;
 
+    self.destinationCaption = [self overviewLabelWithFrame:NSMakeRect(28, 394, 550, 20)
+        font:captionFont color:ink];
+    [self addSubview:self.destinationCaption];
+    self.destinationPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(24, 416, 420, 30)];
+    self.destinationPopup.autoenablesItems = NO;
+    self.destinationPopup.target = self;
+    self.destinationPopup.action = @selector(destinationChanged:);
+    [self addSubview:self.destinationPopup];
+    self.destinationHint = [self overviewLabelWithFrame:NSMakeRect(28, 448, 566, 20)
+        font:[NSFont systemFontOfSize:11] color:muted];
+    [self addSubview:self.destinationHint];
+    self.restoreButton.nextKeyView = self.destinationPopup;
+    self.destinationPopup.nextKeyView = self.backupButton;
+    for (NSView *field in @[self.nextRunCaptionLabel, self.nextRunValueLabel,
+            self.targetCaptionLabel, self.targetValueLabel,
+            self.storageCaptionLabel, self.storageValueLabel]) {
+        NSRect position = field.frame;
+        position.origin.y += 36;
+        field.frame = position;
+    }
+
     self.language = @"en";
     self.progressVisible = NO;
     self.progressPercent = -1.0;
@@ -1314,11 +1343,16 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.subtitleLabel.stringValue = T(_language, @"overviewSubtitle");
     self.subtitleLabel.accessibilityLabel = self.subtitleLabel.stringValue;
     self.nextRunCaptionLabel.stringValue = T(_language, @"overviewNextRun");
-    self.targetCaptionLabel.stringValue = T(_language, @"overviewTarget");
-    self.storageCaptionLabel.stringValue = T(_language, @"overviewStorage");
+    self.targetCaptionLabel.stringValue = GDTAdHocText(_language, @"automatic");
+    self.storageCaptionLabel.stringValue = GDTAdHocText(_language, @"storage");
+    self.storageCaptionLabel.frame = NSMakeRect(48, 350, 230, 19);
+    self.storageValueLabel.frame = NSMakeRect(290, 348, 274, 22);
     self.settingsButton.title = T(_language, @"overviewSettings");
     self.restoreButton.title = T(_language, @"restoreTitle");
-    self.backupButton.title = T(_language, @"backupNow");
+    self.backupButton.title = T(_language, @"startBackup");
+    self.destinationCaption.stringValue = GDTAdHocText(_language, @"choose");
+    self.destinationPopup.accessibilityLabel = self.destinationCaption.stringValue;
+    self.destinationHint.stringValue = GDTAdHocText(_language, @"once");
     self.settingsButton.accessibilityLabel = self.settingsButton.title;
     self.restoreButton.accessibilityLabel = self.restoreButton.title;
     self.backupButton.accessibilityLabel = self.backupButton.title;
@@ -1334,13 +1368,14 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     CGFloat settingsWidth = MAX(140.0, ceil(self.settingsButton.cell.cellSize.width + 18.0));
     CGFloat restoreWidth = MAX(140.0, ceil(self.restoreButton.cell.cellSize.width + 18.0));
     CGFloat rightEdge = NSWidth(self.bounds) - 26.0;
-    self.backupButton.frame = NSMakeRect(rightEdge - backupWidth, 368, backupWidth, 30);
+    self.backupButton.frame = NSMakeRect(rightEdge - backupWidth, 416, backupWidth, 30);
+    self.destinationPopup.frame = NSMakeRect(24, 416, rightEdge - backupWidth - 34, 30);
     self.restoreButton.frame = NSMakeRect(NSMinX(self.backupButton.frame) - 10.0 - restoreWidth,
-                                          368,
+                                          476,
                                           restoreWidth,
                                           30);
     self.settingsButton.frame = NSMakeRect(NSMinX(self.restoreButton.frame) - 10.0 - settingsWidth,
-                                           368,
+                                           476,
                                            settingsWidth,
                                            30);
 }
@@ -1459,6 +1494,11 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     }
 }
 
+- (void)destinationChanged:(id)sender {
+    (void)sender;
+    if (self.destinationHandler) self.destinationHandler();
+}
+
 - (void)openSettings:(id)sender {
     (void)sender;
     if (self.settingsHandler) {
@@ -1487,8 +1527,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     }
 
     for (NSValue *value in @[
-        [NSValue valueWithRect:NSMakeRect(24, 82, NSWidth(bounds) - 48, 108)],
-        [NSValue valueWithRect:NSMakeRect(24, 214, NSWidth(bounds) - 48, 132)]
+        [NSValue valueWithRect:NSMakeRect(24, 82, NSWidth(bounds) - 48, 160)],
+        [NSValue valueWithRect:NSMakeRect(24, 250, NSWidth(bounds) - 48, 132)]
     ]) {
         NSBezierPath *panel = [NSBezierPath bezierPathWithRoundedRect:value.rectValue xRadius:14 yRadius:14];
         [[NSColor colorWithCalibratedWhite:1.0 alpha:0.68] setFill];
@@ -1515,6 +1555,123 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.hasExplicitSelection =
         [self.popup.selectedItem.representedObject isKindOfClass:NSDictionary.class];
     self.confirmationButton.enabled = self.hasExplicitSelection;
+}
+
+@end
+
+@interface GDTRetryCountdownPanel : NSPanel
+@property(nonatomic, strong) NSDate *retryDate;
+@property(nonatomic, copy) NSString *language;
+@property(nonatomic, strong) NSTextField *countdownLabel;
+@property(nonatomic, strong) NSTextField *detailLabel;
+@property(nonatomic, strong) NSTimer *countdownTimer;
+- (instancetype)initWithRetryDate:(NSDate *)retryDate language:(NSString *)language;
+- (void)updateForDate:(NSDate *)now;
+- (void)showRunning;
+@end
+
+@implementation GDTRetryCountdownPanel
+
+- (instancetype)initWithRetryDate:(NSDate *)retryDate language:(NSString *)language {
+    self = [super initWithContentRect:NSMakeRect(0, 0, 460, 250)
+        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                  NSWindowStyleMaskNonactivatingPanel
+        backing:NSBackingStoreBuffered defer:NO];
+    if (!self) return nil;
+    self.retryDate = retryDate;
+    self.language = language;
+    self.title = @"GDrive Backup Tiger";
+    self.releasedWhenClosed = NO;
+    self.hidesOnDeactivate = NO;
+    self.level = NSFloatingWindowLevel;
+    self.collectionBehavior = NSWindowCollectionBehaviorFullScreenNone;
+
+    NSTextField *heading = [NSTextField wrappingLabelWithString:
+        T(language, @"backupNotificationFailureTitle")];
+    heading.font = [NSFont systemFontOfSize:17 weight:NSFontWeightSemibold];
+    self.detailLabel = [NSTextField wrappingLabelWithString:T(language, @"retryCountdownDetail")];
+    self.detailLabel.font = [NSFont systemFontOfSize:13];
+    self.countdownLabel = [NSTextField wrappingLabelWithString:@""];
+    self.countdownLabel.alignment = NSTextAlignmentCenter;
+    NSTextField *hint = [NSTextField wrappingLabelWithString:T(language, @"retryCountdownCloseHint")];
+    hint.font = [NSFont systemFontOfSize:11];
+    hint.textColor = NSColor.secondaryLabelColor;
+    NSButton *closeButton = [NSButton buttonWithTitle:T(language, @"retryCountdownClose")
+        target:self action:@selector(closeCountdown:)];
+    closeButton.keyEquivalent = @"\033";
+
+    NSStackView *stack = [NSStackView stackViewWithViews:
+        @[heading, self.detailLabel, self.countdownLabel, hint, closeButton]];
+    stack.orientation = NSUserInterfaceLayoutOrientationVertical;
+    stack.alignment = NSLayoutAttributeLeading;
+    stack.spacing = 12;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.contentView addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:20],
+        [stack.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-20],
+        [stack.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:20],
+        [stack.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-20],
+        [heading.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
+        [self.detailLabel.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
+        [self.countdownLabel.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
+        [hint.widthAnchor constraintEqualToAnchor:stack.widthAnchor]
+    ]];
+    [self updateForDate:NSDate.date];
+    [self.contentView layoutSubtreeIfNeeded];
+    [self setContentSize:NSMakeSize(460, MAX(250, stack.fittingSize.height + 40))];
+    NSRect visible = NSScreen.mainScreen.visibleFrame;
+    [self setFrameTopLeftPoint:NSMakePoint(NSMaxX(visible) - self.frame.size.width - 20,
+                                         NSMaxY(visible) - 20)];
+    __weak typeof(self) weakSelf = self;
+    self.countdownTimer = [NSTimer timerWithTimeInterval:1 repeats:YES block:^(NSTimer *timer) {
+        (void)timer;
+        [weakSelf updateForDate:NSDate.date];
+    }];
+    [NSRunLoop.mainRunLoop addTimer:self.countdownTimer forMode:NSRunLoopCommonModes];
+    return self;
+}
+
+- (void)updateForDate:(NSDate *)now {
+    // Wall-clock time survives sleep and delayed timer callbacks. Timer ticks
+    // update only the display; the existing controller owns the actual retry.
+    NSInteger seconds = (NSInteger)ceil(MAX(0, [self.retryDate timeIntervalSinceDate:now]));
+    self.countdownLabel.font = seconds > 0
+        ? [NSFont monospacedDigitSystemFontOfSize:36 weight:NSFontWeightMedium]
+        : [NSFont systemFontOfSize:20 weight:NSFontWeightMedium];
+    self.countdownLabel.stringValue = seconds > 0
+        ? [NSString stringWithFormat:@"%02ld:%02ld", (long)(seconds / 60), (long)(seconds % 60)]
+        : T(self.language, @"retryCountdownDue");
+    self.detailLabel.stringValue = T(self.language, seconds > 0
+        ? @"retryCountdownDetail" : @"retryCountdownDueDetail");
+    self.countdownLabel.accessibilityLabel = seconds > 0
+        ? [NSString stringWithFormat:T(self.language, @"retryCountdownAccessible"),
+            (long)(seconds / 60), (long)(seconds % 60)]
+        : self.countdownLabel.stringValue;
+}
+
+- (void)showRunning {
+    [self.countdownTimer invalidate];
+    self.countdownTimer = nil;
+    self.countdownLabel.font = [NSFont systemFontOfSize:20 weight:NSFontWeightMedium];
+    self.countdownLabel.stringValue = T(self.language, @"retryCountdownRunning");
+    self.countdownLabel.accessibilityLabel = self.countdownLabel.stringValue;
+    self.detailLabel.stringValue = T(self.language, @"retryCountdownRunningDetail");
+}
+
+- (void)closeCountdown:(id)sender {
+    (void)sender;
+    [self close];
+}
+
+- (void)close {
+    [self.countdownTimer invalidate];
+    self.countdownTimer = nil;
+    [super close];
+}
+
+- (void)dealloc {
+    [_countdownTimer invalidate];
 }
 
 @end
@@ -1593,6 +1750,13 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic) NSTimeInterval overviewRefreshInterval;
 @property(nonatomic) BOOL overviewRefreshInFlight;
 @property(nonatomic) BOOL overviewLaunchPending;
+@property(nonatomic, copy) NSString *adHocSelectedID;
+@property(nonatomic, copy) NSDictionary *adHocRunChoice;
+@property(nonatomic, copy) NSString *adHocSummaryPath;
+@property(nonatomic) BOOL adHocInspectionPending;
+@property(nonatomic) NSTimeInterval adHocRunStartedAt;
+@property(nonatomic) NSUInteger adHocGeneration;
+@property(nonatomic, copy) NSArray *adHocChoices;
 @property(nonatomic, copy) NSString *lastMountTriggerPath;
 @property(nonatomic, strong) NSDate *lastMountTriggerDate;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary<NSString *, id> *> *mountedExternalVolumeDescriptorsByPath;
@@ -1608,6 +1772,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, copy) NSString *unknownExternalVolumeBootSessionIDCache;
 @property(nonatomic, copy) NSString *terminalFailureReason;
 @property(nonatomic, strong) NSMutableSet<NSString *> *pendingBackupNotificationIdentifiers;
+@property(nonatomic, strong) GDTRetryCountdownPanel *retryCountdownPanel;
+@property(nonatomic, copy) NSDictionary<NSString *, NSString *> *retryCountdownDecision;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *
     pendingBackupNotificationKeysByProfileID;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *
@@ -1617,6 +1783,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *
     backupNotificationGenerationsByProfileID;
 @property(nonatomic, strong) NSMutableSet<NSString *> *pendingBackupSuccessIdentifiers;
+@property(nonatomic, strong) NSMutableSet<NSString *> *automaticRetryIdentifiersInFlight;
 - (void)processBackupSuccessNotificationDecision:
     (NSDictionary<NSString *, NSString *> *)decision;
 - (void)processBackupSuccessNotificationDecision:
@@ -1629,6 +1796,18 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     (NSDictionary<NSString *, NSString *> *)decision
          capturedActiveIssueTimestamp:(NSTimeInterval)capturedActiveIssueTimestamp;
 - (BOOL)launchAutomaticRetryDecision:(NSDictionary<NSString *, NSString *> *)decision;
+- (BOOL)launchAutomaticRetryDecision:(NSDictionary<NSString *, NSString *> *)decision
+                           completion:(void (^)(NSInteger status))completion;
+- (NSString *)automaticRetryLockPath;
+- (BOOL)automaticRetryLockIsAvailable;
+- (NSString *)automaticRetrySummaryPathForProfileID:(NSString *)profileID;
+- (NSDictionary<NSString *, NSString *> *)automaticRetrySummaryAtPath:(NSString *)path;
+- (NSDictionary<NSString *, NSString *> *)automaticRetryDecisionForSummary:
+    (NSDictionary<NSString *, NSString *> *)summary
+                                                               summaryPath:(NSString *)summaryPath
+                                                                 profileID:(NSString *)profileID;
+- (NSTimeInterval)automaticRetryOriginForIdentifier:(NSString *)identifier
+                                          profileID:(NSString *)profileID;
 - (void)removeExactBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers
                                       forProfileID:(NSString *)profileID;
 - (void)removeDeliveredBackupNotificationIdentifiers:(NSArray<NSString *> *)identifiers;
@@ -1654,6 +1833,12 @@ static NSString *GDTSafeDestinationLabelComponent(NSString *value) {
         return @"";
     }
     return trimmed;
+}
+
+static BOOL GDTShouldDisplayManualRun(NSTimeInterval manualStartedAt,
+    NSDictionary *automaticSummary, NSString *automaticStatus, BOOL manualPending) {
+    if ([automaticStatus isEqual:@"running"]) return NO;
+    return manualPending || manualStartedAt >= [automaticSummary[@"started_at"] doubleValue];
 }
 
 static NSString *GDTBackupTargetOverviewText(NSDictionary<NSString *, NSString *> *config,
@@ -2493,6 +2678,57 @@ static void GDTAdvanceBackupNotificationAcceptedState(
     }];
 }
 
+- (BOOL)presentRetryCountdownForDecision:(NSDictionary<NSString *, NSString *> *)decision {
+    [self.retryCountdownPanel close];
+    self.retryCountdownDecision = decision;
+    self.retryCountdownPanel = [[GDTRetryCountdownPanel alloc]
+        initWithRetryDate:[NSDate dateWithTimeIntervalSince1970:[decision[@"retryAt"] doubleValue]]
+        language:self.language ?: @"en"];
+    [self.retryCountdownPanel orderFront:nil];
+    if (!self.retryCountdownPanel.isVisible) return NO;
+    [self removeExactBackupNotificationIdentifiers:@[decision[@"identifier"]]
+                                     forProfileID:decision[@"profileID"]];
+    return YES;
+}
+
+- (void)updateRetryCountdownForConfig:(NSDictionary<NSString *, NSString *> *)config
+                            summary:(NSDictionary<NSString *, NSString *> *)summary
+                             status:(NSString *)status now:(NSDate *)now {
+    if (!self.retryCountdownPanel) return;
+    NSDictionary *decision = self.retryCountdownDecision;
+    BOOL sameProfile = [GDTBackupNotificationPolicy
+        failureNotificationIdentifiersForProfileID:config[@"GDRIVE_BACKUP_PROFILE_ID"] ?: @"legacy"
+        candidateIdentifiers:@[decision[@"identifier"]]].count == 1;
+    BOOL enabled = sameProfile &&
+        [[config[@"GDRIVE_BACKUP_SCHEDULE"] lowercaseString]
+            isEqualToString:decision[@"retrySchedule"]] &&
+        ![config[@"GDRIVE_BACKUP_NOTIFY_FAILURES"] isEqualToString:@"0"] &&
+        ![config[@"GDRIVE_BACKUP_PAUSED"] isEqualToString:@"1"] &&
+        [[config[@"GDRIVE_BACKUP_TARGET"] lowercaseString] isEqualToString:@"nas"] &&
+        [@[@"daily", @"hourly", @"login"] containsObject:
+            [config[@"GDRIVE_BACKUP_SCHEDULE"] lowercaseString] ?: @""];
+    BOOL matchingRetry = [summary[@"trigger"] isEqualToString:@"schedule-retry"] &&
+        [summary[@"retry_attempt"] isEqualToString:@"1"] &&
+        [summary[@"started_at"] doubleValue] > [decision[@"retryOriginStartedAt"] doubleValue] &&
+        [summary[@"retry_origin_started_at"] longLongValue] ==
+            [decision[@"retryOriginStartedAt"] longLongValue];
+    if (enabled && matchingRetry && [status isEqualToString:@"running"]) {
+        [self.retryCountdownPanel showRunning];
+        return;
+    }
+    NSDate *retryDate = [GDTAutomaticRetryPolicy retryDateForConfig:config
+        summary:summary status:status now:now];
+    BOOL sameOrigin = [summary[@"started_at"] longLongValue] ==
+        [decision[@"retryOriginStartedAt"] longLongValue];
+    if (enabled && sameOrigin && retryDate &&
+        fabs(retryDate.timeIntervalSince1970 - [decision[@"retryAt"] doubleValue]) < 0.5) {
+        return;
+    }
+    [self.retryCountdownPanel close];
+    self.retryCountdownPanel = nil;
+    self.retryCountdownDecision = nil;
+}
+
 - (void)processBackupNotificationDecision:(NSDictionary<NSString *, NSString *> *)decision {
     NSDictionary<NSString *, NSString *> *deliveryDecision = [decision copy];
     NSString *identifier = deliveryDecision[@"identifier"];
@@ -2557,10 +2793,24 @@ static void GDTAdvanceBackupNotificationAcceptedState(
         ? deliveryDecision[@"revision"] : @"";
     BOOL sameIdentifier =
         [[defaults stringForKey:identifierKey] isEqualToString:identifier];
-    BOOL alreadyDelivered = revision.length
-        ? sameIdentifier &&
-            [[defaults stringForKey:revisionKey] isEqualToString:revision]
-        : sameIdentifier;
+    BOOL countdown = [deliveryDecision[@"retryAt"] doubleValue] > 0 &&
+        [deliveryDecision[@"retryOriginStartedAt"] longLongValue] > 0;
+    NSString *presentedKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+        suffix:@"lastPresentedRetryCountdownIdentifier"];
+    // Static alerts from an earlier build do not count as a displayed window.
+    // Keep the existing lifecycle watermark above authoritative during migration.
+    BOOL alreadyDelivered = countdown
+        ? [[defaults stringForKey:presentedKey] isEqualToString:identifier]
+        : (revision.length
+            ? sameIdentifier && [[defaults stringForKey:revisionKey] isEqualToString:revision]
+            : sameIdentifier);
+    if (countdown) {
+        NSString *retryIdentifier = [NSString stringWithFormat:@"%@.automatic-retry.%lld",
+            profileID, [deliveryDecision[@"retryOriginStartedAt"] longLongValue]];
+        NSString *retryKey = [self backupNotificationDefaultsKeyForProfileID:profileID
+            suffix:@"lastAutomaticRetryIdentifier"];
+        if ([[defaults stringForKey:retryKey] isEqualToString:retryIdentifier]) return;
+    }
     if (alreadyDelivered) {
         // Replay repairs a lifecycle watermark if acceptance was interrupted
         // after its identifier was saved but before the stage was advanced.
@@ -2631,8 +2881,7 @@ static void GDTAdvanceBackupNotificationAcceptedState(
             .unsignedIntegerValue;
 
     __weak typeof(self) weakSelf = self;
-    [self deliverBackupNotificationDecision:deliveryDecision
-                                  completion:^(BOOL delivered) {
+    void (^completion)(BOOL) = ^(BOOL delivered) {
         void (^finish)(void) = ^{
             typeof(self) strongSelf = weakSelf;
             if (!strongSelf) return;
@@ -2661,6 +2910,7 @@ static void GDTAdvanceBackupNotificationAcceptedState(
                         acceptedStageKey,
                         issueOriginTimestamp, decisionStage);
                     [store setObject:identifier forKey:identifierKey];
+                    if (countdown) [store setObject:identifier forKey:presentedKey];
                     if (revision.length) {
                         [store setObject:revision forKey:revisionKey];
                     } else {
@@ -2706,7 +2956,12 @@ static void GDTAdvanceBackupNotificationAcceptedState(
         } else {
             dispatch_async(dispatch_get_main_queue(), finish);
         }
-    }];
+    };
+    if (countdown) {
+        completion([self presentRetryCountdownForDecision:deliveryDecision]);
+    } else {
+        [self deliverBackupNotificationDecision:deliveryDecision completion:completion];
+    }
 }
 
 - (BOOL)isBackupSuccessDecisionSourceCurrent:
@@ -3213,16 +3468,121 @@ static void GDTAdvanceBackupNotificationAcceptedState(
                                                                            suffix:@"activeIssueIdentifier"]];
 }
 
-- (NSDictionary<NSString *, NSString *> *)currentAutomaticRetryDecision {
+- (NSString *)automaticRetrySummaryPathForProfileID:(NSString *)profileID {
+    if (!profileID.length) return @"";
     NSDictionary<NSString *, NSString *> *config = GDTReadConfigDictionary();
-    NSString *summaryPath = GDTBackupSummaryPathForConfig(config);
-    NSDictionary<NSString *, NSString *> *summary =
-        GDTReadBackupSummaryAtPath(summaryPath);
+    NSString *configuredProfileID = config[@"GDRIVE_BACKUP_PROFILE_ID"] ?: @"legacy";
+    if (![configuredProfileID isEqualToString:profileID]) return @"";
+    return GDTBackupSummaryPathForConfig(config);
+}
+
+- (NSDictionary<NSString *, NSString *> *)automaticRetrySummaryAtPath:(NSString *)path {
+    return path.length ? GDTReadBackupSummaryAtPath(path) : @{};
+}
+
+- (NSDictionary<NSString *, NSString *> *)automaticRetryDecisionForSummary:
+    (NSDictionary<NSString *, NSString *> *)summary
+                                                               summaryPath:(NSString *)summaryPath
+                                                                 profileID:(NSString *)profileID {
+    NSDictionary<NSString *, NSString *> *config = GDTReadConfigDictionary();
+    NSString *configuredProfileID = config[@"GDRIVE_BACKUP_PROFILE_ID"] ?: @"legacy";
+    if (![configuredProfileID isEqualToString:profileID] ||
+        ![GDTBackupSummaryPathForConfig(config) isEqualToString:summaryPath]) {
+        return nil;
+    }
     NSString *status = GDTBackupSummaryStatusForValues(summary);
     return [GDTAutomaticRetryPolicy decisionForConfig:config
                                                summary:summary
                                                 status:status
                                                    now:[NSDate date]];
+}
+
+- (NSDictionary<NSString *, NSString *> *)currentAutomaticRetryDecision {
+    NSDictionary<NSString *, NSString *> *config = GDTReadConfigDictionary();
+    NSDictionary<NSString *, NSString *> *summary = GDTReadBackupSummaryAtPath(
+        GDTBackupSummaryPathForConfig(config));
+    NSString *status = GDTBackupSummaryStatusForValues(summary);
+    return [GDTAutomaticRetryPolicy decisionForConfig:config
+                                               summary:summary
+                                                status:status
+                                                   now:[NSDate date]];
+}
+
+- (NSString *)automaticRetryLockPath {
+    NSDictionary<NSString *, NSString *> *config = GDTReadConfigDictionary();
+    NSString *path = config[@"GDRIVE_BACKUP_LOCK"];
+    if (!path.length) {
+        path = NSProcessInfo.processInfo.environment[@"GDRIVE_BACKUP_LOCK"];
+    }
+    if (!path.length) {
+        path = [NSHomeDirectory() stringByAppendingPathComponent:
+            @"Library/Logs/gdrive-backup.lock"];
+    }
+
+    NSString *home = NSHomeDirectory();
+    if ([path isEqualToString:@"$HOME"] || [path isEqualToString:@"${HOME}"]) {
+        path = home;
+    } else if ([path hasPrefix:@"$HOME/"]) {
+        path = [home stringByAppendingPathComponent:[path substringFromIndex:6]];
+    } else if ([path hasPrefix:@"${HOME}/"]) {
+        path = [home stringByAppendingPathComponent:[path substringFromIndex:8]];
+    } else {
+        path = path.stringByExpandingTildeInPath;
+    }
+    return path.isAbsolutePath ? path.stringByStandardizingPath : @"";
+}
+
+- (BOOL)automaticRetryLockIsAvailable {
+    NSString *path = [self automaticRetryLockPath];
+    if (!path.length) return NO;
+
+    int descriptor;
+    do {
+        descriptor = open(path.fileSystemRepresentation, O_RDONLY | O_CLOEXEC);
+    } while (descriptor < 0 && errno == EINTR);
+    if (descriptor < 0) {
+        // A missing lock file means no backup has acquired it yet. Any race
+        // after this observation is closed by the engine's own exclusive lock.
+        return errno == ENOENT;
+    }
+
+    int lockStatus;
+    do {
+        lockStatus = flock(descriptor, LOCK_SH | LOCK_NB);
+    } while (lockStatus != 0 && errno == EINTR);
+    if (lockStatus == 0) {
+        (void)flock(descriptor, LOCK_UN);
+    }
+    (void)close(descriptor);
+    return lockStatus == 0;
+}
+
+- (BOOL)automaticRetrySummary:(NSDictionary<NSString *, NSString *> *)summary
+              confirmsDecision:(NSDictionary<NSString *, NSString *> *)decision {
+    NSString *status = GDTBackupSummaryStatusForValues(summary);
+    if (![@[@"success", @"failure", @"cancelled"] containsObject:status] ||
+        ![summary[@"trigger"] isEqualToString:@"schedule-retry"] ||
+        ![summary[@"target"] isEqualToString:@"nas"] ||
+        ![summary[@"retry_attempt"] isEqualToString:decision[@"attempt"]] ||
+        ![summary[@"retry_origin_started_at"]
+            isEqualToString:decision[@"originStartedAt"]]) {
+        return NO;
+    }
+    NSTimeInterval origin =
+        GDTCanonicalBackupNotificationTimestamp(decision[@"originStartedAt"]);
+    NSTimeInterval started =
+        GDTCanonicalBackupNotificationTimestamp(summary[@"started_at"]);
+    return origin > 0 && started > origin;
+}
+
+- (NSTimeInterval)automaticRetryOriginForIdentifier:(NSString *)identifier
+                                          profileID:(NSString *)profileID {
+    if (!identifier.length || !profileID.length) return 0;
+    NSString *prefix = [NSString stringWithFormat:
+        @"%@.automatic-retry.", profileID];
+    if (![identifier hasPrefix:prefix]) return 0;
+    return GDTCanonicalBackupNotificationTimestamp(
+        [identifier substringFromIndex:prefix.length]);
 }
 
 - (void)processAutomaticRetryDecision:(NSDictionary<NSString *, NSString *> *)decision {
@@ -3232,6 +3592,14 @@ static void GDTAdvanceBackupNotificationAcceptedState(
         !decision[@"originStartedAt"].length ||
         ![decision[@"attempt"] isEqualToString:@"1"] ||
         ![decision[@"trigger"] isEqualToString:@"schedule-retry"]) {
+        return;
+    }
+
+    NSTimeInterval decisionOrigin =
+        GDTCanonicalBackupNotificationTimestamp(decision[@"originStartedAt"]);
+    if (decisionOrigin <= 0 ||
+        [self automaticRetryOriginForIdentifier:identifier profileID:profileID] !=
+            decisionOrigin) {
         return;
     }
 
@@ -3245,16 +3613,79 @@ static void GDTAdvanceBackupNotificationAcceptedState(
         return;
     }
 
+    NSString *summaryPath = [self automaticRetrySummaryPathForProfileID:profileID];
+    if (!summaryPath.length) return;
+    NSDictionary<NSString *, NSString *> *currentSummary =
+        [self automaticRetrySummaryAtPath:summaryPath];
+    NSDictionary<NSString *, NSString *> *latestDecision =
+        [self automaticRetryDecisionForSummary:currentSummary
+                                    summaryPath:summaryPath
+                                      profileID:profileID];
+    if (![latestDecision[@"identifier"] isEqualToString:identifier] ||
+        ![latestDecision[@"profileID"] isEqualToString:profileID] ||
+        ![latestDecision[@"originStartedAt"]
+            isEqualToString:decision[@"originStartedAt"]] ||
+        ![latestDecision[@"attempt"] isEqualToString:decision[@"attempt"]] ||
+        ![latestDecision[@"trigger"] isEqualToString:decision[@"trigger"]]) {
+        return;
+    }
     NSString *key = [self backupNotificationDefaultsKeyForProfileID:profileID
                                                               suffix:@"lastAutomaticRetryIdentifier"];
     NSUserDefaults *defaults = [self backupNotificationDefaultsStore];
-    if ([[defaults stringForKey:key] isEqualToString:identifier]) {
+    if ([[defaults stringForKey:key] isEqualToString:identifier] &&
+        [self automaticRetrySummary:currentSummary confirmsDecision:decision]) {
         return;
     }
-    // Persist only after NSTask accepted the launch. A local launch failure is
-    // then eligible again on the next controller refresh.
-    if ([self launchAutomaticRetryDecision:decision]) {
-        [defaults setObject:identifier forKey:key];
+
+    NSString *existingIdentifier = [defaults stringForKey:key];
+    if (existingIdentifier.length && ![existingIdentifier isEqualToString:identifier]) {
+        NSTimeInterval existingOrigin =
+            [self automaticRetryOriginForIdentifier:existingIdentifier profileID:profileID];
+        if (existingOrigin <= 0 || existingOrigin > decisionOrigin) return;
+    }
+
+    if ([self.automaticRetryIdentifiersInFlight containsObject:identifier] ||
+        ![self automaticRetryLockIsAvailable]) {
+        return;
+    }
+    if (!self.automaticRetryIdentifiersInFlight) {
+        self.automaticRetryIdentifiersInFlight = [NSMutableSet set];
+    }
+    [self.automaticRetryIdentifiersInFlight addObject:identifier];
+
+    NSDictionary<NSString *, NSString *> *launchedDecision = [decision copy];
+    __weak typeof(self) weakSelf = self;
+    BOOL launched = [self launchAutomaticRetryDecision:launchedDecision
+                                            completion:^(NSInteger status) {
+        (void)status;
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf.automaticRetryIdentifiersInFlight removeObject:identifier];
+
+        NSDictionary<NSString *, NSString *> *summary =
+            [strongSelf automaticRetrySummaryAtPath:summaryPath];
+        NSUserDefaults *currentDefaults = [strongSelf backupNotificationDefaultsStore];
+        NSString *existingIdentifier = [currentDefaults stringForKey:key];
+        BOOL claimMayAdvance = !existingIdentifier.length ||
+            [existingIdentifier isEqualToString:identifier];
+        if (!claimMayAdvance) {
+            NSTimeInterval existingOrigin = [strongSelf
+                automaticRetryOriginForIdentifier:existingIdentifier
+                                          profileID:launchedDecision[@"profileID"]];
+            NSTimeInterval launchedOrigin = GDTCanonicalBackupNotificationTimestamp(
+                launchedDecision[@"originStartedAt"]);
+            // A late completion may advance an older profile marker, but it
+            // must never roll a newer controller decision backwards.
+            claimMayAdvance = existingOrigin > 0 && existingOrigin < launchedOrigin;
+        }
+        if (claimMayAdvance &&
+            [strongSelf automaticRetrySummary:summary confirmsDecision:launchedDecision]) {
+            [currentDefaults setObject:identifier forKey:key];
+        }
+        [strongSelf refreshOverviewStatus:nil];
+    }];
+    if (!launched) {
+        [self.automaticRetryIdentifiersInFlight removeObject:identifier];
     }
 }
 
@@ -3309,6 +3740,8 @@ static void GDTAdvanceBackupNotificationAcceptedState(
         [decision[@"kind"] isEqualToString:@"retry-running"] &&
         decisionOrigin == retryOrigin && decision[@"identifier"].length;
     if (retryRunning) return @"retry-running";
+    // Running describes the current transfer; the saved issue remains until resolved.
+    if ([rawStatus isEqualToString:@"running"]) return @"running";
 
     NSString *activeKind = [defaults stringForKey:kindKey];
     activeSince = [defaults doubleForKey:timeKey];
@@ -3355,6 +3788,7 @@ static void GDTAdvanceBackupNotificationAcceptedState(
     BOOL safeMountRoot = [path hasPrefix:@"/Volumes/"] &&
         path.pathComponents.count == 3;
     return [self isUnknownExternalVolumeDescriptorEligible:descriptor] &&
+        ![descriptor[@"isBackupVolume"] boolValue] &&
         safeMountRoot &&
         [descriptor[@"isWritable"] boolValue] &&
         [descriptor[@"filesystem"] isKindOfClass:NSString.class] &&
@@ -4085,6 +4519,21 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     return formatter;
 }
 
+- (NSDictionary<NSString *, NSString *> *)lastSuccessPresentationForRecord:(NSDictionary *)record
+                                                                    calendar:(NSCalendar *)calendar {
+    NSString *language = self.language ?: @"en";
+    if (!record) return @{@"lastSuccessTitle": T(language, @"lastSuccessNone"), @"lastSuccessDate": @""};
+    NSString *volume = record[@"volume"] ?: @"";
+    NSString *title = volume.length
+        ? [NSString stringWithFormat:T(language, @"lastSuccessOn"), volume]
+        : T(language, @"lastSuccessUnknownVolume");
+    NSDateFormatter *formatter = [self overviewDateFormatterWithCalendar:calendar];
+    formatter.doesRelativeDateFormatting = YES;
+    NSString *date = [formatter stringFromDate:
+        [NSDate dateWithTimeIntervalSince1970:[record[@"at"] doubleValue]]];
+    return @{@"lastSuccessTitle": title, @"lastSuccessDate": date ?: @""};
+}
+
 - (NSDictionary<NSString *, NSString *> *)overviewSnapshotForConfig:(NSDictionary<NSString *, NSString *> *)config
                                                           summaryPath:(NSString *)summaryPath
                                                                   now:(NSDate *)now
@@ -4122,6 +4571,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSString *trigger = summary[@"trigger"] ?: @"";
     BOOL retryRunning = [status isEqualToString:@"running"] &&
         [trigger isEqualToString:@"schedule-retry"];
+    BOOL progressVisible = retryRunning || ([status isEqualToString:@"running"] &&
+        [trigger isEqualToString:@"mount"]);
     NSDictionary<NSString *, NSString *> *statusKeys = @{
         @"success": @"completed",
         @"failure": @"failed",
@@ -4178,16 +4629,17 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         storage = [NSString stringWithFormat:T(language, @"overviewFreeOf"), free, total];
     }
 
-    return @{
+    NSMutableDictionary *snapshot = [@{
         @"status": status,
         @"trigger": trigger,
         @"retryRunning": retryRunning ? @"1" : @"0",
-        @"progressVisible": retryRunning ? @"1" : @"0",
-        @"progressLabel": retryRunning ? T(language, @"automaticRetryRunning") : @"",
-        @"progressPhase": retryRunning
+        @"progressVisible": progressVisible ? @"1" : @"0",
+        @"progressLabel": progressVisible
+            ? T(language, retryRunning ? @"automaticRetryRunning" : @"running") : @"",
+        @"progressPhase": progressVisible
             ? GDTLocalizedProgressPhase(progress[@"phase"], language) : @"",
-        @"progressPercent": retryRunning ? (progress[@"percent"] ?: @"") : @"",
-        @"progressDetail": retryRunning
+        @"progressPercent": progressVisible ? (progress[@"percent"] ?: @"") : @"",
+        @"progressDetail": progressVisible
             ? GDTLocalizedProgressDetail(progress, language) : @"",
         @"lastRun": lastRun ?: @"",
         @"lastRunDetail": lastRunDetail,
@@ -4195,13 +4647,16 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         @"automaticBackupsPaused": automaticBackupsPaused ? @"1" : @"0",
         @"target": target,
         @"storage": storage
-    };
+    } mutableCopy];
+    [snapshot addEntriesFromDictionary:[self lastSuccessPresentationForRecord:
+        GDTLastSuccessfulBackupForSummary(summary, now) calendar:calendar]];
+    return snapshot;
 }
 
 - (void)applyOverviewSnapshot:(NSDictionary<NSString *, NSString *> *)snapshot
                        toView:(TigerOverviewView *)view {
     NSString *status = snapshot[@"status"] ?: @"unknown";
-    if (![status isEqualToString:@"running"]) {
+    if (![status isEqualToString:@"running"] && !self.adHocRunChoice) {
         self.overviewLaunchPending = NO;
     }
     view.language = self.language ?: @"en";
@@ -4219,6 +4674,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     view.progressPercent = progressPercent.length ? progressPercent.doubleValue : -1.0;
     view.progressVisible = [snapshot[@"progressVisible"] isEqualToString:@"1"];
     view.backupButton.enabled = !self.overviewLaunchPending && ![status isEqualToString:@"running"];
+    [self refreshAdHocPicker];
 }
 
 - (NSMenuItem *)statusValueItemWithTitle:(NSString *)title value:(NSString *)value {
@@ -4232,6 +4688,15 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSString *language = self.language ?: @"en";
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@"GDrive Backup Tiger"];
 
+    for (NSString *text in @[snapshot[@"lastSuccessTitle"] ?: T(language, @"lastSuccessNone"),
+                              snapshot[@"lastSuccessDate"] ?: @""]) {
+        if (!text.length) continue;
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:text action:nil keyEquivalent:@""];
+        item.enabled = NO;
+        [menu addItem:item];
+    }
+    [menu addItem:[NSMenuItem separatorItem]];
+
     NSMenuItem *open = [[NSMenuItem alloc] initWithTitle:T(language, @"overviewOpen")
                                                    action:@selector(showOverviewFromStatus:)
                                             keyEquivalent:@""];
@@ -4244,10 +4709,11 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     if (detail.length) {
         lastRun = [NSString stringWithFormat:@"%@ · %@", lastRun, detail];
     }
-    [menu addItem:[self statusValueItemWithTitle:T(language, @"overviewLastRun") value:lastRun]];
-    if ([snapshot[@"retryRunning"] isEqualToString:@"1"]) {
+    [menu addItem:[self statusValueItemWithTitle:T(language, @"lastAttempt") value:lastRun]];
+    if ([snapshot[@"progressVisible"] isEqualToString:@"1"]) {
+        BOOL retryRunning = [snapshot[@"retryRunning"] isEqualToString:@"1"];
         NSMutableArray<NSString *> *progressParts = [NSMutableArray arrayWithObject:
-            T(language, @"automaticRetryRunningShort")];
+            T(language, retryRunning ? @"automaticRetryRunningShort" : @"running")];
         if ([snapshot[@"progressPhase"] length]) {
             [progressParts addObject:snapshot[@"progressPhase"]];
         }
@@ -4338,6 +4804,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         @"unknown": @"externaldrive.fill"
     };
     NSString *status = snapshot[@"alertStatus"] ?: snapshot[@"status"] ?: @"unknown";
+    // External-drive progress can be displayed alongside an unresolved NAS issue.
+    if ([snapshot[@"status"] isEqualToString:@"running"] &&
+        ![status isEqualToString:@"retry-running"]) status = @"running";
     NSString *symbolName = symbols[status] ?: symbols[@"unknown"];
     NSImage *image = [NSImage imageWithSystemSymbolName:symbolName
                                accessibilityDescription:@"GDrive Backup Tiger"];
@@ -4407,12 +4876,21 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSTimeInterval activeIssueTimestamp = [[self backupNotificationDefaultsStore]
         doubleForKey:[self backupNotificationDefaultsKeyForProfileID:notificationProfileID
                                                                suffix:@"activeIssueAt"]];
+    NSDictionary *manualChoice = self.adHocRunChoice;
+    NSString *manualSummaryPath = self.adHocSummaryPath;
+    BOOL manualPending = self.overviewLaunchPending;
+    NSTimeInterval manualStartedAt = self.adHocRunStartedAt;
+    NSUInteger manualGeneration = self.adHocGeneration;
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf) {
             return;
         }
+        NSString *historyRoot = [NSHomeDirectory() stringByAppendingPathComponent:
+            @"Library/Application Support/GDrive Backup Tiger"];
+        NSDictionary *lastSuccess = [strongSelf lastSuccessPresentationForRecord:
+            GDTLatestSuccessfulBackupAtRoot(historyRoot, now) calendar:calendar];
         NSDictionary<NSString *, NSString *> *summary = GDTReadBackupSummaryAtPath(summaryPath);
         NSString *status = GDTBackupSummaryStatusForValues(summary);
         NSString *progressPath = GDTBackupProgressPathForSummaryPath(summaryPath);
@@ -4437,12 +4915,42 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         NSDictionary<NSString *, NSString *> *retryDecision =
             [GDTAutomaticRetryPolicy decisionForConfig:config summary:summary
                                                 status:status now:now];
+        NSDictionary *manualSnapshot = nil;
+        if (manualChoice && GDTShouldDisplayManualRun(manualStartedAt, summary, status, manualPending)) {
+            NSDictionary *manualSummary = GDTReadBackupSummaryAtPath(manualSummaryPath);
+            if ([manualSummary[@"started_at"] doubleValue] < manualStartedAt) manualSummary = @{};
+            NSString *manualStatus = GDTBackupSummaryStatusForValues(manualSummary);
+            if (!manualPending && !manualSummary.count) manualStatus = @"failure";
+            if (manualPending && ![manualStatus isEqual:@"running"]) {
+                manualStatus = @"running";
+                manualSummary = @{@"trigger": @"manual"};
+            }
+            NSDictionary *manualConfig = manualChoice[@"config"];
+            NSDictionary *manualProgress = GDTValidatedBackupProgressForValues(
+                GDTReadBackupProgressAtPath(GDTBackupProgressPathForSummaryPath(manualSummaryPath)),
+                manualSummary, manualStatus, manualConfig[@"GDRIVE_BACKUP_PROFILE_ID"] ?: @"legacy",
+                now.timeIntervalSince1970);
+            NSMutableDictionary *display = [[strongSelf overviewSnapshotForConfig:config summary:manualSummary
+                status:manualStatus progress:manualProgress now:now calendar:calendar] mutableCopy];
+            BOOL running = [manualStatus isEqual:@"running"];
+            display[@"progressVisible"] = running ? @"1" : @"0";
+            display[@"progressLabel"] = [NSString stringWithFormat:GDTAdHocText(strongSelf.language, @"on"), manualChoice[@"label"]];
+            display[@"lastRunDetail"] = [NSString stringWithFormat:@"%@ · %@", display[@"lastRunDetail"] ?: @"", manualChoice[@"label"]];
+            display[@"progressPhase"] = GDTLocalizedProgressPhase(manualProgress[@"phase"], strongSelf.language);
+            display[@"progressPercent"] = manualProgress[@"percent"] ?: @"";
+            display[@"progressDetail"] = GDTLocalizedProgressDetail(manualProgress, strongSelf.language);
+            manualSnapshot = display;
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
             typeof(self) innerSelf = weakSelf;
             if (!innerSelf) {
                 return;
             }
             innerSelf.overviewRefreshInFlight = NO;
+            if (manualGeneration != innerSelf.adHocGeneration) {
+                [innerSelf refreshOverviewStatus:nil];
+                return;
+            }
             NSDictionary<NSString *, NSString *> *currentConfig = GDTReadConfigDictionary();
             NSString *capturedProfileID = config[@"GDRIVE_BACKUP_PROFILE_ID"] ?: @"legacy";
             NSString *currentProfileID = currentConfig[@"GDRIVE_BACKUP_PROFILE_ID"] ?: @"legacy";
@@ -4453,10 +4961,26 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                 [innerSelf refreshOverviewStatus:nil];
                 return;
             }
+            if (notificationDecision[@"retryAt"].length) {
+                NSDictionary *currentSummary = GDTReadBackupSummaryAtPath(
+                    GDTBackupSummaryPathForConfig(currentConfig));
+                NSDictionary *currentDecision = [GDTBackupNotificationPolicy
+                    decisionForConfig:currentConfig summary:currentSummary
+                    status:GDTBackupSummaryStatusForValues(currentSummary)
+                    now:NSDate.date calendar:calendar];
+                if (![currentDecision isEqualToDictionary:notificationDecision]) {
+                    [innerSelf refreshOverviewStatus:nil];
+                    return;
+                }
+            }
             BOOL successDecisionCurrent = successDecision &&
                 [innerSelf isBackupSuccessDecisionCurrent:successDecision
                               capturedActiveIssueTimestamp:activeIssueTimestamp];
             NSMutableDictionary<NSString *, NSString *> *displaySnapshot = [snapshot mutableCopy];
+            if (manualSnapshot && [innerSelf.adHocSummaryPath isEqual:manualSummaryPath]) {
+                displaySnapshot = [manualSnapshot mutableCopy];
+            }
+            [displaySnapshot addEntriesFromDictionary:lastSuccess];
             displaySnapshot[@"alertStatus"] = [innerSelf backupAlertStatusForConfig:config
                 summary:summary rawStatus:status decision:notificationDecision];
             if (notificationDecision) {
@@ -4468,6 +4992,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             [innerSelf clearBackupFailureNotificationsForConfig:config
                                                         summary:summary
                                                          status:status];
+            [innerSelf updateRetryCountdownForConfig:currentConfig summary:summary
+                                             status:status now:NSDate.date];
             if (successDecisionCurrent) {
                 [innerSelf processBackupSuccessNotificationDecision:successDecision
                                       capturedActiveIssueTimestamp:activeIssueTimestamp];
@@ -4590,6 +5116,10 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         @"isWritable": @(writableVolume ? writableVolume.boolValue
                                         : writable.boolValue),
         @"filesystem": filesystem
+        ,@"mediaName": plist[@"GDTPhysicalMediaName"] ?: plist[@"MediaName"] ?: @"",
+        @"isBackupVolume": plist[@"GDTAPFSBackupVolume"] ?: @NO,
+        @"sizeBytes": plist[@"GDTPhysicalSize"] ?: plist[@"TotalSize"] ?: @0,
+        @"connection": plist[@"BusProtocol"] ?: @""
     };
 }
 
@@ -4611,8 +5141,43 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             }
         }
 
+        NSMutableDictionary *enriched = [plist mutableCopy];
+        if ([plist[@"APFSContainerReference"] isKindOfClass:NSString.class]) {
+            int roleStatus = 0;
+            NSString *roleOutput = RunCommand(@"/usr/sbin/diskutil", @[@"apfs", @"list", @"-plist",
+                plist[@"APFSContainerReference"]], nil, &roleStatus);
+            NSData *roleData = [roleOutput dataUsingEncoding:NSUTF8StringEncoding];
+            id topology = roleStatus == 0 && roleData ? [NSPropertyListSerialization
+                propertyListWithData:roleData options:0 format:nil error:nil] : nil;
+            BOOL roleKnown = NO;
+            if ([topology isKindOfClass:NSDictionary.class]) {
+                for (NSDictionary *container in topology[@"Containers"]) {
+                    for (NSDictionary *volume in container[@"Volumes"]) {
+                        if ([volume[@"DeviceIdentifier"] isEqual:plist[@"DeviceIdentifier"]]) {
+                            roleKnown = YES;
+                            enriched[@"GDTAPFSBackupVolume"] = @([volume[@"Roles"] containsObject:@"Backup"]);
+                        }
+                    }
+                }
+            }
+            if (!roleKnown) enriched[@"WritableVolume"] = @NO;
+        }
+        NSDictionary *descriptor = [self externalVolumeDescriptorFromDiskutilInfo:plist requestedPath:requestedPath];
+        if ([descriptor[@"isPhysical"] boolValue] && [descriptor[@"diskID"] length]) {
+            int physicalStatus = 0;
+            NSString *physicalOutput = RunCommand(@"/usr/sbin/diskutil",
+                @[@"info", @"-plist", descriptor[@"diskID"]], nil, &physicalStatus);
+            NSData *physicalData = [physicalOutput dataUsingEncoding:NSUTF8StringEncoding];
+            id physical = physicalStatus == 0 && physicalData ? [NSPropertyListSerialization
+                propertyListWithData:physicalData options:0 format:nil error:nil] : nil;
+            if ([physical isKindOfClass:NSDictionary.class]) {
+                enriched[@"GDTPhysicalMediaName"] = physical[@"MediaName"] ?: @"";
+                enriched[@"GDTPhysicalSize"] = physical[@"TotalSize"] ?: @0;
+                enriched[@"BusProtocol"] = physical[@"BusProtocol"] ?: @"";
+            }
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
-            completion([self externalVolumeDescriptorFromDiskutilInfo:plist
+            completion([self externalVolumeDescriptorFromDiskutilInfo:enriched
                                                         requestedPath:requestedPath]);
         });
     });
@@ -5063,7 +5628,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         return;
     }
 
-    NSSize size = NSMakeSize(620, 420);
+    NSSize size = NSMakeSize(620, 520);
     NSRect screenFrame = NSScreen.mainScreen ? NSScreen.mainScreen.visibleFrame : NSMakeRect(0, 0, 1200, 800);
     NSPoint origin = NSMakePoint(NSMidX(screenFrame) - size.width / 2, NSMidY(screenFrame) - size.height / 2);
     self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(origin.x, origin.y, size.width, size.height)
@@ -5077,6 +5642,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     TigerOverviewView *content = [[TigerOverviewView alloc] initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
     __weak typeof(self) weakSelf = self;
     content.backupHandler = ^{ [weakSelf startOverviewBackup:nil]; };
+    content.destinationHandler = ^{ [weakSelf adHocDestinationChanged]; };
     content.settingsHandler = ^{ [weakSelf showBackupSetup:nil]; };
     content.restoreHandler = ^{ [weakSelf showRestoreBrowser:nil]; };
     self.window.contentView = content;
@@ -5630,8 +6196,14 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         : NSApplicationActivationPolicyAccessory];
 }
 
+#include "AdHocDestinationMethods.inc"
+
 - (void)startOverviewBackup:(id)sender {
     (void)sender;
+    if ([self.window.contentView isKindOfClass:TigerOverviewView.class]) {
+        [self startAdHocBackup];
+        return;
+    }
     if (self.overviewLaunchPending) {
         return;
     }
@@ -5693,6 +6265,11 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     // A mount-triggered confirmation never activates the app, so hiding it
     // while inactive would make the safety question impossible to answer.
     return !self.confirmMode;
+}
+
+- (BOOL)shouldActivateStatusWindow {
+    // The engine adds foreground only for an explicit user action or consent.
+    return self.progressForegroundMode;
 }
 
 - (BOOL)shouldShowProgressForTrigger:(NSString *)trigger
@@ -6907,12 +7484,20 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 }
 
 - (BOOL)launchAutomaticRetryDecision:(NSDictionary<NSString *, NSString *> *)decision {
+    __weak typeof(self) weakSelf = self;
+    return [self launchAutomaticRetryDecision:decision completion:^(NSInteger status) {
+        (void)status;
+        [weakSelf refreshOverviewStatus:nil];
+    }];
+}
+
+- (BOOL)launchAutomaticRetryDecision:(NSDictionary<NSString *, NSString *> *)decision
+                           completion:(void (^)(NSInteger status))completion {
     NSString *origin = decision[@"originStartedAt"];
     NSString *attempt = decision[@"attempt"];
     if (!origin.length || ![attempt isEqualToString:@"1"]) {
         return NO;
     }
-    __weak typeof(self) weakSelf = self;
     return [self launchBackupWithArgument:@"--run"
                                   trigger:@"schedule-retry"
                                 assumeYes:YES
@@ -6920,16 +7505,15 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                         @"GDRIVE_BACKUP_RETRY_ORIGIN_STARTED_AT": origin,
                         @"GDRIVE_BACKUP_RETRY_ATTEMPT": attempt
                     }
-                               completion:^(NSInteger status) {
-        (void)status;
-        [weakSelf refreshOverviewStatus:nil];
-    }];
+                               completion:completion];
 }
 
 - (NSData *)schedulePlistDataForMode:(NSString *)mode error:(NSError **)error {
     NSMutableDictionary<NSString *, id> *plist = [@{
         @"Label": @"com.commcats.gdrivebackup.schedule",
-        @"ProgramArguments": @[@"/bin/bash", @"/usr/local/bin/backup-google-drive.sh", @"--run"],
+        @"ProgramArguments": @[@"/Applications/GDrive Backup Tiger.app/Contents/MacOS/GDriveBackupTiger",
+                                @"--run-scheduled-backup"],
+        @"AssociatedBundleIdentifiers": @[@"com.commcats.gdrivebackup.tiger"],
         @"EnvironmentVariables": @{
             @"HOME": NSHomeDirectory(),
             @"PATH": @"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
@@ -6944,12 +7528,41 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     } else if ([mode isEqualToString:@"hourly"]) {
         plist[@"StartInterval"] = @3600;
     } else if ([mode isEqualToString:@"daily"]) {
-        plist[@"StartCalendarInterval"] = @{@"Hour": @20, @"Minute": @0};
+        // The engine treats 20:00 as the start of each daily window and runs
+        // at most one successful backup per window. The remaining hourly
+        // entries are catch-up opportunities: they exit silently once the
+        // window has a success and otherwise retry as soon as the Mac is awake
+        // and the destination is reachable again.
+        NSMutableArray<NSDictionary<NSString *, NSNumber *> *> *intervals =
+            [NSMutableArray arrayWithCapacity:24];
+        for (NSInteger offset = 0; offset < 24; offset++) {
+            [intervals addObject:@{@"Hour": @((20 + offset) % 24), @"Minute": @0}];
+        }
+        plist[@"StartCalendarInterval"] = intervals;
     }
     return [NSPropertyListSerialization dataWithPropertyList:plist
                                                        format:NSPropertyListXMLFormat_v1_0
                                                       options:0
                                                         error:error];
+}
+
+// Schedules saved by earlier versions fire once at 20:00 and therefore never
+// catch up after a missed window. Rewrite only an existing daily agent whose
+// timing still has that single-entry shape; every other state is left alone.
+- (void)migrateDailyScheduleAgentIfNeeded {
+    NSDictionary<NSString *, NSString *> *config = GDTReadConfigDictionary();
+    NSString *schedule = [config[@"GDRIVE_BACKUP_SCHEDULE"] ?: @"manual" lowercaseString];
+    if (![schedule isEqualToString:@"daily"]) return;
+    NSDictionary *installed = [NSDictionary dictionaryWithContentsOfFile:ScheduleAgentPath()];
+    if (![installed isKindOfClass:NSDictionary.class] ||
+        ![installed[@"Label"] isEqual:@"com.commcats.gdrivebackup.schedule"] ||
+        ![installed[@"StartCalendarInterval"] isKindOfClass:NSDictionary.class]) {
+        return;
+    }
+    NSError *error = nil;
+    if (![self applySchedule:@"daily" error:&error]) {
+        NSLog(@"Daily schedule migration failed: %@", error.localizedDescription);
+    }
 }
 
 - (BOOL)applySchedule:(NSString *)mode error:(NSError **)error {
@@ -7070,6 +7683,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             : NSApplicationActivationPolicyRegular];
         [self buildMainMenu];
         [self configureBackupNotificationsForConfig:GDTReadConfigDictionary()];
+        if (self.menubarOnlyMode) {
+            [self migrateDailyScheduleAgentIfNeeded];
+        }
         [self primeMountedExternalVolumeCache];
         [self installStatusItemIfNeeded];
         if ([mode isEqualToString:@"overview"]) {
@@ -7155,7 +7771,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     };
     self.window.contentView = contentView;
     self.window.alphaValue = 0;
-    if (self.confirmMode && self.progressForegroundMode) {
+    if ([self shouldActivateStatusWindow]) {
         [self.window makeKeyAndOrderFront:nil];
         [NSApp activateIgnoringOtherApps:YES];
     } else {
@@ -7200,6 +7816,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     [self.confirmTimeoutTimer invalidate];
     [self.progressTimer invalidate];
     [self.overviewRefreshTimer invalidate];
+    [self.retryCountdownPanel close];
     if (self.statusItem) {
         [NSStatusBar.systemStatusBar removeStatusItem:self.statusItem];
         self.statusItem = nil;
@@ -7335,7 +7952,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         context.duration = [self animationDuration:0.18];
         self.window.animator.alphaValue = 1;
     } completionHandler:^{
-        if (!self.completing) {
+        if (!self.completing && !self.progressForegroundMode) {
             [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
         }
     }];
@@ -7480,6 +8097,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     NSString *reason = values[@"reason"] ?: @"";
     NSSet<NSString *> *safeReasons = [NSSet setWithArray:@[
         @"destination_permission_denied",
+        @"macos_privacy_permission_missing",
         @"nas_connection_lost",
         @"nas_mount_unavailable",
         @"nas_mount_not_ready"
@@ -7490,6 +8108,9 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 - (NSString *)localizedTerminalDetailForReason:(NSString *)reason {
     if ([reason isEqualToString:@"destination_permission_denied"]) {
         return T(self.language ?: @"en", @"failedPermissionHint");
+    }
+    if ([reason isEqualToString:@"macos_privacy_permission_missing"]) {
+        return T(self.language ?: @"en", @"failedPrivacyPermissionHint");
     }
     if ([reason isEqualToString:@"nas_connection_lost"]) {
         return T(self.language ?: @"en", @"failedNASConnectionHint");
@@ -7717,6 +8338,8 @@ static int TrashPathsFromArguments(int argc, const char *argv[]) {
 }
 
 int main(int argc, const char *argv[]) {
+    int scheduledResult = GDTHandleScheduledBackupArguments(argc, argv);
+    if (scheduledResult >= 0) return scheduledResult;
     @autoreleasepool {
         if (argc > 1 && [[NSString stringWithUTF8String:argv[1]] isEqualToString:@"--trash"]) {
             return TrashPathsFromArguments(argc, argv);

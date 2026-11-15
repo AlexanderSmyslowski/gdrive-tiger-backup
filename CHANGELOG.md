@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+## v2.6.0 - 2026-11-15
+
+This is the first public release since v2.4.6. It includes the unpublished v2.5.0 and v2.5.1 milestones (one-run destination selection and the deferred NAS retry) as well as the reliability changes for unattended scheduled backups.
+
+- Mount the NAS without any per-update Keychain grant: scheduled mounts first let NetFS use the password Finder saved, and read the Keychain item directly only as a fallback.
+- Stop a running copy within about three minutes when the NAS mount vanishes, instead of letting rclone fail every remaining file for hours while the busy log hides the hang; the run ends with `nas_connection_lost` and is retried later.
+- Detect a missing macOS privacy permission for the NAS before any copy: the run stops at once with `macos_privacy_permission_missing` and a notification that points to Full Disk Access, and a listing blocked by an open access dialog is bounded and retried, instead of failing minutes later with an unreadable codec manifest.
+- Catch up a missed daily backup automatically. The daily launch agent now fires hourly; the engine runs at most one successful backup per 20:00 window and destination, exits silently once the window is complete, and otherwise probes quietly and backs up as soon as the NAS or disk is reachable again (at most four real attempts per window). Existing single-entry daily agents are rewritten on the next app start.
+- Track the last success per destination, so a success on an attached disk no longer satisfies the daily watchdog of a scheduled NAS destination.
+- Stop filling the Trash and the destination: retired version states go to `.gdrive-versions/.retention-trash` and are deleted for good after seven days (`GDRIVE_BACKUP_RETENTION_PURGE_DAYS`); scratch files are removed directly from a private per-run temporary folder that is also cleaned up after signals and stale runs.
+- Rotate the backup log at 5 MB with one compressed predecessor and log repeated rclone statistics at most every five minutes.
+- Tolerate a single failed writability probe on a busy SMB share instead of discarding a completed copy phase; a NAS destination counts as lost only after three consecutive failed checks.
+- Bound small file operations on a network share to 60 seconds and terminate a run that logs no progress for 45 minutes (`GDRIVE_BACKUP_STALL_SECONDS`), so a blocked SMB call can no longer hold the backup lock for hours and suppress every later run.
+- Delete disposable build and test files under temporary directories directly instead of moving them to the Trash.
+- Delete restore staging items directly instead of moving them to the Trash, so an interrupted restore leaves no partial copies behind.
+- Add an optional local signing identity (`scripts/local-signing-identity.sh create`) so source updates keep the Keychain grant for the NAS password and the network-volume permission instead of failing scheduled backups until both are granted again.
+- Record interrupted runs (logout, restart, stop) in the log, stop before copying when the destination has less than 1 GB free, and no longer log a user confirmation for unattended runs.
+- Choose the destination for a single manual backup directly in the main window. Saved NAS and external APFS destinations are listed by readable identity; the automatic profile and schedule remain unchanged.
+- Recheck the selected external volume UUID immediately before launch and inside the engine. Disconnected, read-only, ambiguous and Time Machine backup volumes cannot be selected. Repeated runs reuse the saved volume without creating or formatting volumes.
+- Show manual progress and the actual destination in the main window. Store manual results separately so an external backup cannot clear a scheduled NAS failure, and prefer newer automatic results over older manual results.
+- Add an existing external APFS volume through a compact manual-destination dialog, with explicit selection and no profile activation. The installed app and engine must both support the one-run destination protocol.
+- Defer automatic NAS retries while another backup holds the shared backup lock. A contended process launch no longer consumes the single retry; the original failed schedule remains eligible until a real retry starts or a newer run supersedes it.
+- Recover retry markers left by earlier app versions when the durable status still proves that no retry ran. Keep duplicate-start protection while waiting for the running backup to finish.
+
+Validation scope: fresh-account installation and dry-run tests on macOS 13 and the current macOS release have not yet been completed. Automated checks cover the test suite, package contents, deployment metadata and both binary architectures; they do not replace those runtime tests.
+
+## v2.5.1 - 2026-09-05
+
+Unpublished intermediate milestone. It combines the destination picker developed in the unpublished v2.5.0 intermediate milestone with the NAS retry fix below; both first ship publicly in v2.6.0.
+
+- Choose the destination for a single manual backup directly in the main window. Saved NAS and external APFS destinations are listed by readable identity; the automatic profile and schedule remain unchanged.
+- Recheck the selected external volume UUID immediately before launch and inside the engine. Disconnected, read-only, ambiguous and Time Machine backup volumes cannot be selected. Repeated runs reuse the saved volume without creating or formatting volumes.
+- Show manual progress and the actual destination in the main window. Store manual results separately so an external backup cannot clear a scheduled NAS failure, and prefer newer automatic results over older manual results.
+- Add an existing external APFS volume through a compact manual-destination dialog, with explicit selection and no profile activation. The installed app and engine must both support the one-run destination protocol.
+- Defer automatic NAS retries while another backup holds the shared backup lock. A contended process launch no longer consumes the single retry; the original failed schedule remains eligible until a real retry starts or a newer run supersedes it.
+- Recover retry markers left by earlier app versions when the durable status still proves that no retry ran. Keep duplicate-start protection while waiting for the running backup to finish.
+
+Validation scope: fresh-account installation and dry-run tests on macOS 13 and the current macOS release have not yet been completed. Automated checks cover the test suite, package contents, deployment metadata and both binary architectures; they do not replace those runtime tests.
+
+## v2.5.0 - 2026-09-05
+
+Unpublished intermediate source milestone, included in the public v2.6.0 release.
+
+- Choose the destination for a single manual backup directly in the main window. Saved NAS and external APFS destinations are listed by readable identity; the automatic profile and schedule remain unchanged.
+- Recheck the selected external volume UUID immediately before launch and inside the engine. Disconnected, read-only, ambiguous and Time Machine backup volumes cannot be selected. Repeated runs reuse the saved volume without creating or formatting volumes.
+- Show manual progress and the actual destination in the main window. Store manual results separately so an external backup cannot clear a scheduled NAS failure, and prefer newer automatic results over older manual results.
+- Add an existing external APFS volume through a compact manual-destination dialog, with explicit selection and no profile activation. The installed app and engine must both support the one-run destination protocol.
+
 ## v2.4.6 - 2026-09-05
 
 - Make the process-supplied `setup` trigger the only authority that can create or bind an APFS volume. `GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1` is a narrow process-only authorization for one setup invocation; config files cannot persist it or forge setup authority, and `BACKUP_ASSUME_YES` never authorizes `diskutil apfs addVolume`.

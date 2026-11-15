@@ -24,8 +24,14 @@ check_contains "$MAIN_SOURCE" 'trashItemAtURL:' \
   'Trash mode uses recoverable NSFileManager deletion'
 # These literals intentionally assert shell variable references in the product script.
 # shellcheck disable=SC2016
-check_contains "$BACKUP_SCRIPT" '"$RETENTION_APP_TRASH_BIN" --trash "$path"' \
-  'retention falls back to the packaged app on macOS without /usr/bin/trash'
+check_contains "$BACKUP_SCRIPT" 'purge_retention_quarantine "$versions_root/.retention-trash" 1' \
+  'retired version states are deleted from the quarantine after the grace period'
+if /usr/bin/grep -Eq '/usr/bin/trash|RETENTION_APP_TRASH_BIN' "$BACKUP_SCRIPT"; then
+  printf 'not ok - %s\n' 'the engine never routes backup data or scratch files through the system Trash'
+  failures=$((failures + 1))
+else
+  printf 'ok - %s\n' 'the engine never routes backup data or scratch files through the system Trash'
+fi
 # shellcheck disable=SC2016
 check_contains "$BACKUP_SCRIPT" 'retry_retention_quarantine "$versions_root"' \
   'legacy quarantine is retried on later successful runs'

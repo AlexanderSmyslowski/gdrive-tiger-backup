@@ -86,6 +86,7 @@ static NSDictionary<NSString *, id> *GDTHealthRow(NSDictionary<NSString *, id> *
         NSString *reason = GDTAllowedString(summary[@"reason"],
             [NSSet setWithArray:@[
                 @"destination_permission_denied",
+                @"macos_privacy_permission_missing",
                 @"nas_connection_lost",
                 @"nas_mount_unavailable",
                 @"nas_mount_not_ready"
@@ -223,6 +224,7 @@ static NSDictionary<NSString *, id> *GDTHealthRow(NSDictionary<NSString *, id> *
         @"reason": GDTAllowedString(lastRun[@"reason"],
             [NSSet setWithArray:@[
                 @"destination_permission_denied",
+                @"macos_privacy_permission_missing",
                 @"nas_connection_lost",
                 @"nas_mount_unavailable",
                 @"nas_mount_not_ready"

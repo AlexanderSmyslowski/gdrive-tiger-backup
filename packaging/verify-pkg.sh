@@ -82,10 +82,13 @@ if [[ ! -x "$APP_EXECUTABLE" || ! -x "$BACKUP_SCRIPT" || ! -x "$POSTINSTALL" ]];
   exit 1
 fi
 
-if ! /usr/bin/lipo "$APP_EXECUTABLE" -verify_arch arm64 x86_64; then
-  printf '%s\n' 'Packaged app is not a Universal 2 arm64/x86_64 binary.' >&2
-  exit 1
-fi
+# Newer lipo releases accept only one architecture per -verify_arch call.
+for required_arch in arm64 x86_64; do
+  if ! /usr/bin/lipo "$APP_EXECUTABLE" -verify_arch "$required_arch"; then
+    printf '%s\n' 'Packaged app is not a Universal 2 arm64/x86_64 binary.' >&2
+    exit 1
+  fi
+done
 
 build_info="$(/usr/bin/vtool -show-build "$APP_EXECUTABLE")"
 minos_count=0
