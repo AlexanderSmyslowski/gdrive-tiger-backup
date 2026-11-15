@@ -32,7 +32,7 @@ static int FixtureSpawn(pid_t *pid, const char *path,
     char expectedHome[4096];
     snprintf(expectedHome, sizeof(expectedHome), "HOME=%s", account->pw_dir);
     const char *expected[] = {expectedHome,
-        "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/libexec/gdrive-tiger-backup/bin",
         "GDRIVE_BACKUP_TRIGGER=schedule", "BACKUP_ASSUME_YES=1", "BACKUP_PROGRESS_FOREGROUND=0"};
     int count = 0;
     for (; environment[count]; count++) {

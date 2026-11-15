@@ -58,7 +58,7 @@ static inline int GDTHandleScheduledBackupArguments(int argc, const char *argv[]
     if (asprintf(&home, "HOME=%s", account.pw_dir) < 0) return 71;
     char *environment[] = {
         home,
-        "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/libexec/gdrive-tiger-backup/bin",
         "GDRIVE_BACKUP_TRIGGER=schedule",
         "BACKUP_ASSUME_YES=1",
         "BACKUP_PROGRESS_FOREGROUND=0",

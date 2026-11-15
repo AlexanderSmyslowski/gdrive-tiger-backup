@@ -120,7 +120,7 @@ int main(void) {
                 @"RCLONE_REMOTE": @"gdrive"
             },
             ^BOOL(NSString *command) {
-                return ![command isEqualToString:@"flock"];
+                return ![command isEqualToString:@"jq"];
             },
             ^NSDictionary<NSString *, id> *(NSString *command, NSArray<NSString *> *arguments) {
                 (void)command;
@@ -131,8 +131,27 @@ int main(void) {
             fileManager
         );
         Assert([missingDependency[@"dependencies"][@"status"] isEqualToString:@"failure"] &&
-               [missingDependency[@"dependencies"][@"missing"] isEqual:@[@"flock"]],
+               [missingDependency[@"dependencies"][@"missing"] isEqual:@[@"jq"]],
                @"missing dependency names are explicit and machine-readable");
+        NSDictionary<NSString *, id> *withoutFlock = Snapshot(
+            @{
+                @"GDRIVE_BACKUP_TARGET": @"apfs",
+                @"GDRIVE_BACKUP_VOLUME": destination,
+                @"GDRIVE_BACKUP_ENCRYPTION": @"none",
+                @"RCLONE_REMOTE": @"gdrive"
+            },
+            ^BOOL(NSString *command) {
+                return ![command isEqualToString:@"flock"];
+            },
+            ^NSDictionary<NSString *, id> *(NSString *command, NSArray<NSString *> *arguments) {
+                (void)command;
+                (void)arguments;
+                return @{@"status": @0, @"output": @"gdrive:\n"};
+            },
+            fileManager
+        );
+        Assert([withoutFlock[@"dependencies"][@"status"] isEqualToString:@"ready"],
+               @"flock is optional because the engine falls back to a perl lock");
         Assert([missingDependency[@"remote"][@"status"] isEqualToString:@"blocked"] &&
                blockedRunnerCalls == 0,
                @"remote access is blocked, not failed, when required tools are missing");
@@ -466,9 +485,9 @@ int main(void) {
     Assert([GDTSetupInstallCommand(YES, @[@"rclone"]) isEqualToString:@"brew install rclone"] &&
            [GDTSetupInstallCommand(YES, @[@"jq", @"rclone", @"rm -rf /"]) isEqualToString:@"brew install jq rclone"],
            @"install command lists only the missing known tools");
-    NSString *withHomebrew = GDTSetupInstallCommand(NO, @[@"flock"]);
+    NSString *withHomebrew = GDTSetupInstallCommand(NO, @[@"jq"]);
     Assert([withHomebrew hasPrefix:@"/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""] &&
-           [withHomebrew hasSuffix:@"&& brew install flock"],
+           [withHomebrew hasSuffix:@"&& brew install jq"],
            @"install command installs Homebrew first when it is missing");
 
     Class checkerClass = NSClassFromString(@"GDTSetupHealthChecker");

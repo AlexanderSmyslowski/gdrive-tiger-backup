@@ -42,6 +42,11 @@ static NSDictionary<NSString *, id> *GDTHealthRow(NSDictionary<NSString *, id> *
         }
         [missing sortUsingSelector:@selector(compare:)];
         row[@"missing"] = missing;
+        NSString *source = input[@"rcloneSource"];
+        if ([source isKindOfClass:NSString.class] &&
+            [@[@"homebrew", @"bundled", @"other"] containsObject:source]) {
+            row[@"rcloneSource"] = source;
+        }
     }
     return row;
 }

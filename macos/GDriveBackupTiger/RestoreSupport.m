@@ -69,7 +69,9 @@ static NSString *GDTExecutablePathForRestore(NSString *command) {
         if (directory.length) [directories addObject:directory];
     }
     [directories addObjectsFromArray:@[
-        @"/opt/homebrew/bin", @"/usr/local/bin", @"/usr/bin", @"/bin", @"/usr/sbin", @"/sbin"
+        @"/opt/homebrew/bin", @"/usr/local/bin", @"/usr/bin", @"/bin", @"/usr/sbin", @"/sbin",
+        // Tools shipped by the installer, used when Homebrew has none.
+        @"/usr/local/libexec/gdrive-tiger-backup/bin"
     ]];
     for (NSString *directory in directories) {
         NSString *candidate = [directory stringByAppendingPathComponent:command];

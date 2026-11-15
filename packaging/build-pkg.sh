@@ -62,6 +62,11 @@ fi
 /usr/bin/codesign --verify --deep --strict "$APP_PATH"
 
 install -m 755 "$ROOT/bin/backup-google-drive.sh" "$PKG_ROOT/usr/local/bin/backup-google-drive.sh"
+
+# Bundled helper tools: the engine and the app use them only when no Homebrew
+# copy exists, so existing Homebrew setups keep their own updates.
+"$ROOT/scripts/fetch-bundled-tools.sh" \
+  "$PKG_ROOT/usr/local/libexec/gdrive-tiger-backup" >/dev/null
 install -m 644 "$ROOT/launchd/com.commcats.gdrivebackup.plist" \
   "$PKG_ROOT/usr/local/share/gdrive-tiger-backup/launchd/com.commcats.gdrivebackup.plist"
 
