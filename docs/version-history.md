@@ -38,13 +38,14 @@ records are restored transparently as historical source milestones.
 | v2.4.4 | 28 | tag `v2.4.4` | Superseded tested release |
 | v2.4.5 | 29 | tag `v2.4.5` | Superseded tested release |
 | v2.4.6 | 30 | tag `v2.4.6` | Previous release |
-| v2.5.0 | 31 | `f5a8919` | Unpublished intermediate milestone; destination selection first ships publicly in v2.5.1 |
-| v2.5.1 | 32 | tag `v2.5.1` | One-run destination selection and deferred NAS retry; current release |
+| v2.5.0 | 31 | `f5a8919` | Unpublished intermediate milestone; destination selection first ships publicly in v2.6.0 |
+| v2.5.1 | 32 | `91a5241` | Unpublished intermediate milestone; deferred NAS retry first ships publicly in v2.6.0 |
+| v2.6.0 | 38 | tag `v2.6.0` | Catch-up scheduling, unattended NAS reliability and cleanup fixes; current release |
 
 No retrospectively built installer is presented as an original historical artifact.
 Retrospective release pages expose GitHub's source archives and state
 their later publication date. The v2.4.3, v2.4.4, and v2.4.5 installers are built and verified from their exact tags:
-v2.4.3 during the transparent publication repair, v2.4.4 as its tested successor, and v2.4.5 as v2.4.6's predecessor. v2.5.1 is the current release.
+v2.4.3 during the transparent publication repair, v2.4.4 as its tested successor, and v2.4.5 as v2.4.6's predecessor. v2.6.0 is the current release.
 
 Future version tags trigger the release workflow. It refuses a tag that does
 not match the app version, positive build number, README, and dated changelog

@@ -3,10 +3,9 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INFO_PLIST="$ROOT/macos/GDriveBackupTiger/Info.plist"
-EXPECTED_VERSION="2.5.1"
-EXPECTED_BUILD="37"
-# The local progress build is newer than the unchanged published 2.5.1 artifact.
-EXPECTED_PUBLISHED_BUILD="32"
+EXPECTED_VERSION="2.6.0"
+EXPECTED_BUILD="38"
+EXPECTED_PUBLISHED_BUILD="38"
 failures=0
 
 check_contains() {
@@ -120,10 +119,10 @@ check_contains "$ROOT/docs/version-history.md" \
   "The v2.4.3, v2.4.4, and v2.4.5 installers are built and verified from their exact tags" \
   "publication history explains the exact-tag installer builds"
 check_contains "$ROOT/docs/version-history.md" \
-  "v2.5.1 is the current release." \
-  "publication history identifies v2.5.1 as the current release"
+  "v2.6.0 is the current release." \
+  "publication history identifies v2.6.0 as the current release"
 check_contains "$ROOT/docs/version-history.md" \
-  "Unpublished intermediate milestone; destination selection first ships publicly in v2.5.1" \
+  "Unpublished intermediate milestone; destination selection first ships publicly in v2.6.0" \
   "publication history does not invent a public v2.5.0 release"
 check_contains "$ROOT/docs/version-history.md" \
   "No retrospectively built installer is presented as an original historical artifact." \
