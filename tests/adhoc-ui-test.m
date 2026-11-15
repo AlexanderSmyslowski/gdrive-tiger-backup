@@ -127,7 +127,7 @@ int main(void) {
             view.lastRunText = @"Sicherung abgeschlossen.";
             view.lastRunDetail = @"Heute, 12:05 · NAS";
             view.nextRunText = @"Heute, 20:00";
-            view.targetText = @"NAS · wdmycloudex2100 · GoogleDrive-Backup";
+            view.targetText = @"NAS · nas-example · GoogleDrive-Backup";
             view.storageText = @"1,33 TB frei von 1,96 TB";
             view.status = @"success";
             for (NSDictionary *choice in choices) [view.destinationPopup addItemWithTitle:choice[@"label"]];

@@ -629,7 +629,7 @@ int main(void) {
         NSDictionary *dailyNAS = @{
             @"GDRIVE_BACKUP_PROFILE_ID": @"default",
             @"GDRIVE_BACKUP_TARGET": @"nas",
-            @"GDRIVE_BACKUP_NAS_MOUNT": @"/Volumes/alexander",
+            @"GDRIVE_BACKUP_NAS_MOUNT": @"/Volumes/backup-share",
             @"GDRIVE_BACKUP_NAS_SUBDIR": @"GoogleDrive-Backup",
             @"GDRIVE_BACKUP_SCHEDULE": @"daily"
         };
@@ -792,8 +792,8 @@ int main(void) {
         NSDictionary<NSString *, NSString *> *nasSnapshot =
             [delegate overviewSnapshotForConfig:@{
                 @"GDRIVE_BACKUP_TARGET": @"nas",
-                @"GDRIVE_BACKUP_NAS_URL": @"smb://private-user:secret-password@wdmycloudex2100.local/alexander",
-                @"GDRIVE_BACKUP_NAS_MOUNT": @"/Volumes/alexander",
+                @"GDRIVE_BACKUP_NAS_URL": @"smb://private-user:secret-password@nas-example.local/backup-share",
+                @"GDRIVE_BACKUP_NAS_MOUNT": @"/Volumes/backup-share",
                 @"GDRIVE_BACKUP_NAS_SUBDIR": @"GoogleDrive-Backup",
                 @"GDRIVE_BACKUP_PROFILE_NAME": @"Default",
                 @"GDRIVE_BACKUP_SCHEDULE": @"manual"
@@ -802,7 +802,7 @@ int main(void) {
                                              now:now
                                         calendar:calendar];
         Assert([nasSnapshot[@"target"] isEqualToString:
-                   @"NAS / Network · wdmycloudex2100.local · alexander/GoogleDrive-Backup"] &&
+                   @"NAS / Network · nas-example.local · backup-share/GoogleDrive-Backup"] &&
                [nasSnapshot[@"target"] rangeOfString:@"private-user"].location == NSNotFound &&
                [nasSnapshot[@"target"] rangeOfString:@"secret-password"].location == NSNotFound,
                @"NAS target identifies the server and share without exposing credentials");

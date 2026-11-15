@@ -806,7 +806,7 @@ In `tests/overview-ui-test.m`, add a running retry summary and validated progres
 NSDictionary *dailyNAS = @{
     @"GDRIVE_BACKUP_PROFILE_ID": @"default",
     @"GDRIVE_BACKUP_TARGET": @"nas",
-    @"GDRIVE_BACKUP_NAS_MOUNT": @"/Volumes/alexander",
+    @"GDRIVE_BACKUP_NAS_MOUNT": @"/Volumes/backup-share",
     @"GDRIVE_BACKUP_NAS_SUBDIR": @"GoogleDrive-Backup",
     @"GDRIVE_BACKUP_SCHEDULE": @"daily"
 };

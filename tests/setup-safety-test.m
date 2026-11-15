@@ -401,7 +401,7 @@ int main(void) {
         unknownSetup.encryptionPopup.lastItem.representedObject = @"none";
         unknownSetup.cryptRemoteField = [[NSTextField alloc] init];
         unknownSetup.nasMountField = [[NSTextField alloc] init];
-        unknownSetup.nasMountField.stringValue = @"/Volumes/alexander";
+        unknownSetup.nasMountField.stringValue = @"/Volumes/backup-share";
         unknownSetup.nasURLField = [[NSTextField alloc] init];
         unknownSetup.nasSubdirField = [[NSTextField alloc] init];
         unknownSetup.nasSubdirField.stringValue = @"GoogleDrive-Backup";
@@ -420,7 +420,7 @@ int main(void) {
                 @{
                     @"GDRIVE_BACKUP_TARGET": @"nas",
                     @"GDRIVE_BACKUP_SCHEDULE": @"daily",
-                    @"GDRIVE_BACKUP_NAS_MOUNT": @"/Volumes/alexander"
+                    @"GDRIVE_BACKUP_NAS_MOUNT": @"/Volumes/backup-share"
                 });
         }
         NSDictionary<NSString *, NSString *> *nasOnlyUpdates =
@@ -462,7 +462,7 @@ int main(void) {
                [stagedNASUpdates[@"GDRIVE_BACKUP_TARGET"] isEqualToString:@"nas"] &&
                [stagedNASUpdates[@"GDRIVE_BACKUP_SCHEDULE"] isEqualToString:@"daily"] &&
                [stagedNASUpdates[@"GDRIVE_BACKUP_NAS_MOUNT"]
-                   isEqualToString:@"/Volumes/alexander"] &&
+                   isEqualToString:@"/Volumes/backup-share"] &&
                [stagedNASUpdates[@"GDRIVE_BACKUP_VOLUME"]
                    isEqualToString:@"/Volumes/TOSHIBA_4TB"] &&
                [stagedNASUpdates[@"GDRIVE_BACKUP_VOLUME_NAME"]
