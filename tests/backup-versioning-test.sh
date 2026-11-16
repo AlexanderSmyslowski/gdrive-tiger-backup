@@ -8,6 +8,10 @@ failures=0
 fail() {
   printf 'not ok - %s\n' "$1"
   failures=$((failures + 1))
+  # Only synthetic fixture logs: keep CI failures diagnosable on every OS.
+  if [[ -n "${TEST_HOME:-}" && -f "$TEST_HOME/Library/Logs/gdrive-backup.log" ]]; then
+    tail -20 "$TEST_HOME/Library/Logs/gdrive-backup.log"
+  fi
 }
 
 pass() {
@@ -61,21 +65,19 @@ esac
 exit 64
 SH
 
+  # Mount verification and shared-drive parsing both use jq. Keep its real
+  # behavior so the same engine tests exercise both platform implementations.
+  GDT_TEST_JQ="$(command -v jq)"
+  export GDT_TEST_JQ
   cat >"$FAKE_BIN/jq" <<'SH'
 #!/bin/bash
-set -u
+exec "${GDT_TEST_JQ:?}" "$@"
+SH
 
-case "${1:-}" in
-  length)
-    printf '1\n'
-    ;;
-  -r)
-    printf 'drive-123\tTeam/Alpha\n'
-    ;;
-  *)
-    exit 64
-    ;;
-esac
+  cat >"$FAKE_BIN/findmnt" <<'SH'
+#!/bin/bash
+"${GDT_TEST_JQ:?}" -nc --arg target "${FAKE_NAS_MOUNT:?}" \
+  '{filesystems:[{id:42,source:"//backup.test/share",target:$target,fstype:"cifs"}]}'
 SH
 
   cat >"$FAKE_BIN/date" <<'SH'
@@ -116,7 +118,7 @@ SH
   done
 
   chmod +x "$FAKE_BIN/rclone" "$FAKE_BIN/jq" "$FAKE_BIN/date" "$FAKE_BIN/trash" \
-    "$FAKE_BIN/mount" "$FAKE_BIN/flock" "$FAKE_BIN/diskutil" "$FAKE_BIN/plutil"
+    "$FAKE_BIN/findmnt" "$FAKE_BIN/mount" "$FAKE_BIN/flock" "$FAKE_BIN/diskutil" "$FAKE_BIN/plutil"
 }
 
 run_backup_with_mode() {
@@ -264,7 +266,7 @@ test_retention_never_uses_destructive_rclone_commands() {
   status=$?
 
   if [[ "$status" == "0" ]] &&
-    ! grep -Eq '^(delete|deletefile|purge|rmdirs)(\t|$)' "$FAKE_RCLONE_LOG"; then
+    ! grep -Eq $'^(delete|deletefile|purge|rmdirs)(\t|$)' "$FAKE_RCLONE_LOG"; then
     pass "$name"
   else
     fail "$name"
@@ -552,11 +554,13 @@ test_retention_age_boundaries() {
 
 test_run_ids_are_unique_for_the_same_timestamp() {
   local name="versioning run IDs stay unique across Macs or repeated timestamps"
-  local first_dir fourth_dir prefix first_run_id second_run_id
+  local first_dir fourth_dir prefix first_run_id second_run_id first_status second_status
   prepare_test_environment
 
   run_backup
+  first_status=$?
   run_backup
+  second_status=$?
   first_dir="$(backup_dirs | sed -n '1p')"
   fourth_dir="$(backup_dirs | sed -n '4p')"
   prefix="$DEST_ROOT/.gdrive-versions/"
@@ -565,10 +569,11 @@ test_run_ids_are_unique_for_the_same_timestamp() {
   second_run_id="${fourth_dir#"$prefix"}"
   second_run_id="${second_run_id%/My Drive}"
 
-  if [[ -n "$first_run_id" && -n "$second_run_id" && "$first_run_id" != "$second_run_id" ]]; then
+  if [[ "$first_status" == 0 && "$second_status" == 0 &&
+        -n "$first_run_id" && -n "$second_run_id" && "$first_run_id" != "$second_run_id" ]]; then
     pass "$name"
   else
-    fail "$name (run IDs collided: $first_run_id)"
+    fail "$name (statuses=$first_status/$second_status, IDs=$first_run_id/$second_run_id)"
   fi
 }
 
