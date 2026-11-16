@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added the Linux platform file (`lib/platform-linux.sh`): GNU `stat`/`find` primitives, NAS verification against `findmnt` (cifs/smb3/nfs), and destination identity by filesystem UUID instead of APFS volume UUID. APFS volume creation/recovery and the APFS encryption mode fail closed on Linux; unattended runs never prompt. The engine selects the platform by `uname`, keeps its run-state under `~/.local/state/` on Linux, and CI now runs `tests/platform-linux-test.sh` plus shellcheck on `ubuntu-latest`. Scheduling (systemd), Waybar status and notifications remain phase 3.
+
 - Split the backup engine into a portable core (`bin/backup-google-drive.sh`) and a macOS platform file (`lib/platform-macos.sh`, installed to `/usr/local/libexec/gdrive-tiger-backup/lib/`). All calls to `diskutil`, `ioreg`, `plutil`, `osascript`, BSD `stat`/`find` and the `/Volumes` layout now go through the platform file, the first step towards a Linux edition. Behavior on macOS is unchanged; the moved functions are byte-identical. The engine stops with a clear error when the platform file is missing, and `tests/platform-contract-test.sh` checks the contract and keeps new macOS calls out of the core.
 
 ## v2.7.0 - 2026-11-16

@@ -8,6 +8,24 @@ permissions:
   contents: read
 
 jobs:
+  test-linux:
+    name: Test Linux platform layer
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install static-analysis tools
+        run: sudo apt-get update && sudo apt-get install -y shellcheck jq util-linux
+
+      - name: Run Linux platform tests and static checks
+        run: |
+          bash tests/platform-linux-test.sh
+          bash -n bin/backup-google-drive.sh lib/*.sh tests/*.sh
+          shellcheck -x bin/backup-google-drive.sh lib/*.sh
+
   test-build-package:
     name: Test, build, and package
     runs-on: macos-15

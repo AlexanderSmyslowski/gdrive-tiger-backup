@@ -20,6 +20,7 @@ export PATH
 # before any configuration is read, so configuration cannot load other code.
 case "$(/usr/bin/uname -s 2>/dev/null)" in
   Darwin) GDT_PLATFORM="macos" ;;
+  Linux) GDT_PLATFORM="linux" ;;
   *)
     printf 'FEHLER: Dieses Betriebssystem wird noch nicht unterstuetzt.\n' >&2
     exit 69
@@ -252,6 +253,10 @@ if [[ "$_GDT_PROCESS_SUMMARY_STATE_FILE_SET" == "1" ]]; then
   SUMMARY_STATE_FILE="$_GDT_PROCESS_SUMMARY_STATE_FILE_VALUE"
 elif [[ -n "${GDRIVE_BACKUP_SUMMARY_STATE_FILE:-}" ]]; then
   SUMMARY_STATE_FILE="$GDRIVE_BACKUP_SUMMARY_STATE_FILE"
+elif [[ "$GDT_PLATFORM" == "linux" && -n "$ACTIVE_PROFILE_ID" ]]; then
+  SUMMARY_STATE_FILE="$HOME/.local/state/gdrive-tiger-backup/profiles/$ACTIVE_PROFILE_ID/last-run.status"
+elif [[ "$GDT_PLATFORM" == "linux" ]]; then
+  SUMMARY_STATE_FILE="$HOME/.local/state/gdrive-tiger-backup/last-run.status"
 elif [[ -n "$ACTIVE_PROFILE_ID" ]]; then
   SUMMARY_STATE_FILE="$HOME/Library/Application Support/GDrive Backup Tiger/profiles/$ACTIVE_PROFILE_ID/last-run.status"
 else

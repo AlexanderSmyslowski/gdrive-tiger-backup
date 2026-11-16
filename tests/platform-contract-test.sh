@@ -8,6 +8,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ENGINE="$ROOT/bin/backup-google-drive.sh"
 PLATFORM="$ROOT/lib/platform-macos.sh"
+PLATFORM_LINUX="$ROOT/lib/platform-linux.sh"
 WORK_DIR="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/gdrive-platform-test.XXXXXX")"
 failures=0
 
@@ -136,7 +137,36 @@ $hits"
   fi
 }
 
+test_linux_contract_is_defined() {
+  local names missing hits
+  names="$(contract_names)"
+  # One name per word; the split is intended (bash 3.2 has no mapfile).
+  # shellcheck disable=SC2086
+  missing="$(/bin/bash -c '
+    source "$1"; shift
+    for name; do
+      if [[ "$name" == PLATFORM_* ]]; then
+        declare -p "$name" >/dev/null 2>&1 || printf "%s\n" "$name"
+      else
+        declare -F "$name" >/dev/null || printf "%s\n" "$name"
+      fi
+    done' _ "$PLATFORM_LINUX" $names)"
+  if [[ -z "$missing" ]]; then
+    pass "linux platform file defines every contract name"
+  else
+    fail "linux platform file lacks: $missing"
+  fi
+  hits="$(/usr/bin/grep -nwE 'diskutil|plutil|ioreg|osascript|dscl' "$PLATFORM_LINUX" || true)"
+  if [[ -z "$hits" ]] && /usr/bin/grep -Fq 'Linux) GDT_PLATFORM="linux"' "$ENGINE"; then
+    pass "linux platform file calls no macOS-only tool and the engine selects it"
+  else
+    fail "macOS-only calls in the linux platform file:
+$hits"
+  fi
+}
+
 test_contract_is_defined
+test_linux_contract_is_defined
 test_primitives_match_bsd_tools
 test_engine_requires_platform_file
 test_capabilities_need_no_platform_file

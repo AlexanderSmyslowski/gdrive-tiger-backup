@@ -1,6 +1,7 @@
 # Plan: Linux edition for Omarchy and a local MCP server for AI assistants
 
-Status: phase 1 done (engine split, unreleased). Written 2026-11-16 after v2.7.0.
+Status: phase 1 done (engine split, merged), phase 2 started (Linux platform
+file, unreleased). Written 2026-11-16 after v2.7.0.
 
 ## Goal
 
@@ -57,6 +58,16 @@ itself (that is the Omarchy maintainers' decision).
 - Free space via `df --output`, identity via `stat -c`.
 - Acceptance: the engine test suite runs on Linux in CI (GitHub Actions
   `ubuntu-latest`, plus an Arch container) with the same fakes as on macOS.
+- Started: `lib/platform-linux.sh` provides the full contract (GNU stat/find
+  primitives, `findmnt`-based NAS checks, destination identity by filesystem
+  UUID reusing the core's identity globals). APFS setup/creation and APFS
+  encryption fail closed; the confirmation dialog is unavailable so
+  unattended runs never prompt. CI has a `test-linux` job on `ubuntu-latest`
+  running `tests/platform-linux-test.sh` and shellcheck.
+- Left: running the whole engine suite under Linux (the test fakes still use
+  BSD tool paths), the Arch container job, a generic destination-identity
+  name in the core, and a Linux installer. Phases 3+ (systemd, Waybar,
+  notify-send) build on this.
 
 ### 3. Scheduling and status in the Omarchy style
 
