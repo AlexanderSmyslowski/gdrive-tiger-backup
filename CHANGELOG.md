@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v2.7.0 - 2026-11-16
+
+Setup for first-time, non-technical users: no Terminal, no Homebrew, plain language.
+
 - Ship rclone v1.76.0 and jq 1.8.2 inside the installer as universal binaries, pinned and checked against the upstream SHA-256 sums, so Homebrew is no longer required. Homebrew copies stay preferred when installed; diagnostics show which rclone is in use. `flock` is optional: the engine takes the same run lock through macOS's `perl` when it is missing. The installer grows to about 65 MB.
 - Connect Google Drive from the setup window: **Connect Google** creates the read-only `gdrive` remote and opens Google's sign-in in the browser, so no `rclone config` in the Terminal is needed. When helper tools are missing, **Copy command** copies the exact install command (including Homebrew when needed) and opens Terminal.
 - Show a fresh installation as "Not set up yet" with "Set up backup …" as the highlighted default button, instead of a default external disk the user never chose and a "no longer available" warning.
