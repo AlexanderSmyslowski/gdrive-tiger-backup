@@ -61,6 +61,10 @@ fi
 
 /usr/bin/codesign --verify --deep --strict "$APP_PATH"
 
+# The engine sources its platform layer from libexec (see the engine header).
+install -d -m 755 "$PKG_ROOT/usr/local/libexec/gdrive-tiger-backup/lib"
+install -m 644 "$ROOT/lib/platform-macos.sh" \
+  "$PKG_ROOT/usr/local/libexec/gdrive-tiger-backup/lib/platform-macos.sh"
 install -m 755 "$ROOT/bin/backup-google-drive.sh" "$PKG_ROOT/usr/local/bin/backup-google-drive.sh"
 
 # Bundled helper tools: the engine and the app use them only when no Homebrew

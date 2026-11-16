@@ -63,6 +63,7 @@ required_files=(
   "$BACKUP_SCRIPT"
   "$LAUNCH_AGENT"
   "$POSTINSTALL"
+  "$BUNDLED_TOOLS/lib/platform-macos.sh"
   "$BUNDLED_TOOLS/bin/rclone"
   "$BUNDLED_TOOLS/bin/jq"
   "$BUNDLED_TOOLS/licenses/rclone-COPYING.txt"

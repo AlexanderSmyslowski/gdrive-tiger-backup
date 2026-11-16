@@ -1,6 +1,6 @@
 # Plan: Linux edition for Omarchy and a local MCP server for AI assistants
 
-Status: proposal, not started. Written 2026-11-16 after v2.7.0.
+Status: phase 1 done (engine split, unreleased). Written 2026-11-16 after v2.7.0.
 
 ## Goal
 
@@ -37,6 +37,15 @@ itself (that is the Omarchy maintainers' decision).
   shared core.
 - Replace plist reads in the core with the existing key=value config format.
 - Acceptance: the full macOS test suite stays green without behavior changes.
+- Done: 17 macOS functions moved verbatim to `lib/platform-macos.sh` (checked
+  with `declare -f`), single calls replaced by `platform_*` primitives (stat,
+  directory walks, symlink probe, locale, home, confirmation dialog), the
+  rclone JSON answer parsed with `jq` instead of `plutil`. The contract is the
+  comment block at the top of the platform file.
+- Left for phase 2: the APFS-named functions still in the core
+  (`validate_configured_apfs_paths`, `bind_existing_apfs_volume_by_path`, …)
+  become a generic "destination identity" interface; the `open`-based app
+  helper calls and the `*_BIN` defaults need Linux equivalents or guards.
 
 ### 2. Linux platform layer
 

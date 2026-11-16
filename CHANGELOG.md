@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Split the backup engine into a portable core (`bin/backup-google-drive.sh`) and a macOS platform file (`lib/platform-macos.sh`, installed to `/usr/local/libexec/gdrive-tiger-backup/lib/`). All calls to `diskutil`, `ioreg`, `plutil`, `osascript`, BSD `stat`/`find` and the `/Volumes` layout now go through the platform file, the first step towards a Linux edition. Behavior on macOS is unchanged; the moved functions are byte-identical. The engine stops with a clear error when the platform file is missing, and `tests/platform-contract-test.sh` checks the contract and keeps new macOS calls out of the core.
+
 ## v2.7.0 - 2026-11-16
 
 Setup for first-time, non-technical users: no Terminal, no Homebrew, plain language.
