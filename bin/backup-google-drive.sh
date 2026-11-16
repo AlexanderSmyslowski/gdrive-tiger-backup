@@ -1431,7 +1431,8 @@ prune_version_history() {
   local -a entry_paths entry_tiers entry_buckets entry_epochs entry_processed
   local -a daily_buckets daily_keeper_epochs daily_keeper_paths
   local -a weekly_buckets weekly_keeper_epochs weekly_keeper_paths
-  local -a retention_paths
+  # Bash 5 treats a declared-but-unassigned array as unset under nounset.
+  local -a retention_paths=()
 
   if ! validate_retention_destination_identity "$versions_root"; then
     return 1

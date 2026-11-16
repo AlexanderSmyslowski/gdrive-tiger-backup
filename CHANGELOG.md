@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Initialized the retention path array explicitly for Bash 5, preventing an unbound-array failure when existing versions are inventoried on Linux.
+
 - Ported retention timestamp parsing and daily catch-up window calculations to GNU date on Linux, preserving the BSD implementation on macOS. Added shared timezone, calendar and DST tests, and versioning/retention engine tests in Ubuntu and Arch Linux CI.
 
 - Hardened Linux NAS detection: match the complete share/export, reject ambiguous discovery, require an exact mount point and reject mount replacement during a run. Added deterministic negative tests and a real engine initialization check.

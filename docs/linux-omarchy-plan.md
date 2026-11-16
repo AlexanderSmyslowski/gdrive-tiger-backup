@@ -74,6 +74,8 @@ itself (that is the Omarchy maintainers' decision).
   `make test-engine-portable` runs time, NAS safety, Linux primitives and the
   existing versioning/retention suite on Ubuntu and an Arch container. The
   versioning fixture keeps the real jq parser and provides platform mount data.
+  Minimal Linux images also need `diffutils` (`cmp` verifies the NAS codec
+  manifest); include this dependency in the future Linux installer.
 - Left: running the whole engine suite under Linux (the test fakes still use
   BSD tool paths), a generic destination-identity
   name in the core, and a Linux installer. Phases 3+ (systemd, Waybar,
