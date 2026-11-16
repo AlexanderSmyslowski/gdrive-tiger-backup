@@ -13,6 +13,8 @@
 #   PLATFORM_REQUIRED_TOOLS     extra commands the engine needs on this OS
 #   platform_home_directory     home directory when HOME is unset
 #   platform_system_locale      user locale for the language fallback
+#   platform_date_parse FORMAT VALUE OUTPUT_FORMAT
+#   platform_date_from_epoch EPOCH OUTPUT_FORMAT
 #   platform_stat_size PATH     size in bytes
 #   platform_stat_mtime PATH    modification time, seconds since the epoch
 #   platform_stat_owner PATH    numeric owner uid
@@ -60,6 +62,36 @@ platform_home_directory() {
 
 platform_system_locale() {
   printf '%s' "${LANG:-}"
+}
+
+platform_date_parse() {
+  local format="$1" value="$2" output="$3"
+  # GNU date expects colons in the time, whereas version directories use
+  # hyphens. Restrict accepted formats rather than passing natural-language
+  # date expressions from directory names to the parser.
+  case "$format" in
+    '%Y-%m-%dT%H-%M-%S'|'%Y-%m-%dT%H-%M-%S%z')
+      if [[ "$format" == *%z ]]; then
+        [[ "$value" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}[+-][0-9]{4}$ ]] || return 1
+      else
+        [[ "$value" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}$ ]] || return 1
+      fi
+      value="${value:0:10} ${value:11:2}:${value:14:2}:${value:17:2}${value:19}"
+      ;;
+    '%Y-%m-%d')
+      [[ "$value" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || return 1
+      ;;
+    '%Y-%m-%d %H:%M:%S')
+      [[ "$value" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}$ ]] || return 1
+      ;;
+    *) return 1 ;;
+  esac
+  LC_ALL=C date --date="$value" "$output"
+}
+
+platform_date_from_epoch() {
+  [[ "$1" =~ ^[0-9]+$ ]] || return 1
+  date --date="@$1" "$2"
 }
 
 platform_stat_size() {

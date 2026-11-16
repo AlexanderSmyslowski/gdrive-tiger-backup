@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Ported retention timestamp parsing and daily catch-up window calculations to GNU date on Linux, preserving the BSD implementation on macOS. Added shared timezone, calendar and DST tests, and versioning/retention engine tests in Ubuntu and Arch Linux CI.
+
 - Hardened Linux NAS detection: match the complete share/export, reject ambiguous discovery, require an exact mount point and reject mount replacement during a run. Added deterministic negative tests and a real engine initialization check.
 
 - Added the Linux platform file (`lib/platform-linux.sh`): GNU `stat`/`find` primitives, NAS verification against `findmnt` (cifs/smb3/nfs), and destination identity by filesystem UUID instead of APFS volume UUID. APFS volume creation/recovery and the APFS encryption mode fail closed on Linux; unattended runs never prompt. The engine selects the platform by `uname`, keeps its run-state under `~/.local/state/` on Linux, and CI now runs `tests/platform-linux-test.sh` plus shellcheck on `ubuntu-latest`. Scheduling (systemd), Waybar status and notifications remain phase 3.

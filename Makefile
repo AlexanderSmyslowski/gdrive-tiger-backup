@@ -87,6 +87,7 @@ test: test-retry-countdown test-native-scheduled-backup
 	bash tests/backup-outcome-test.sh
 	bash tests/backup-versioning-test.sh
 	bash tests/backup-robustness-test.sh
+	bash tests/platform-time-test.sh
 	bash tests/platform-contract-test.sh
 	bash tests/linux-nas-safety-test.sh
 	bash tests/platform-linux-test.sh
@@ -359,3 +360,11 @@ test-native-scheduled-backup:
 			tests/native-scheduled-backup-test.m $(filter-out macos/GDriveBackupTiger/main.m,$(APP_SOURCES)) -o "$$SCHEDULED_TEST_BIN"; \
 		RESULT=0; "$$SCHEDULED_TEST_BIN" || RESULT=$$?; \
 		./scripts/trash-path.sh "$$SCHEDULED_TEST_BIN"; exit "$$RESULT"
+
+# Shared shell behavior only; AppKit and APFS setup remain in the macOS suite.
+.PHONY: test-engine-portable
+test-engine-portable:
+	bash tests/platform-time-test.sh
+	bash tests/linux-nas-safety-test.sh
+	bash tests/platform-linux-test.sh
+	bash tests/backup-versioning-test.sh

@@ -61,21 +61,19 @@ esac
 exit 64
 SH
 
+  # Mount verification and shared-drive parsing both use jq. Keep its real
+  # behavior so the same engine tests exercise both platform implementations.
+  GDT_TEST_JQ="$(command -v jq)"
+  export GDT_TEST_JQ
   cat >"$FAKE_BIN/jq" <<'SH'
 #!/bin/bash
-set -u
+exec "${GDT_TEST_JQ:?}" "$@"
+SH
 
-case "${1:-}" in
-  length)
-    printf '1\n'
-    ;;
-  -r)
-    printf 'drive-123\tTeam/Alpha\n'
-    ;;
-  *)
-    exit 64
-    ;;
-esac
+  cat >"$FAKE_BIN/findmnt" <<'SH'
+#!/bin/bash
+"${GDT_TEST_JQ:?}" -nc --arg target "${FAKE_NAS_MOUNT:?}" \
+  '{filesystems:[{id:42,source:"//backup.test/share",target:$target,fstype:"cifs"}]}'
 SH
 
   cat >"$FAKE_BIN/date" <<'SH'
@@ -116,7 +114,7 @@ SH
   done
 
   chmod +x "$FAKE_BIN/rclone" "$FAKE_BIN/jq" "$FAKE_BIN/date" "$FAKE_BIN/trash" \
-    "$FAKE_BIN/mount" "$FAKE_BIN/flock" "$FAKE_BIN/diskutil" "$FAKE_BIN/plutil"
+    "$FAKE_BIN/findmnt" "$FAKE_BIN/mount" "$FAKE_BIN/flock" "$FAKE_BIN/diskutil" "$FAKE_BIN/plutil"
 }
 
 run_backup_with_mode() {

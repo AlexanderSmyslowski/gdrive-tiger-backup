@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   test-linux:
-    name: Test Linux platform layer
+    name: Test engine on Ubuntu Linux
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -18,13 +18,27 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install static-analysis tools
-        run: sudo apt-get update && sudo apt-get install -y shellcheck jq util-linux
+        run: sudo apt-get update && sudo apt-get install -y shellcheck jq util-linux uuid-runtime make
 
-      - name: Run Linux platform tests and static checks
+      - name: Run portable engine tests and static checks
         run: |
-          bash tests/linux-nas-safety-test.sh
-          bash tests/platform-linux-test.sh
+          make test-engine-portable
           bash -n bin/backup-google-drive.sh lib/*.sh tests/*.sh
+          shellcheck -x bin/backup-google-drive.sh lib/*.sh
+
+  test-arch:
+    name: Test engine on Arch Linux
+    runs-on: ubuntu-latest
+    container: archlinux:base
+    timeout-minutes: 10
+    steps:
+      - name: Install engine test dependencies
+        run: pacman -Syu --noconfirm git make jq util-linux coreutils findutils procps-ng perl shellcheck
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Run portable engine tests and static checks
+        run: |
+          make test-engine-portable
           shellcheck -x bin/backup-google-drive.sh lib/*.sh
 
   test-build-package:

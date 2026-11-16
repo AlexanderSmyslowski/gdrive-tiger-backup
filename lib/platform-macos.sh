@@ -12,6 +12,8 @@
 #   PLATFORM_REQUIRED_TOOLS     extra commands the engine needs on this OS
 #   platform_home_directory     home directory when HOME is unset
 #   platform_system_locale      user locale for the language fallback
+#   platform_date_parse FORMAT VALUE OUTPUT_FORMAT
+#   platform_date_from_epoch EPOCH OUTPUT_FORMAT
 #   platform_stat_size PATH     size in bytes
 #   platform_stat_mtime PATH    modification time, seconds since the epoch
 #   platform_stat_owner PATH    numeric owner uid
@@ -53,6 +55,14 @@ platform_system_locale() {
     locale="$(defaults read -g AppleLocale 2>/dev/null || printf '%s' "$locale")"
   fi
   printf '%s' "$locale"
+}
+
+platform_date_parse() {
+  LC_ALL=C /bin/date -j -f "$1" "$2" "$3"
+}
+
+platform_date_from_epoch() {
+  /bin/date -r "$1" "$2"
 }
 
 platform_stat_size() {

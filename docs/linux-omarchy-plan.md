@@ -1,7 +1,7 @@
 # Plan: Linux edition for Omarchy and a local MCP server for AI assistants
 
 Status: phase 1 done (engine split, merged), phase 2 started (Linux platform
-file, unreleased). Written 2026-11-16 after v2.7.0.
+file merged in #17; portable time/retention CI in progress). Written 2026-11-16 after v2.7.0.
 
 ## Goal
 
@@ -69,8 +69,13 @@ itself (that is the Omarchy maintainers' decision).
   kernel mount ID and source during the run. URL escapes, credentials in URLs
   and SMB subdirectory URLs are not inferred; configure an explicit mount point
   without a discovery URL for those setups. Host spelling must match findmnt.
+- Next increment: platform-specific calendar/epoch conversion replaces remaining
+  BSD date calls in retention and daily catch-up calculations. A shared
+  `make test-engine-portable` runs time, NAS safety, Linux primitives and the
+  existing versioning/retention suite on Ubuntu and an Arch container. The
+  versioning fixture keeps the real jq parser and provides platform mount data.
 - Left: running the whole engine suite under Linux (the test fakes still use
-  BSD tool paths), the Arch container job, a generic destination-identity
+  BSD tool paths), a generic destination-identity
   name in the core, and a Linux installer. Phases 3+ (systemd, Waybar,
   notify-send) build on this.
 

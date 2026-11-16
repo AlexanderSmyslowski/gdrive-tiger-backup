@@ -1529,7 +1529,7 @@ prune_version_history() {
     calendar_value="${timestamp:0:19}"
     timezone_hours="${timestamp:20:2}"
     timezone_minutes="${timestamp:22:2}"
-    if ! normalized_calendar="$(LC_ALL=C /bin/date -j -f '%Y-%m-%dT%H-%M-%S' \
+    if ! normalized_calendar="$(platform_date_parse '%Y-%m-%dT%H-%M-%S' \
         "$calendar_value" '+%Y-%m-%dT%H-%M-%S' 2>/dev/null)" ||
        [[ "$normalized_calendar" != "$calendar_value" ]] ||
        (( 10#$timezone_hours > 23 || 10#$timezone_minutes > 59 )); then
@@ -1537,7 +1537,7 @@ prune_version_history() {
       unknown_count=$((unknown_count + 1))
       continue
     fi
-    if ! epoch="$(LC_ALL=C /bin/date -j -f '%Y-%m-%dT%H-%M-%S%z' "$timestamp" '+%s' 2>/dev/null)" ||
+    if ! epoch="$(platform_date_parse '%Y-%m-%dT%H-%M-%S%z' "$timestamp" '+%s' 2>/dev/null)" ||
        [[ ! "$epoch" =~ ^[0-9]+$ ]]; then
       log "Aufbewahrung: Ungueltiger Versionszeitpunkt bleibt erhalten: $(safe_name "$name")"
       unknown_count=$((unknown_count + 1))
@@ -1560,7 +1560,7 @@ prune_version_history() {
       bucket="$day"
     elif (( age <= 52 * 7 * 24 * 60 * 60 )); then
       tier="weekly"
-      if ! bucket="$(LC_ALL=C /bin/date -j -f '%Y-%m-%d' "$day" '+%G-W%V' 2>/dev/null)" ||
+      if ! bucket="$(platform_date_parse '%Y-%m-%d' "$day" '+%G-W%V' 2>/dev/null)" ||
          [[ ! "$bucket" =~ ^[0-9]{4}-W[0-9]{2}$ ]]; then
         log "Aufbewahrung: ISO-Woche unklar; Versionsordner bleibt erhalten: $(safe_name "$name")"
         unknown_count=$((unknown_count + 1))
@@ -2226,13 +2226,13 @@ write_last_run_summary() {
 daily_window_start_epoch() {
   local now="$1" day boundary
 
-  day="$(/bin/date -r "$now" '+%Y-%m-%d' 2>/dev/null)" || return 1
-  boundary="$(LC_ALL=C /bin/date -j -f '%Y-%m-%d %H:%M:%S' \
+  day="$(platform_date_from_epoch "$now" '+%Y-%m-%d' 2>/dev/null)" || return 1
+  boundary="$(platform_date_parse '%Y-%m-%d %H:%M:%S' \
     "$day $(printf '%02d' "$DAILY_WINDOW_HOUR"):00:00" '+%s' 2>/dev/null)" || return 1
   [[ "$boundary" =~ ^[0-9]+$ ]] || return 1
   if (( boundary > now )); then
-    day="$(/bin/date -r "$((now - 86400))" '+%Y-%m-%d' 2>/dev/null)" || return 1
-    boundary="$(LC_ALL=C /bin/date -j -f '%Y-%m-%d %H:%M:%S' \
+    day="$(platform_date_from_epoch "$((now - 86400))" '+%Y-%m-%d' 2>/dev/null)" || return 1
+    boundary="$(platform_date_parse '%Y-%m-%d %H:%M:%S' \
       "$day $(printf '%02d' "$DAILY_WINDOW_HOUR"):00:00" '+%s' 2>/dev/null)" || return 1
     [[ "$boundary" =~ ^[0-9]+$ ]] || return 1
   fi
