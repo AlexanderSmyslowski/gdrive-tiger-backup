@@ -19,7 +19,11 @@ fi
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gdrive-platform-linux-test.XXXXXX")"
 cleanup() {
-  "$ROOT/scripts/trash-path.sh" "$WORK_DIR" >/dev/null 2>&1 || rm -rf "$WORK_DIR"
+  if [[ -x /usr/bin/trash ]]; then
+    /usr/bin/trash "$WORK_DIR"
+  else
+    printf "Test fixtures retained: %s\n" "$WORK_DIR"
+  fi
 }
 trap cleanup EXIT
 
@@ -51,11 +55,13 @@ test_primitives_match_gnu_tools() {
 
 test_engine_selects_linux_platform() {
   local output
-  output="$(bash "$ENGINE" --capabilities 2>&1)"
-  if [[ "$output" == "adhoc-target-v1" ]]; then
-    pass "engine answers --capabilities with the linux platform present"
+  # shellcheck disable=SC2016
+  printf '%s\n' 'printf "%s|%s" "$GDT_PLATFORM" "$(platform_stat_size "$CONFIG_FILE")"; exit 0' >"$WORK_DIR/init.conf"
+  output="$(GDRIVE_BACKUP_CONFIG="$WORK_DIR/init.conf" bash "$ENGINE" 2>&1)"
+  if [[ "$output" == "linux|$(stat -c '%s' "$WORK_DIR/init.conf")" ]]; then
+    pass "engine loads the Linux platform before reading configuration"
   else
-    fail "--capabilities: $output"
+    fail "Linux initialization: $output"
   fi
 }
 

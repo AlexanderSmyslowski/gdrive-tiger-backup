@@ -3633,7 +3633,6 @@ fi
 rotate_log_if_needed "$LOG_MAX_BYTES"
 prepare_run_tmpdir
 start_stall_watchdog
-start_nas_watchdog
 
 if [[ "$CATCHUP_QUIET" == "1" ]]; then
   # Probe before any progress or "running" record is published; a quiet skip
@@ -3674,6 +3673,10 @@ if ! ensure_backup_target; then
   log "FEHLER: Das konfigurierte Backup-Ziel ist nicht verfuegbar."
   exit 69
 fi
+
+# Inherit the verified mount identity before the watchdog forks. Otherwise a
+# replacement before its first probe could become its independent baseline.
+start_nas_watchdog
 
 if ! validate_configured_apfs_target; then
   log "FEHLER: Das konfigurierte APFS-Backup-Volume konnte nicht sicher bestaetigt werden."

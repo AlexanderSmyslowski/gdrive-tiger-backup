@@ -64,6 +64,11 @@ itself (that is the Omarchy maintainers' decision).
   encryption fail closed; the confirmation dialog is unavailable so
   unattended runs never prompt. CI has a `test-linux` job on `ubuntu-latest`
   running `tests/platform-linux-test.sh` and shellcheck.
+- Safety: NAS discovery matches the complete SMB share or NFS export and rejects
+  ambiguous mounts. Verification requires the exact mount point and pins its
+  kernel mount ID and source during the run. URL escapes, credentials in URLs
+  and SMB subdirectory URLs are not inferred; configure an explicit mount point
+  without a discovery URL for those setups. Host spelling must match findmnt.
 - Left: running the whole engine suite under Linux (the test fakes still use
   BSD tool paths), the Arch container job, a generic destination-identity
   name in the core, and a Linux installer. Phases 3+ (systemd, Waybar,

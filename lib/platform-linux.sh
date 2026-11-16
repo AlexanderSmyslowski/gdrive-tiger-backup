@@ -100,35 +100,61 @@ nas_mount_from_url() {
   return 0
 }
 
-find_nas_mount_for_url() {
-  local url_host source target filesystem source_host
-  url_host="$(nas_host_from_url "$1")"
-  [[ -n "$url_host" ]] || return 0
+linux_nas_source_from_url() {
+  local url="$1" authority path
+  # Do not guess how URL escapes, credentials or subdirectories map to mounts.
+  # Such setups can use an explicit mount point without a discovery URL.
+  [[ "$url" != *'%'* && "$url" != *'?'* && "$url" != *'#'* ]] || return 1
+  authority="${url#*://}"
+  [[ "$authority" != "$url" && "$authority" == */* ]] || return 1
+  path="${authority#*/}"
+  authority="${authority%%/*}"
+  [[ -n "$authority" && "$authority" != *@* && -n "$path" ]] || return 1
+  case "$url" in
+    smb://*)
+      [[ "$path" != */* ]] || return 1
+      printf '//%s/%s' "$authority" "$path"
+      ;;
+    nfs://*) printf '%s:/%s' "$authority" "$path" ;;
+    *) return 1 ;;
+  esac
+}
 
-  while read -r source target filesystem; do
-    case "$filesystem" in
-      cifs|smb3|nfs|nfs4) ;;
-      *) continue ;;
-    esac
-    source="${source#//}"
-    source="${source#*@}"
-    source_host="$(lowercase "${source%%/*}")"
-    [[ "$source_host" == "$url_host" ]] || continue
-    printf '%s' "$target"
-    return 0
-  done < <(findmnt -rn -o SOURCE,TARGET,FSTYPE 2>/dev/null)
-  return 0
+find_nas_mount_for_url() {
+  local source mounts
+  source="$(linux_nas_source_from_url "$1")" || return 0
+  mounts="$(findmnt --json -o SOURCE,TARGET,FSTYPE 2>/dev/null)" || return 0
+  # JSON preserves spaces and backslashes; ambiguous mounts fail closed.
+  printf '%s' "$mounts" | jq -jr --arg source "$source" '
+    [.. | objects | select(.source? == $source) |
+      select(.fstype == "cifs" or .fstype == "smb3" or
+             .fstype == "nfs" or .fstype == "nfs4") | .target] |
+    if length == 1 then .[0] else empty end'
 }
 
 nas_mount_is_verified() {
-  local filesystem
-
+  local mounts identity source
   [[ -d "$NAS_MOUNT" && ! -L "$NAS_MOUNT" ]] || return 1
-  filesystem="$(findmnt -rn --target "$NAS_MOUNT" -o FSTYPE 2>/dev/null || true)"
-  case "$filesystem" in
-    cifs|smb3|nfs|nfs4) return 0 ;;
-  esac
-  return 1
+  # --target would accept an underlying network filesystem after this mount
+  # disappears. Require the exact mount and pin its kernel mount ID and source.
+  mounts="$(findmnt --json --mountpoint "$NAS_MOUNT" -o ID,SOURCE,TARGET,FSTYPE 2>/dev/null)" || return 1
+  identity="$(printf '%s' "$mounts" | jq -ce --arg target "$NAS_MOUNT" '
+    [.filesystems[]? | select(.target == $target) |
+      select(.fstype == "cifs" or .fstype == "smb3" or
+             .fstype == "nfs" or .fstype == "nfs4") |
+      select(.id != null and .source != null) |
+      {id, source, target, fstype}] |
+    if length == 1 then .[0] else error("ambiguous or missing mount") end' 2>/dev/null)" || return 1
+  if [[ -n "${NAS_URL:-}" ]]; then
+    source="$(linux_nas_source_from_url "$NAS_URL")" || return 1
+    printf '%s' "$identity" | jq -e --arg source "$source" '.source == $source' >/dev/null || return 1
+  fi
+  if [[ -n "${LINUX_NAS_MOUNT_IDENTITY:-}" ]]; then
+    [[ "$identity" == "$LINUX_NAS_MOUNT_IDENTITY" ]] || return 1
+  else
+    LINUX_NAS_MOUNT_IDENTITY="$identity"
+  fi
+  return 0
 }
 
 # --- Destination identity (filesystem UUID instead of APFS volume UUID) ---

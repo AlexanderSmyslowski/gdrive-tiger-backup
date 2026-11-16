@@ -22,6 +22,7 @@ jobs:
 
       - name: Run Linux platform tests and static checks
         run: |
+          bash tests/linux-nas-safety-test.sh
           bash tests/platform-linux-test.sh
           bash -n bin/backup-google-drive.sh lib/*.sh tests/*.sh
           shellcheck -x bin/backup-google-drive.sh lib/*.sh
