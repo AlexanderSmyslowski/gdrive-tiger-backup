@@ -166,7 +166,9 @@ static NSString *GDTExecutablePath(NSString *command) {
     }
     [directories addObjectsFromArray:@[
         @"/opt/homebrew/bin", @"/usr/local/bin", @"/usr/bin",
-        @"/bin", @"/usr/sbin", @"/sbin"
+        @"/bin", @"/usr/sbin", @"/sbin",
+        // Tools shipped by the installer, used when Homebrew has none.
+        @"/usr/local/libexec/gdrive-tiger-backup/bin"
     ]];
     for (NSString *directory in directories) {
         NSString *candidate = [directory stringByAppendingPathComponent:command];
@@ -299,7 +301,7 @@ NSString *GDTSetupInstallCommand(BOOL homebrewAvailable, NSArray<NSString *> *mi
         }
     }
     if (!packages.count) {
-        [packages addObjectsFromArray:@[@"rclone", @"flock", @"jq"]];
+        [packages addObjectsFromArray:@[@"rclone", @"jq"]];
     }
     NSString *install = [@"brew install " stringByAppendingString:
         [packages componentsJoinedByString:@" "]];
@@ -351,6 +353,13 @@ NSString *GDTSetupInstallCommand(BOOL homebrewAvailable, NSArray<NSString *> *mi
                                                              NSArray<NSString *> *arguments) {
         return GDTRunSetupCommand(command, arguments, commandTimeout, NO);
     };
+    checker.rcloneSourceProvider = ^NSString *{
+        NSString *path = GDTExecutablePath(@"rclone");
+        if (!path.length) return nil;
+        if ([path hasPrefix:@"/usr/local/libexec/gdrive-tiger-backup/"]) return @"bundled";
+        if ([path hasPrefix:@"/opt/homebrew/"] || [path hasPrefix:@"/usr/local/bin/"]) return @"homebrew";
+        return @"other";
+    };
     checker.interactiveCommandRunner = ^NSDictionary<NSString *, id> *(NSString *command,
                                                                         NSArray<NSString *> *arguments) {
         return GDTRunSetupCommand(command, arguments, GDTInteractiveTimeout, YES);
@@ -359,7 +368,8 @@ NSString *GDTSetupInstallCommand(BOOL homebrewAvailable, NSArray<NSString *> *mi
 }
 
 - (NSDictionary<NSString *, id> *)snapshotForConfig:(NSDictionary<NSString *, NSString *> *)config {
-    NSArray<NSString *> *requiredCommands = @[@"rclone", @"flock", @"jq"];
+    // flock is optional: without it the engine takes the same lock via perl.
+    NSArray<NSString *> *requiredCommands = @[@"rclone", @"jq"];
     NSMutableArray<NSString *> *missingCommands = [NSMutableArray array];
     for (NSString *command in requiredCommands) {
         if (!self.commandAvailability || !self.commandAvailability(command)) {
@@ -367,9 +377,14 @@ NSString *GDTSetupInstallCommand(BOOL homebrewAvailable, NSArray<NSString *> *mi
         }
     }
 
+    NSMutableDictionary<NSString *, id> *readyDetails = [NSMutableDictionary dictionary];
+    NSString *rcloneSource = self.rcloneSourceProvider ? self.rcloneSourceProvider() : nil;
+    if ([@[@"homebrew", @"bundled", @"other"] containsObject:rcloneSource ?: @""]) {
+        readyDetails[@"rcloneSource"] = rcloneSource;
+    }
     NSDictionary<NSString *, id> *dependencies = missingCommands.count
         ? GDTSetupRow(@"failure", @"setupCheckDependenciesMissing", @{@"missing": missingCommands})
-        : GDTSetupRow(@"ready", @"setupCheckDependenciesReady", @{});
+        : GDTSetupRow(@"ready", @"setupCheckDependenciesReady", readyDetails);
 
     NSString *remoteName = GDTNormalizedRemote(config[@"RCLONE_REMOTE"]);
     NSDictionary<NSString *, id> *remote = nil;

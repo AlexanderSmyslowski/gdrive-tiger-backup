@@ -219,6 +219,16 @@
         dependenciesDetail = [NSString stringWithFormat:T(self.language ?: @"en", @"diagnosticsMissingTools"),
             [missing componentsJoinedByString:@", "]];
     }
+    NSDictionary<NSString *, NSString *> *sourceKeys = @{
+        @"homebrew": @"diagnosticsRcloneHomebrew",
+        @"bundled": @"diagnosticsRcloneBundled",
+        @"other": @"diagnosticsRcloneOther"
+    };
+    NSString *sourceKey = sourceKeys[dependencies[@"rcloneSource"] ?: @""];
+    if (!missing.count && sourceKey) {
+        dependenciesDetail = [NSString stringWithFormat:@"%@ · %@",
+            dependenciesDetail, T(self.language ?: @"en", sourceKey)];
+    }
     [self applyStatus:dependenciesStatus detail:dependenciesDetail row:0];
 
     NSDictionary *remote = [_snapshot[@"remote"] isKindOfClass:NSDictionary.class] ? _snapshot[@"remote"] : @{};

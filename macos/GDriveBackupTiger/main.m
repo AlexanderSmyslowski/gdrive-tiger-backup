@@ -7633,7 +7633,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     task.arguments = @[@"/usr/local/bin/backup-google-drive.sh", argument];
     NSMutableDictionary *environment = NSProcessInfo.processInfo.environment.mutableCopy;
     environment[@"HOME"] = NSHomeDirectory();
-    environment[@"PATH"] = @"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+    environment[@"PATH"] = @"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/libexec/gdrive-tiger-backup/bin";
     environment[@"GDRIVE_BACKUP_TRIGGER"] = trigger.length ? trigger : @"manual";
     BOOL actionWindowVisible = self.setupWindow.isVisible || self.window.isVisible;
     environment[@"BACKUP_PROGRESS_FOREGROUND"] = [self shouldShowProgressForTrigger:trigger
@@ -7693,7 +7693,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         @"AssociatedBundleIdentifiers": @[@"com.commcats.gdrivebackup.tiger"],
         @"EnvironmentVariables": @{
             @"HOME": NSHomeDirectory(),
-            @"PATH": @"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            @"PATH": @"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/libexec/gdrive-tiger-backup/bin",
             @"GDRIVE_BACKUP_TRIGGER": @"schedule",
             // A scheduled job has no attentive user; the script still verifies
             // that the configured destination is the expected mounted target.

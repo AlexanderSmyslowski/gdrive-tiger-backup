@@ -19,6 +19,8 @@ FOUNDATION_EXPORT NSString *GDTSetupInstallCommand(BOOL homebrewAvailable,
 /// Runs the long, browser-based Google sign-in. Separate from
 /// commandRunner because the sign-in waits for the user for minutes.
 @property(nonatomic, copy, nullable) GDTSetupCommandRunner interactiveCommandRunner;
+/// Where the rclone in use comes from: "homebrew", "bundled" or "other".
+@property(nonatomic, copy, nullable) NSString * _Nullable (^rcloneSourceProvider)(void);
 
 + (instancetype)productionChecker;
 - (NSDictionary<NSString *, id> *)snapshotForConfig:(NSDictionary<NSString *, NSString *> *)config;

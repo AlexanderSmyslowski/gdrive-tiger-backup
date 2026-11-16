@@ -54,6 +54,7 @@ APP_EXECUTABLE="$APP_PATH/Contents/MacOS/GDriveBackupTiger"
 BACKUP_SCRIPT="$PAYLOAD_ROOT/usr/local/bin/backup-google-drive.sh"
 LAUNCH_AGENT="$PAYLOAD_ROOT/usr/local/share/gdrive-tiger-backup/launchd/com.commcats.gdrivebackup.plist"
 POSTINSTALL="$EXPANDED_PKG/Scripts/postinstall"
+BUNDLED_TOOLS="$PAYLOAD_ROOT/usr/local/libexec/gdrive-tiger-backup"
 
 required_files=(
   "$PACKAGE_INFO"
@@ -62,6 +63,10 @@ required_files=(
   "$BACKUP_SCRIPT"
   "$LAUNCH_AGENT"
   "$POSTINSTALL"
+  "$BUNDLED_TOOLS/bin/rclone"
+  "$BUNDLED_TOOLS/bin/jq"
+  "$BUNDLED_TOOLS/licenses/rclone-COPYING.txt"
+  "$BUNDLED_TOOLS/licenses/jq-COPYING.txt"
 )
 
 for required_file in "${required_files[@]}"; do
@@ -89,6 +94,26 @@ for required_arch in arm64 x86_64; do
     exit 1
   fi
 done
+
+# shellcheck source=packaging/bundled-tools.conf
+source "$ROOT/packaging/bundled-tools.conf"
+for tool in rclone jq; do
+  if [[ ! -x "$BUNDLED_TOOLS/bin/$tool" ]]; then
+    printf 'Bundled %s is not executable.\n' "$tool" >&2
+    exit 1
+  fi
+  for required_arch in arm64 x86_64; do
+    if ! /usr/bin/lipo "$BUNDLED_TOOLS/bin/$tool" -verify_arch "$required_arch"; then
+      printf 'Bundled %s is not a universal arm64/x86_64 binary.\n' "$tool" >&2
+      exit 1
+    fi
+  done
+done
+if [[ "$("$BUNDLED_TOOLS/bin/rclone" version 2>/dev/null | /usr/bin/head -1)" != "rclone $RCLONE_VERSION" ||
+      "$("$BUNDLED_TOOLS/bin/jq" --version 2>/dev/null)" != "$JQ_VERSION" ]]; then
+  printf '%s\n' 'Bundled tool versions do not match packaging/bundled-tools.conf.' >&2
+  exit 1
+fi
 
 build_info="$(/usr/bin/vtool -show-build "$APP_EXECUTABLE")"
 minos_count=0

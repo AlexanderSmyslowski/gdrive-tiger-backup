@@ -72,13 +72,12 @@ Status: `[ ]` open, `[x]` done, `[~]` partly done (see note).
 - [x] **F2 Missing tools explained in the app.** When rclone, flock or jq are
   missing, show what is missing and a copyable install command instead of a
   generic failure.
-- [ ] **F3 Ship the tools with the installer** so Homebrew is not required.
-  Open, planned as its own release: download pinned rclone and jq release
-  binaries for arm64 and x86_64 in CI, verify their published checksums,
-  `lipo` them into universal binaries, build `flock` from pinned source (or
-  replace it in the engine with a `mkdir`-based lock), install them under
-  `/usr/local/libexec/gdrive-tiger-backup/`, prefer them in the engine's
-  `PATH`, and add their licenses (MIT, MIT, ISC) to the package.
+- [x] **F3 Ship the tools with the installer** so Homebrew is not required.
+  rclone and jq release binaries are pinned in `packaging/bundled-tools.conf`,
+  checked against the upstream SHA-256 sums, combined into universal binaries
+  and installed under `/usr/local/libexec/gdrive-tiger-backup/` with their
+  licenses. Homebrew copies stay preferred; `flock` is replaced by a perl
+  lock when missing.
 
 ## G. Documentation and installer
 

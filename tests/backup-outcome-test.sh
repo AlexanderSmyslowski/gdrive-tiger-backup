@@ -807,6 +807,43 @@ test_existing_backup_is_skipped_not_successful() {
   fi
 }
 
+test_perl_lock_replaces_missing_flock() {
+  local name="without flock the engine takes the same run lock through perl"
+  local status state lock holder
+  prepare_test_environment
+  /bin/rm -f "$FAKE_BIN/flock"
+  lock="$TEST_HOME/backup.lock"
+  /bin/mkdir -p "${lock%/*}"
+
+  # A second process holds the lock: the run must be skipped.
+  # shellcheck disable=SC2016 # Perl code, not shell.
+  /usr/bin/perl -MFcntl=:flock -e \
+    'open(my $fh, ">", $ARGV[0]) or exit 2; flock($fh, LOCK_EX) or exit 1; sleep 30' \
+    "$lock" &
+  holder=$!
+  sleep 1
+  run_backup
+  status=$?
+  state="$(cat "$RUN_STATE_FILE" 2>/dev/null || true)"
+  kill "$holder" 2>/dev/null
+  wait "$holder" 2>/dev/null
+
+  if [[ "$status" == "0" && "$state" == *$'reason=already_running\n'* ]]; then
+    pass "$name"
+  else
+    fail "$name (exit=$status state=${state//$'\n'/,})"
+  fi
+
+  # Without a holder the same run takes the lock and proceeds.
+  run_backup
+  state="$(cat "$RUN_STATE_FILE" 2>/dev/null || true)"
+  if [[ "$state" != *$'reason=already_running\n'* ]]; then
+    pass "without flock and without a concurrent run the backup proceeds"
+  else
+    fail "without flock and without a concurrent run the backup proceeds (state=${state//$'\n'/,})"
+  fi
+}
+
 test_state_is_versioned_and_identifies_the_process() {
   local name="run state is versioned and identifies its process"
   local state mode
@@ -3004,6 +3041,7 @@ test_automatic_backup_does_not_open_progress_ui
 test_visible_manual_confirmation_requests_foreground
 test_early_configuration_error_publishes_failure
 test_existing_backup_is_skipped_not_successful
+test_perl_lock_replaces_missing_flock
 test_state_is_versioned_and_identifies_the_process
 test_active_backup_publishes_running_summary
 test_locked_backup_publishes_running_before_remote_checks

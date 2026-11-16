@@ -60,7 +60,7 @@ if [[ -f "$AGENT_SOURCE" ]]; then
   /usr/libexec/PlistBuddy -c 'Delete :EnvironmentVariables' "$agent_dest" >/dev/null 2>&1 || true
   /usr/libexec/PlistBuddy -c 'Add :EnvironmentVariables dict' "$agent_dest"
   /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:HOME string $user_home" "$agent_dest"
-  /usr/libexec/PlistBuddy -c 'Add :EnvironmentVariables:PATH string /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin' "$agent_dest"
+  /usr/libexec/PlistBuddy -c 'Add :EnvironmentVariables:PATH string /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/libexec/gdrive-tiger-backup/bin' "$agent_dest"
   /usr/sbin/chown "$console_uid:$console_gid" "$agent_dest"
 
   /bin/launchctl bootout "gui/$console_uid" "$agent_dest" >/dev/null 2>&1 || true

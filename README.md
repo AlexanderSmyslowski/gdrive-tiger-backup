@@ -7,41 +7,41 @@ macOS launchd backup setup for Google Drive, powered by `rclone`, with a tiny Ma
 
 ## Quick start
 
-1. **Install the helper tools once.** Open Terminal and paste:
-   `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" && brew install rclone flock jq`
-   (skip the Homebrew part if `brew` is already installed). The app's setup
-   window shows this command with a **Copy command** button when a tool is
-   missing.
-2. **Install the app.** Download the `.pkg` installer from the
+1. **Install the app.** Download the `.pkg` installer from the
    [latest release](https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/latest)
    and double-click it. Because the package is not signed by Apple yet, macOS
    first says it cannot verify it: click **Done** (not *Move to Trash*), open
    **System Settings › Privacy & Security**, click **Open Anyway** next to the
    package, and confirm.
-3. **Set up in the app.** Open *GDrive Backup Tiger*, click **Set up backup …**,
+2. **Set up in the app.** Open *GDrive Backup Tiger*, click **Set up backup …**,
    click **Connect Google** (your browser opens Google's sign-in; the app only
    asks for read access), choose an external disk or your NAS and a schedule,
    then **Save**.
 
+The installer includes `rclone` and `jq`, so Homebrew is not required. If
+Homebrew versions are installed, the app and the engine prefer them and keep
+their updates.
+
 ### Schnellstart (Deutsch)
 
-1. **Hilfsprogramme einmalig installieren:** Terminal öffnen und den Befehl aus
-   Schritt 1 oben einfügen. Fehlt etwas, zeigt das Einrichtungsfenster der App
-   den Befehl mit dem Knopf **Befehl kopieren** an.
-2. **App installieren:** Das `.pkg`-Installationspaket von der
+1. **App installieren:** Das `.pkg`-Installationspaket von der
    [aktuellen Release-Seite](https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/latest)
    laden und doppelklicken. Meldet macOS, das Paket könne nicht überprüft
    werden: **Fertig** wählen (nicht *In den Papierkorb*), **Systemeinstellungen
    › Datenschutz & Sicherheit** öffnen, bei dem Paket **Dennoch öffnen** klicken
    und bestätigen.
-3. **In der App einrichten:** *GDrive Backup Tiger* öffnen, **Backup einrichten …**
+2. **In der App einrichten:** *GDrive Backup Tiger* öffnen, **Backup einrichten …**
    wählen, **Mit Google verbinden** klicken (der Browser öffnet die Google-Anmeldung;
    die App fragt nur Lesezugriff an), externe Festplatte oder NAS und Zeitplan
    wählen, **Speichern**.
 
-Current release: `v2.6.0` with automatic catch-up of missed daily backups, NAS mounting without a Keychain grant after each update, a watchdog that stops a copy when the NAS disappears, early detection of missing macOS privacy access, no more Trash or destination clutter, one-run destination selection in the main window, automatic NAS retries that wait for another backup to finish, a fail-closed APFS volume-creation contract, macOS-15-compatible physical-disk identity in external-backup confirmations, visible aggregate check activity when a byte total is unavailable, quiet recovery confirmations and opt-in routine success notifications, a truthful running state for automatic retries, private current-phase progress in the overview and menu bar, silent authenticated and guest SMB mounting, one current persistent automatic-failure alert, a safe retry for transient NAS read failures, passive handling of unknown external disks, verified APFS and NAS identity, one coherent Dock presence, optional end-to-end `rclone crypt` backups, retained versions, verified recovery, named profiles, diagnostics, and a persistent menu bar overview.
+`rclone` und `jq` sind im Installationspaket enthalten, Homebrew ist nicht nötig.
+Sind Homebrew-Versionen installiert, nutzen App und Backup-Routine diese und
+behalten so deren Updates.
 
-The release installer is `GDrive-Backup-Tiger-2.6.0.pkg`, accompanied by `SHA256SUMS.txt` on the [release page](https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/tag/v2.6.0). It is unsigned; see the Gatekeeper instructions below. Fresh-account installation and dry-run tests on macOS 13 and the current macOS release have not yet been completed; CI checks deployment metadata and both binary architectures, not that runtime coverage.
+Current release: `v2.7.0` with setup that needs no Terminal (Google sign-in from the app, rclone and jq included in the installer), plain-language status and setup texts, automatic catch-up of missed daily backups, NAS mounting without a Keychain grant after each update, a watchdog that stops a copy when the NAS disappears, early detection of missing macOS privacy access, no more Trash or destination clutter, one-run destination selection in the main window, automatic NAS retries that wait for another backup to finish, a fail-closed APFS volume-creation contract, macOS-15-compatible physical-disk identity in external-backup confirmations, visible aggregate check activity when a byte total is unavailable, quiet recovery confirmations and opt-in routine success notifications, a truthful running state for automatic retries, private current-phase progress in the overview and menu bar, silent authenticated and guest SMB mounting, one current persistent automatic-failure alert, a safe retry for transient NAS read failures, passive handling of unknown external disks, verified APFS and NAS identity, one coherent Dock presence, optional end-to-end `rclone crypt` backups, retained versions, verified recovery, named profiles, diagnostics, and a persistent menu bar overview.
+
+The release installer is `GDrive-Backup-Tiger-2.7.0.pkg`, accompanied by `SHA256SUMS.txt` on the [release page](https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/tag/v2.7.0). It is unsigned; see the Gatekeeper instructions below. Fresh-account installation and dry-run tests on macOS 13 and the current macOS release have not yet been completed; CI checks deployment metadata and both binary architectures, not that runtime coverage.
 
 ### One backup, one destination
 
@@ -114,13 +114,13 @@ the backup does not preserve Google Drive's native document revision history.
 ## Requirements
 
 - macOS 13 Ventura or later
-- macOS with Command Line Tools
-- Homebrew
-- `rclone`
-- `flock`
-- `jq`
+- `rclone` and `jq`: included in the release installer (rclone and jq release
+  binaries, pinned in `packaging/bundled-tools.conf` and checked against the
+  upstream SHA-256 sums). Homebrew copies take precedence when installed.
+- `flock` is optional; without it the engine takes the same run lock through
+  macOS's `perl`.
 
-Install dependencies:
+For installs from source, install the tools with Homebrew:
 
 ```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"

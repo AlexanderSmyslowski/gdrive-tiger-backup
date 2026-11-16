@@ -6,7 +6,11 @@ if [[ "${1:-}" == "--capabilities" ]]; then
   exit 0
 fi
 
-PATH="${GDRIVE_BACKUP_PATH:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
+# Homebrew copies come first so they keep their own updates; the tools the
+# installer ships in /usr/local/libexec are the fallback for Macs without
+# Homebrew.
+BUNDLED_TOOLS_BIN="/usr/local/libexec/gdrive-tiger-backup/bin"
+PATH="${GDRIVE_BACKUP_PATH:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$BUNDLED_TOOLS_BIN}"
 export PATH
 
 if [[ -z "${HOME:-}" ]]; then
@@ -328,6 +332,7 @@ OSASCRIPT_BIN="${GDRIVE_BACKUP_OSASCRIPT-/usr/bin/osascript}"
 MOUNT_BIN="${GDRIVE_BACKUP_MOUNT_BIN-/sbin/mount}"
 CMP_BIN="${GDRIVE_BACKUP_CMP_BIN-/usr/bin/cmp}"
 LS_BIN="${GDRIVE_BACKUP_LS_BIN-/bin/ls}"
+PERL_BIN="${GDRIVE_BACKUP_PERL_BIN-/usr/bin/perl}"
 ENCRYPTED_VOLUME_REAL=""
 ENCRYPTED_VOLUME_DEVICE=""
 ENCRYPTED_VOLUME_UUID=""
@@ -424,6 +429,21 @@ cleanup_temp_file() {
 
 # Keep the log useful and bounded. One compressed predecessor is retained. The
 # live file is emptied in place, so the append-mode descriptor stays valid.
+
+# Take the exclusive, non-blocking run lock on fd 9. flock(1) is used when
+# installed; otherwise macOS's perl takes the same BSD flock(2) lock on the
+# shared open file description, so the lock stays held by this shell after
+# perl exits and the app's flock() probe sees it exactly as before.
+acquire_run_lock() {
+  if command -v flock >/dev/null 2>&1; then
+    flock -n 9
+    return
+  fi
+  # shellcheck disable=SC2016 # The single quotes hold Perl code, not shell.
+  "$PERL_BIN" -MFcntl=:flock -e \
+    'open(my $fh, ">&=", 9) or exit 2; flock($fh, LOCK_EX | LOCK_NB) or exit 1; exit 0'
+}
+
 rotate_log_if_needed() {
   local limit_bytes="$1" size previous="${LOG}.1.gz"
 
@@ -4725,15 +4745,19 @@ if [[ "$BACKUP_TARGET" == "invalid" ]]; then
 fi
 sleep "$MOUNT_SETTLE_SECONDS"
 
-for cmd in rclone flock jq diskutil plutil; do
+for cmd in rclone jq diskutil plutil; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     log "FEHLER: '$cmd' nicht gefunden."
     exit 127
   fi
 done
+if ! command -v flock >/dev/null 2>&1 && [[ ! -x "$PERL_BIN" ]]; then
+  log "FEHLER: Weder 'flock' noch '$PERL_BIN' gefunden."
+  exit 127
+fi
 
 exec 9>"$LOCK"
-if ! flock -n 9; then
+if ! acquire_run_lock; then
   log "Backup laeuft bereits; ueberspringe."
   RUN_OUTCOME="skipped"
   RUN_STATE_REASON="already_running"
