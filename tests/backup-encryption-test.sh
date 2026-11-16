@@ -3,6 +3,7 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BACKUP_SCRIPT="$ROOT/bin/backup-google-drive.sh"
+PLATFORM_SCRIPT="$ROOT/lib/platform-macos.sh"
 failures=0
 TEST_DIRS=()
 
@@ -141,6 +142,9 @@ if [[ "${FAKE_JQ_USE_SYSTEM:-0}" == "1" ]]; then
   exec /usr/bin/jq "$@"
 fi
 if [[ "$*" == *"APFSVolumeUUID"* ]]; then
+  exec /usr/bin/jq "$@"
+fi
+if [[ "$*" == *'type == "array"'* ]]; then
   exec /usr/bin/jq "$@"
 fi
 case "${1:-}" in
@@ -1313,7 +1317,7 @@ test_apfs_tree_device_validation_streams_its_inventory() {
     /^validate_configured_apfs_tree\(\)/ { capture = 1 }
     capture { print }
     capture && /^}$/ { exit }
-  ' "$BACKUP_SCRIPT")"
+  ' "$PLATFORM_SCRIPT")"
 
   if [[ "$function_text" != *"device_listing="* &&
         "$function_text" == *"/usr/bin/find -x"* &&

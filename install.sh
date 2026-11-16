@@ -465,6 +465,9 @@ test -s "$APP_CONTENTS/Resources/Assets.car"
 # privacy grants across updates; without one the signature is ad-hoc.
 codesign --force --deep --sign "$("$ROOT/scripts/local-signing-identity.sh" resolve)" "$APP_DIR" >/dev/null
 
+# Platform layer first, so a scheduled run never meets a new engine without it.
+sudo install -d -m 755 /usr/local/libexec/gdrive-tiger-backup/lib
+sudo install -m 644 "$ROOT/lib/platform-macos.sh" /usr/local/libexec/gdrive-tiger-backup/lib/platform-macos.sh
 sudo install -m 755 "$ROOT/bin/backup-google-drive.sh" /usr/local/bin/backup-google-drive.sh
 install -m 644 "$AGENT_SRC" "$AGENT_DST"
 /usr/libexec/PlistBuddy -c 'Delete :EnvironmentVariables' "$AGENT_DST" >/dev/null 2>&1 || true

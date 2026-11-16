@@ -3,6 +3,7 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BACKUP_SCRIPT="$ROOT/bin/backup-google-drive.sh"
+PLATFORM_SCRIPT="$ROOT/lib/platform-macos.sh"
 failures=0
 
 fail() {
@@ -2158,8 +2159,8 @@ test_external_confirmation_counts_stores_without_an_out_of_range_probe() {
   # Cardinality is therefore the portable way to distinguish one disk from a set.
   # The second grep deliberately matches literal shell source.
   # shellcheck disable=SC2016
-  if ! /usr/bin/grep -Fq 'APFSPhysicalStores.1.APFSPhysicalStore' "$BACKUP_SCRIPT" &&
-     /usr/bin/grep -Fq 'plist_data_value "$volume_plist" APFSPhysicalStores' "$BACKUP_SCRIPT"; then
+  if ! /usr/bin/grep -Fq 'APFSPhysicalStores.1.APFSPhysicalStore' "$PLATFORM_SCRIPT" &&
+     /usr/bin/grep -Fq 'plist_data_value "$volume_plist" APFSPhysicalStores' "$PLATFORM_SCRIPT"; then
     pass "$name"
   else
     fail "$name"

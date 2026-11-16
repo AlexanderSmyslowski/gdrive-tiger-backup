@@ -162,6 +162,7 @@ The package installs:
 
 - `/Applications/GDrive Backup Tiger.app`
 - `/usr/local/bin/backup-google-drive.sh`
+- `/usr/local/libexec/gdrive-tiger-backup/` with the bundled rclone and jq, their licenses, and the engine's macOS platform file `lib/platform-macos.sh`
 - `~/Library/LaunchAgents/com.commcats.gdrivebackup.plist` for the currently logged-in user
 
 The package is currently unsigned because the project does not yet have an Apple Developer ID Installer certificate. If macOS says it cannot verify the package:
@@ -284,6 +285,7 @@ The setup window can:
 The installer writes:
 
 - `/usr/local/bin/backup-google-drive.sh`
+- `/usr/local/libexec/gdrive-tiger-backup/lib/platform-macos.sh`
 - `/Applications/GDrive Backup Tiger.app`
 - `~/Library/LaunchAgents/com.commcats.gdrivebackup.plist`
 - `~/.config/gdrive-tiger-backup/config`
