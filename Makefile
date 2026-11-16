@@ -88,6 +88,8 @@ test: test-retry-countdown test-native-scheduled-backup
 	bash tests/backup-versioning-test.sh
 	bash tests/backup-robustness-test.sh
 	bash tests/platform-contract-test.sh
+	bash tests/linux-nas-safety-test.sh
+	bash tests/platform-linux-test.sh
 	bash tests/nas-name-codec-integration-test.sh
 	bash tests/encryption-ui-test.sh
 	bash tests/test-harness-safety-test.sh

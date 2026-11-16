@@ -20,6 +20,7 @@ export PATH
 # before any configuration is read, so configuration cannot load other code.
 case "$(/usr/bin/uname -s 2>/dev/null)" in
   Darwin) GDT_PLATFORM="macos" ;;
+  Linux) GDT_PLATFORM="linux" ;;
   *)
     printf 'FEHLER: Dieses Betriebssystem wird noch nicht unterstuetzt.\n' >&2
     exit 69
@@ -252,6 +253,10 @@ if [[ "$_GDT_PROCESS_SUMMARY_STATE_FILE_SET" == "1" ]]; then
   SUMMARY_STATE_FILE="$_GDT_PROCESS_SUMMARY_STATE_FILE_VALUE"
 elif [[ -n "${GDRIVE_BACKUP_SUMMARY_STATE_FILE:-}" ]]; then
   SUMMARY_STATE_FILE="$GDRIVE_BACKUP_SUMMARY_STATE_FILE"
+elif [[ "$GDT_PLATFORM" == "linux" && -n "$ACTIVE_PROFILE_ID" ]]; then
+  SUMMARY_STATE_FILE="$HOME/.local/state/gdrive-tiger-backup/profiles/$ACTIVE_PROFILE_ID/last-run.status"
+elif [[ "$GDT_PLATFORM" == "linux" ]]; then
+  SUMMARY_STATE_FILE="$HOME/.local/state/gdrive-tiger-backup/last-run.status"
 elif [[ -n "$ACTIVE_PROFILE_ID" ]]; then
   SUMMARY_STATE_FILE="$HOME/Library/Application Support/GDrive Backup Tiger/profiles/$ACTIVE_PROFILE_ID/last-run.status"
 else
@@ -3628,7 +3633,6 @@ fi
 rotate_log_if_needed "$LOG_MAX_BYTES"
 prepare_run_tmpdir
 start_stall_watchdog
-start_nas_watchdog
 
 if [[ "$CATCHUP_QUIET" == "1" ]]; then
   # Probe before any progress or "running" record is published; a quiet skip
@@ -3669,6 +3673,10 @@ if ! ensure_backup_target; then
   log "FEHLER: Das konfigurierte Backup-Ziel ist nicht verfuegbar."
   exit 69
 fi
+
+# Inherit the verified mount identity before the watchdog forks. Otherwise a
+# replacement before its first probe could become its independent baseline.
+start_nas_watchdog
 
 if ! validate_configured_apfs_target; then
   log "FEHLER: Das konfigurierte APFS-Backup-Volume konnte nicht sicher bestaetigt werden."
