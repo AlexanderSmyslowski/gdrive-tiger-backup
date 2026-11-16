@@ -179,7 +179,8 @@
         @"ready": @[@"✓", [NSColor colorWithCalibratedRed:0.10 green:0.48 blue:0.18 alpha:1.0]],
         @"failure": @[@"×", [NSColor colorWithCalibratedRed:0.70 green:0.10 blue:0.08 alpha:1.0]],
         @"blocked": @[@"—", [NSColor colorWithCalibratedWhite:0.42 alpha:1.0]],
-        @"unknown": @[@"?", [NSColor colorWithCalibratedWhite:0.42 alpha:1.0]]
+        @"unknown": @[@"?", [NSColor colorWithCalibratedWhite:0.42 alpha:1.0]],
+        @"checking": @[@"…", [NSColor colorWithCalibratedWhite:0.42 alpha:1.0]]
     };
     NSArray *values = presentation[status] ?: presentation[@"unknown"];
     NSTextField *symbol = self.rowSymbolLabels[row];
@@ -299,6 +300,15 @@
         self.overallSymbolLabel.stringValue = @"…";
         self.overallLabel.stringValue = T(self.language ?: @"en", @"diagnosticsRefreshing");
         self.overallLabel.accessibilityLabel = self.overallLabel.stringValue;
+        // Without earlier results the rows would show failure marks for data
+        // that simply has not arrived yet; keep them neutral until it does.
+        if (!self.snapshot.count) {
+            self.systemLabel.stringValue = @"";
+            NSString *checking = T(self.language ?: @"en", @"diagnosticsRowChecking");
+            for (NSUInteger row = 0; row < self.rowSymbolLabels.count; row++) {
+                [self applyStatus:@"checking" detail:checking row:row];
+            }
+        }
     } else {
         [self applySnapshot:self.snapshot ?: @{}];
     }

@@ -802,10 +802,32 @@ int main(void) {
                                              now:now
                                         calendar:calendar];
         Assert([nasSnapshot[@"target"] isEqualToString:
-                   @"NAS / Network · nas-example.local · backup-share/GoogleDrive-Backup"] &&
+                   @"NAS / Network · backup-share/GoogleDrive-Backup"] &&
                [nasSnapshot[@"target"] rangeOfString:@"private-user"].location == NSNotFound &&
                [nasSnapshot[@"target"] rangeOfString:@"secret-password"].location == NSNotFound,
-               @"NAS target identifies the server and share without exposing credentials");
+               @"NAS target names the share in plain language without host or credentials");
+
+        NSDictionary *quotaCapacity = @{@"freeBytes": @623900000000LL, @"totalBytes": @623900000000LL};
+        NSDictionary *usedCapacity = @{@"freeBytes": @500000000000LL, @"totalBytes": @623900000000LL};
+        Assert([GDTOverviewStorageText(quotaCapacity, YES, @"en")
+                   isEqualToString:T(@"en", @"overviewStorageNotMeasurable")],
+               @"a share that reports no used space after a backup is shown as not measurable");
+        Assert([GDTOverviewStorageText(quotaCapacity, NO, @"en") containsString:@" free of "] &&
+               [GDTOverviewStorageText(usedCapacity, YES, @"en") containsString:@" free of "] &&
+               [GDTOverviewStorageText(nil, YES, @"en") isEqualToString:T(@"en", @"overviewUnavailable")],
+               @"plausible capacities keep the free-of-total wording");
+
+        NSDictionary<NSString *, NSString *> *freshSnapshot =
+            [delegate overviewSnapshotForConfig:@{}
+                                     summaryPath:@"/path/that/does/not/exist"
+                                             now:now
+                                        calendar:calendar];
+        Assert([freshSnapshot[@"setupNeeded"] isEqualToString:@"1"] &&
+               [freshSnapshot[@"target"] isEqualToString:T(@"en", @"overviewNotSetUp")] &&
+               [freshSnapshot[@"lastRunDetail"] isEqualToString:T(@"en", @"overviewSetUpFirst")],
+               @"a fresh installation says it is not set up instead of showing a default destination");
+        Assert([nasSnapshot[@"setupNeeded"] isEqualToString:@"0"],
+               @"a saved destination does not ask for setup");
 
         NSDictionary<NSString *, NSString *> *diskSnapshot =
             [delegate overviewSnapshotForConfig:@{

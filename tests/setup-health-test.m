@@ -4,6 +4,8 @@ typedef BOOL (^GDTTestCommandAvailability)(NSString *command);
 typedef NSDictionary<NSString *, id> * (^GDTTestCommandRunner)(NSString *command,
                                                                 NSArray<NSString *> *arguments);
 
+extern NSString *GDTSetupInstallCommand(BOOL homebrewAvailable, NSArray<NSString *> *missingCommands);
+
 static int failures = 0;
 
 static void Assert(BOOL condition, NSString *name) {
@@ -460,6 +462,30 @@ int main(void) {
 
         [fileManager removeItemAtURL:[NSURL fileURLWithPath:destination] error:nil];
     }
+
+    Assert([GDTSetupInstallCommand(YES, @[@"rclone"]) isEqualToString:@"brew install rclone"] &&
+           [GDTSetupInstallCommand(YES, @[@"jq", @"rclone", @"rm -rf /"]) isEqualToString:@"brew install jq rclone"],
+           @"install command lists only the missing known tools");
+    NSString *withHomebrew = GDTSetupInstallCommand(NO, @[@"flock"]);
+    Assert([withHomebrew hasPrefix:@"/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""] &&
+           [withHomebrew hasSuffix:@"&& brew install flock"],
+           @"install command installs Homebrew first when it is missing");
+
+    Class checkerClass = NSClassFromString(@"GDTSetupHealthChecker");
+    id connector = [[checkerClass alloc] init];
+    __block NSArray<NSString *> *connectArguments = nil;
+    [connector setValue:^NSDictionary<NSString *, id> *(NSString *command, NSArray<NSString *> *arguments) {
+        connectArguments = [@[command] arrayByAddingObjectsFromArray:arguments];
+        return @{@"status": @0, @"output": @""};
+    } forKey:@"interactiveCommandRunner"];
+    SEL connectSelector = NSSelectorFromString(@"connectGoogleDriveForConfig:");
+    NSDictionary *(*connect)(id, SEL, NSDictionary *) =
+        (NSDictionary *(*)(id, SEL, NSDictionary *))[connector methodForSelector:connectSelector];
+    NSDictionary *connectResult = connect(connector, connectSelector, @{@"RCLONE_REMOTE": @"gdrive:"});
+    Assert([connectResult[@"status"] integerValue] == 0 &&
+           [connectArguments isEqualToArray:@[@"rclone", @"config", @"create", @"gdrive", @"drive",
+                                              @"scope=drive.readonly"]],
+           @"connecting Google Drive creates a read-only remote under the configured name");
 
     if (failures > 0) {
         printf("%d setup health test(s) failed.\n", failures);
