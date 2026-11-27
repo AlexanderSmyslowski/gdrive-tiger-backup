@@ -23,10 +23,10 @@ than a late launch.
 
 ## 1. Automatic updates
 
-- [~] Updater in the app (PR #21): daily check (can be turned off), offer,
+- [x] Updater in the app (PR #21, released in v2.9.0): daily check (can be turned off), offer,
   verified download from the official release (SHA-256, payload), install
   through the macOS administrator prompt, never during a running backup.
-- [ ] Release as v2.9.0 and install it once by hand on the maintainer's Mac.
+- [~] Release as v2.9.0 and install it once by hand on the maintainer's Mac.
 - [ ] First real run of the updater with the following release (v2.9.1 or
   later): offer, password prompt, restart, confirmation. Fix whatever breaks
   before anyone else relies on it.

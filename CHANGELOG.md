@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v2.9.0 - 2026-11-27
+
+Updates now come to you: the app checks daily, verifies and installs new versions with the macOS password prompt.
+
 - Install updates from the app. The menu bar app checks GitHub about once a day (can be turned off in the menu), offers each new version once, and **Install Now** downloads the release package, verifies it against the release's `SHA256SUMS.txt`, checks that it contains this app and the engine, and installs it through the standard macOS administrator prompt. It never updates during a running backup. The installer runs in its own session so the app restart it causes cannot interrupt it; the new version confirms the update afterwards. Signed packages can be enforced by setting the project's Developer ID team.
 
 ## v2.8.0 - 2026-11-27
