@@ -5,7 +5,11 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/file.h>
+#include <spawn.h>
+#include <sys/wait.h>
 #include <unistd.h>
+
+extern char **environ;
 
 #import "ConfigSupport.h"
 #import "ProfileSupport.h"
@@ -1974,6 +1978,11 @@ static const CGFloat GDTHistoryRunHeight = 17.0;
 @property(nonatomic) NSUInteger diagnosticsGeneration;
 @property(nonatomic, strong) GDTUpdateChecker *updateChecker;
 @property(nonatomic) BOOL updateChecking;
+@property(nonatomic, strong) NSTimer *updateCheckTimer;
+@property(nonatomic, strong) NSTimer *updateResultTimer;
+@property(nonatomic, strong) GDTUpdateDownloader *updateDownloader;
+@property(nonatomic, copy) NSString *updateInstallState;
+@property(nonatomic) pid_t updateInstallPID;
 @property(nonatomic, strong) NSTimer *overviewRefreshTimer;
 @property(nonatomic, copy) NSDictionary<NSString *, NSString *> *lastOverviewSnapshot;
 @property(nonatomic) NSTimeInterval overviewRefreshInterval;
@@ -5132,12 +5141,13 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     diagnostics.target = self;
     [menu addItem:diagnostics];
     NSMenuItem *update = [[NSMenuItem alloc]
-        initWithTitle:T(language, self.updateChecking ? @"updateChecking" : @"updateCheck")
+        initWithTitle:T(language, [self updateMenuTitleKey])
                  action:@selector(checkForUpdates:)
           keyEquivalent:@""];
     update.target = self;
-    update.enabled = !self.updateChecking;
+    update.enabled = !self.updateChecking && !self.updateInstallState.length;
     [menu addItem:update];
+    [menu addItem:[self automaticUpdateMenuItem]];
     [menu addItem:[NSMenuItem separatorItem]];
     [menu addItemWithTitle:T(language, @"quitMenu") action:@selector(terminate:) keyEquivalent:@"q"];
     return menu;
@@ -6516,10 +6526,14 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         alert.messageText = T(language, @"updateAvailableTitle");
         alert.informativeText = [NSString stringWithFormat:T(language, @"updateAvailableMessage"),
             result[@"version"] ?: @"?"];
-        [alert addButtonWithTitle:T(language, @"updateOpenRelease")];
-        [alert addButtonWithTitle:T(language, @"notNow")];
+        [alert addButtonWithTitle:T(language, @"updateInstallNow")];
+        [alert addButtonWithTitle:T(language, @"updateLater")];
+        [alert addButtonWithTitle:T(language, @"updateWhatsNew")];
         [NSApp activateIgnoringOtherApps:YES];
-        if ([alert runModal] == NSAlertFirstButtonReturn) {
+        NSModalResponse response = [alert runModal];
+        if (response == NSAlertFirstButtonReturn && result[@"version"].length) {
+            [self installUpdateVersion:result[@"version"]];
+        } else if (response == NSAlertThirdButtonReturn) {
             [self openOfficialReleasePage:nil];
         }
         return;
@@ -6556,7 +6570,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 }
 
 - (void)checkForUpdates:(id)sender {
-    if (self.updateChecking) return;
+    if (self.updateChecking || self.updateInstallState.length) return;
     self.updateChecking = YES;
     if ([sender isKindOfClass:NSMenuItem.class]) {
         NSMenuItem *item = sender;
@@ -6598,6 +6612,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 }
 
 #include "AdHocDestinationMethods.inc"
+#include "UpdateInstallMethods.inc"
 
 - (void)startOverviewBackup:(id)sender {
     (void)sender;
@@ -6759,12 +6774,13 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     diagnosticsItem.target = self;
     [appMenu addItem:diagnosticsItem];
     NSMenuItem *updateItem = [[NSMenuItem alloc]
-        initWithTitle:T(self.language ?: @"en", self.updateChecking ? @"updateChecking" : @"updateCheck")
+        initWithTitle:T(self.language ?: @"en", [self updateMenuTitleKey])
                  action:@selector(checkForUpdates:)
           keyEquivalent:@""];
     updateItem.target = self;
-    updateItem.enabled = !self.updateChecking;
+    updateItem.enabled = !self.updateChecking && !self.updateInstallState.length;
     [appMenu addItem:updateItem];
+    [appMenu addItem:[self automaticUpdateMenuItem]];
     [appMenu addItem:[NSMenuItem separatorItem]];
     [appMenu addItemWithTitle:T(self.language, @"hideMenu") action:@selector(hide:) keyEquivalent:@"h"];
     [appMenu addItemWithTitle:T(self.language, @"quitMenu") action:@selector(terminate:) keyEquivalent:@"q"];
@@ -8178,6 +8194,8 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         }
         [self primeMountedExternalVolumeCache];
         [self installStatusItemIfNeeded];
+        [self reportInstalledUpdateIfNeeded];
+        [self scheduleAutomaticUpdateChecks];
         if ([mode isEqualToString:@"overview"]) {
             [self showOverviewWindow];
         }

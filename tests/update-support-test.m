@@ -115,6 +115,51 @@ int main(void) {
                @"redirect handling never contacts a foreign or modified endpoint");
     }
 
+    @autoreleasepool {
+        Assert([GDTUpdateAssetURL(@"2.9.0", @"GDrive-Backup-Tiger-2.9.0.pkg").absoluteString isEqualToString:
+                   @"https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/download/v2.9.0/GDrive-Backup-Tiger-2.9.0.pkg"] &&
+               [GDTUpdateAssetURL(@"2.9.0", @"SHA256SUMS.txt").absoluteString hasSuffix:@"/v2.9.0/SHA256SUMS.txt"] &&
+               GDTUpdateAssetURL(@"2.9.0", @"other.pkg") == nil &&
+               GDTUpdateAssetURL(@"2.9.0", @"GDrive-Backup-Tiger-2.8.0.pkg") == nil &&
+               GDTUpdateAssetURL(@"../2.9.0", @"SHA256SUMS.txt") == nil &&
+               GDTUpdateAssetURL(@"v2.9.0", @"SHA256SUMS.txt") == nil,
+               @"update assets are only this version's package and checksum file from the official release");
+        Assert(GDTTrustedUpdateDownloadURL([NSURL URLWithString:
+                   @"https://release-assets.githubusercontent.com/github-production-release-asset/1/abc?sig=x"]) &&
+               !GDTTrustedUpdateDownloadURL([NSURL URLWithString:
+                   @"http://release-assets.githubusercontent.com/x"]) &&
+               !GDTTrustedUpdateDownloadURL([NSURL URLWithString:
+                   @"https://github.com/evil/repo/releases/download/v2.9.0/x.pkg"]) &&
+               !GDTTrustedUpdateDownloadURL([NSURL URLWithString:@"https://evil.invalid/x.pkg"]) &&
+               !GDTTrustedUpdateDownloadURL([NSURL URLWithString:
+                   @"https://user:pw@release-assets.githubusercontent.com/x"]),
+               @"downloads and redirects are limited to the official repository and GitHub asset hosts over HTTPS");
+        NSString *hash = @"8b6385ead13abc3a4dadce815ecab62c07f5eb019e5d128fb2174c1b58043199";
+        Assert([GDTExpectedSHA256([NSString stringWithFormat:@"%@  GDrive-Backup-Tiger-2.8.0.pkg\n", hash],
+                   @"GDrive-Backup-Tiger-2.8.0.pkg") isEqualToString:hash] &&
+               GDTExpectedSHA256([NSString stringWithFormat:@"%@  other.pkg\n", hash],
+                   @"GDrive-Backup-Tiger-2.8.0.pkg") == nil &&
+               GDTExpectedSHA256([NSString stringWithFormat:@"%@  a.pkg\n%@  a.pkg\n", hash,
+                   [hash stringByReplacingOccurrencesOfString:@"8" withString:@"9"]], @"a.pkg") == nil &&
+               GDTExpectedSHA256(@"zz  a.pkg", @"a.pkg") == nil,
+               @"the expected checksum is read only for the exact package name and must be unambiguous");
+        NSString *file = [NSTemporaryDirectory() stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"gdt-sha-%d", getpid()]];
+        [@"abc" writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        Assert([GDTSHA256OfFile(file) isEqualToString:
+                   @"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"] &&
+               GDTSHA256OfFile([file stringByAppendingString:@"-missing"]) == nil,
+               @"file checksums are SHA-256 in lowercase hex");
+        [NSFileManager.defaultManager removeItemAtPath:file error:nil];
+        NSString *signed_ = @"Package \"x.pkg\":\n   Status: signed by a developer certificate issued by Apple for distribution\n"
+            @"   Certificate Chain:\n    1. Developer ID Installer: Example Maker (ABCDE12345)\n";
+        Assert(GDTUpdateSignatureProblem(1, @"Status: no signature", @"") == nil &&
+               GDTUpdateSignatureProblem(0, signed_, @"ABCDE12345") == nil &&
+               [GDTUpdateSignatureProblem(0, signed_, @"ZZZZZ99999") isEqualToString:@"untrusted_signature"] &&
+               [GDTUpdateSignatureProblem(1, @"Status: no signature", @"ABCDE12345") isEqualToString:@"unsigned"],
+               @"once a team ID is set, only packages signed by that team are accepted");
+    }
+
     if (failures > 0) {
         printf("%d update support test(s) failed.\n", failures);
         return 1;
