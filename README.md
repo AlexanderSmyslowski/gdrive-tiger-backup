@@ -499,18 +499,31 @@ It excludes local and NAS paths, URLs, account names, credentials, remote names,
 file names, provider output, and log contents. Saved reports use owner-only
 permissions (`0600`).
 
-## Manual update checks
+## Updates
 
-Choose **Check for Updates…** in the application menu or menu bar. The app makes
-one unauthenticated request to the fixed GitHub API endpoint for this repository
-and accepts only a stable numeric release version from that exact endpoint.
-Cookies, cached responses, stored web credentials, foreign redirects, oversized
-responses, prereleases, and malformed version strings are rejected.
+The menu bar app checks GitHub for a new release about once a day, starting a
+few minutes after login; **Check for Updates Automatically** in the menu turns
+this off, and **Check for Updates…** checks at once. A check is one
+unauthenticated request to the fixed GitHub API endpoint of this repository;
+cookies, cached responses, stored credentials, foreign redirects, oversized
+responses, prereleases and malformed versions are rejected. Each new version is
+offered automatically only once.
 
-The app never checks automatically at launch, downloads no package, and never
-opens macOS Installer. If a newer version exists, the result offers one explicit
-button to open the fixed official GitHub releases page in the browser. Download
-and installation remain separate manual user actions.
+**Install Now** then:
+
+1. refuses while a backup is running;
+2. downloads exactly `GDrive-Backup-Tiger-<version>.pkg` and `SHA256SUMS.txt`
+   from this repository's release of that version over HTTPS (redirects only to
+   GitHub's release asset hosts) into a private cache folder;
+3. installs only if the package matches the SHA-256 in `SHA256SUMS.txt`,
+   contains this app and the backup engine, and, once the project signs its
+   releases, carries the project's Developer ID signature;
+4. runs macOS Installer through the standard macOS administrator prompt; the
+   app never sees or stores the password.
+
+The installer restarts the app; the new version confirms the update once.
+Until releases are signed, the checksum ties the package to the GitHub
+release, so the trust anchor is the security of this GitHub repository.
 
 ## Encryption
 
