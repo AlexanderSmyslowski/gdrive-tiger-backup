@@ -60,57 +60,57 @@ else
   printf 'not ok - README contains no stale versioned installer name\n'
   failures=$((failures + 1))
 fi
-check_contains "$ROOT/README.md" \
+check_contains "$ROOT/docs/reference.md" \
   "Scheduled, retry, unattended mount-triggered, and menu-bar-only runs stay headless and passive, including in full-screen Spaces." \
-  "README explicitly keeps automatic retries passive in full-screen Spaces"
-check_contains "$ROOT/README.md" \
+  "Reference explicitly keeps automatic retries passive in full-screen Spaces"
+check_contains "$ROOT/docs/reference.md" \
   "\`GDRIVE_BACKUP_APPROVE_VOLUME_CREATION=1\` is a narrow process-only authorization for one setup invocation; it is ignored when stored in a config file." \
-  "README documents process-only APFS creation authorization"
-check_contains "$ROOT/README.md" \
+  "Reference documents process-only APFS creation authorization"
+check_contains "$ROOT/docs/reference.md" \
   "BACKUP_ASSUME_YES approves backup start only and never authorizes \`diskutil apfs addVolume\`." \
-  "README keeps automatic backup approval separate from APFS creation"
-check_contains "$ROOT/README.md" \
+  "Reference keeps automatic backup approval separate from APFS creation"
+check_contains "$ROOT/docs/reference.md" \
   "Overview/manual, scheduled, retry, mount-triggered, menu-bar-only, and unknown triggers cannot create or bind a volume or open volume-creation UI." \
-  "README reserves APFS creation and binding for setup"
-check_contains "$ROOT/README.md" \
+  "Reference reserves APFS creation and binding for setup"
+check_contains "$ROOT/docs/reference.md" \
   "one exact-name candidate in one eligible external APFS container" \
-  "README documents unique APFS candidate and container selection"
-check_contains "$ROOT/README.md" \
+  "Reference documents unique APFS candidate and container selection"
+check_contains "$ROOT/docs/reference.md" \
   "independently validates it, binds its UUID, resolves its current mount point and nested destination, and atomically persists the complete identity." \
-  "README documents APFS identity validation and atomic persistence"
-check_contains "$ROOT/README.md" \
+  "Reference documents APFS identity validation and atomic persistence"
+check_contains "$ROOT/docs/reference.md" \
   "Multiple named candidates or multiple eligible containers abort without mutation or copy, and prefix-renamed volumes are never guessed." \
-  "README documents APFS ambiguity and prefix-name fail-closed behavior"
-check_contains "$ROOT/README.md" \
+  "Reference documents APFS ambiguity and prefix-name fail-closed behavior"
+check_contains "$ROOT/docs/reference.md" \
   "The routine never deletes, erases, repartitions, renames, or unmounts volumes." \
-  "README documents the non-destructive APFS safety boundary"
+  "Reference documents the non-destructive APFS safety boundary"
 check_contains "$ROOT/README.md" \
   "silent authenticated and guest SMB mounting" \
   "README release summary covers authenticated and guest SMB mounting"
-check_contains "$ROOT/README.md" \
+check_contains "$ROOT/docs/reference.md" \
   "Guest SMB URLs such as \`smb://nas.local/Backups\` bypass Keychain and authentication commands and remain no-UI during automatic runs." \
-  "README documents guest SMB without Keychain or UI"
-check_contains "$ROOT/README.md" \
+  "Reference documents guest SMB without Keychain or UI"
+check_contains "$ROOT/docs/reference.md" \
   "newer persistent failure for the same profile cannot be erased" \
-  "README documents the persistent notification cleanup boundary"
-check_contains "$ROOT/README.md" \
+  "Reference documents the persistent notification cleanup boundary"
+check_contains "$ROOT/docs/reference.md" \
   "Routine successful automatic-backup notifications are opt-in" \
-  "README documents that routine success notifications stay opt-in"
-check_contains "$ROOT/README.md" \
+  "Reference documents that routine success notifications stay opt-in"
+check_contains "$ROOT/docs/reference.md" \
   "A successful automatic backup after an active issue sends one quiet recovery confirmation" \
-  "README documents automatic quiet recovery confirmations"
-check_contains "$ROOT/README.md" \
+  "Reference documents automatic quiet recovery confirmations"
+check_contains "$ROOT/docs/reference.md" \
   "the progress bar remains indeterminate and no stale or invented percentage is shown" \
-  "README documents truthful unknown-total progress"
-check_contains "$ROOT/README.md" \
+  "Reference documents truthful unknown-total progress"
+check_contains "$ROOT/docs/reference.md" \
   "increasing aggregate checked/listed counters" \
-  "README documents visible aggregate progress without file names"
-check_contains "$ROOT/README.md" \
+  "Reference documents visible aggregate progress without file names"
+check_contains "$ROOT/docs/reference.md" \
   "capacity clearly labelled as destination free space rather than backup progress" \
-  "README distinguishes target capacity from live backup progress"
-check_contains "$ROOT/README.md" \
+  "Reference distinguishes target capacity from live backup progress"
+check_contains "$ROOT/docs/reference.md" \
   "Completion appears only after the durable terminal status has been published." \
-  "README ties completion to durable terminal status"
+  "Reference ties completion to durable terminal status"
 check_contains "$ROOT/CHANGELOG.md" "## v${version} " \
   "changelog contains the app version"
 check_contains "$ROOT/docs/version-history.md" "| v${version} | ${EXPECTED_PUBLISHED_BUILD} |" \
@@ -191,9 +191,9 @@ check_contains "$ROOT/packaging/scripts/postinstall" "GDRIVE_BACKUP_NOTIFY_SUCCE
 check_contains "$ROOT/packaging/scripts/postinstall" \
   "migrate_notification_success_preferences()" \
   "package installer migrates the legacy and trusted active-profile preferences"
-check_contains "$ROOT/README.md" \
+check_contains "$ROOT/docs/reference.md" \
   "Inactive profiles remain fail-closed until an explicit setup Save writes their preference." \
-  "README documents the fail-closed inactive-profile upgrade boundary"
+  "Reference documents the fail-closed inactive-profile upgrade boundary"
 check_contains "$ROOT/CHANGELOG.md" "routine successful automatic backups" \
   "release changelog records the opt-in routine-success behavior"
 

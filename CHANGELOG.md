@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Show times in the backup history in the language's own clock format; English showed "Today, 4:20PM" next to "11/25, 22:10".
+- Shorter README with screenshots and a plain explanation of why a backup differs from Google Drive's sync; the detailed reference moved to `docs/reference.md`. Added issue templates, `CONTRIBUTING.md`, `SECURITY.md`, a social preview image and a checklist for the first test on a fresh Mac (`docs/fresh-mac-test.md`).
+
 - Confirm an installed update reliably. The first real update (v2.9.0 to v2.9.1) worked, but the restarted app started two seconds before the installer wrote its result, so the confirmation was skipped and the downloaded package stayed in the cache. The app now waits up to two minutes for the result and always removes the download.
 
 ## v2.9.1 - 2026-11-27
