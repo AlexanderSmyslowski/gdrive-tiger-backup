@@ -26,12 +26,21 @@ than a late launch.
 - [x] Updater in the app (PR #21, released in v2.9.0): daily check (can be turned off), offer,
   verified download from the official release (SHA-256, payload), install
   through the macOS administrator prompt, never during a running backup.
-- [~] Release as v2.9.0 and install it once by hand on the maintainer's Mac.
+- [x] Release as v2.9.0 and install it once by hand on the maintainer's Mac.
 - [ ] First real run of the updater with the following release (v2.9.1 or
   later): offer, password prompt, restart, confirmation. Fix whatever breaks
   before anyone else relies on it.
+- [~] Until releases are signed, every update looks like a new app to macOS:
+  it asks again for access to removable volumes and re-registers the
+  background items. Once (2026-11-27, update to v2.8.0) it also blocked the
+  first hourly schedule start ("Launch Constraint Violation"). The installer
+  now re-registers the schedule agent too; check with the next update that no
+  start is blocked. Only step 2 removes the cause.
 
 ## 2. Apple Developer ID (maintainer decision, about 99 USD per year)
+
+More urgent since the updater: without a stable signature every automatic
+update costs the user permission prompts and can block a scheduled start.
 
 - [ ] Enroll in the Apple Developer Program.
 - [ ] Create `Developer ID Application` and `Developer ID Installer`
