@@ -331,7 +331,7 @@ test_capability_probe_never_sources_configuration() {
     "$BACKUP_SCRIPT" --capabilities 2>/dev/null)"
   status=$?
 
-  if [[ "$status" == "0" && "$output" == 'adhoc-target-v1' ]]; then
+  if [[ "$status" == "0" && "$output" == $'adhoc-target-v1\nrun-history-v1' ]]; then
     pass "$name"
   else
     fail "$name (expected adhoc-target-v1 with exit 0, got status=$status)"

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Show backups per destination in the overview. Each NAS and external drive gets one row with its last completed backup and, in red, a failed attempt that is newer. External drives are named by the physical device ("Samsung PSSD T7 · SSD · 1 TB · USB · Volume …") and identified by volume UUID, so two drives with the same volume name stay apart. Each row expands to the last eight runs with date, duration and outcome. The engine appends every finished run to `run-history.tsv` (newest 1,000 runs) with the device details of external drives (`platform_destination_device_info`). After the update the history is rebuilt once from the backup log (`backup-google-drive.sh --init-history`, started by the app), so earlier backups appear right away; they show the volume name until the drive is backed up again. A failure to write the history is logged and never changes the backup result.
+
 - Initialized the retention path array explicitly for Bash 5, preventing an unbound-array failure when existing versions are inventoried on Linux.
 
 - Ported retention timestamp parsing and daily catch-up window calculations to GNU date on Linux, preserving the BSD implementation on macOS. Added shared timezone, calendar and DST tests, and versioning/retention engine tests in Ubuntu and Arch Linux CI.

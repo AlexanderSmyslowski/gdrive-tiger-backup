@@ -163,6 +163,57 @@ int main(void) {
                @"unsafe profile identifiers cannot redirect summary state");
         Assert([GDTBackupSummaryPath() hasSuffix:@"Library/Application Support/GDrive Backup Tiger/last-run.status"],
                @"default durable summary lives in private Application Support");
+
+        NSString *uuid = @"5861298E-D6FE-445F-A407-71EC3C8DE30B";
+        NSString *history = [@[
+            @"v1\t100\tsuccess\tnas\t/Volumes/share/GoogleDrive-Backup\tlog\t90",
+            @"v1\t200\tsuccess\tapfs\t/Volumes/Disk A/GoogleDrive-Backup\tlog\t190",
+            @"v1\t300\tsuccess\tnas\t/Volumes/share-1/GoogleDrive-Backup\tschedule\t290",
+            @"v1\t400\tfailure\tnas\t/Volumes/share/GoogleDrive-Backup\tschedule\t390",
+            @"v1\t500\tsuccess\tnas\t/Volumes/share/GoogleDrive-Backup\tschedule\t490",
+            @"v1\t600\tsuccess\tnas\t/Volumes/share/GoogleDrive-Backup\tschedule-retry\t590",
+            [NSString stringWithFormat:@"v1\t700\tfailure\tapfs\t/Volumes/Disk A/GoogleDrive-Backup\tmanual\t690\t%@\tSamsung PSSD T7\t1000204886016\tyes\tUSB", uuid.lowercaseString],
+            @"v1\t650\tcancelled\tapfs\t/Volumes/Disk B/GoogleDrive-Backup\tmanual\t640",
+            @"v1\t660\tsuccess\tapfs\t/Volumes/Same/GoogleDrive-Backup\tlog\t650",
+            @"v1\t661\tsuccess\tapfs\t/Volumes/Same/GoogleDrive-Backup\tmanual\t655\t11111111-1111-1111-1111-111111111111\tDisk One\t1\tno\tUSB",
+            @"v1\t662\tsuccess\tapfs\t/Volumes/Same/GoogleDrive-Backup\tmanual\t656\t22222222-2222-2222-2222-222222222222\tDisk Two\t2\tno\tUSB",
+            @"v2\t999\tsuccess\tnas\t/Volumes/x/y\tschedule\t1",
+            @"v1\tabc\tsuccess\tnas\t/Volumes/x/y\tschedule\t1",
+            @"v1\t800\tsuccess\tother\t/Volumes/x/y\tschedule\t1",
+            @"garbage", @""
+        ] componentsJoinedByString:@"\n"];
+        NSArray<NSDictionary *> *groups = GDTBackupHistoryGroups(history, 10, 10);
+        NSMutableDictionary *byKey = [NSMutableDictionary dictionary];
+        for (NSDictionary *group in groups) byKey[group[@"key"]] = group;
+        NSDictionary *disk = byKey[[@"apfs:" stringByAppendingString:uuid]];
+        NSDictionary *nas = byKey[@"nas:GoogleDrive-Backup"];
+        Assert(groups.count == 6 && [groups.firstObject[@"key"] isEqual:disk[@"key"]],
+               @"history groups one entry per destination, newest activity first, and skips unknown lines");
+        Assert([disk[@"label"] isEqual:@"Disk A"] && [disk[@"device"] isEqual:@"Samsung PSSD T7"] &&
+               [disk[@"bytes"] isEqual:@1000204886016] && [disk[@"solid"] isEqual:@"yes"] &&
+               [disk[@"bus"] isEqual:@"USB"] && [disk[@"lastSuccess"] isEqual:@200] &&
+               [disk[@"lastFailure"] isEqual:@700] && [disk[@"runs"] count] == 2 &&
+               byKey[@"apfs-name:Disk A"] == nil,
+               @"a disk is identified by its volume UUID, describes its device and adopts older runs under its name");
+        Assert(byKey[@"apfs-name:Same"] && byKey[@"apfs:11111111-1111-1111-1111-111111111111"] &&
+               byKey[@"apfs:22222222-2222-2222-2222-222222222222"],
+               @"old runs stay separate when two disks carry the same volume name");
+        NSDictionary *bDisk = byKey[@"apfs-name:Disk B"];
+        Assert(bDisk && bDisk[@"lastSuccess"] == nil && bDisk[@"lastFailure"] == nil &&
+               [[bDisk[@"runs"] firstObject][@"status"] isEqual:@"cancelled"],
+               @"a cancelled run is listed but is neither a success nor a failure");
+        NSArray *nasRuns = nas[@"runs"];
+        Assert([nas[@"lastSuccess"] isEqual:@600] && nas[@"lastFailure"] == nil && nasRuns.count == 5 &&
+               [nasRuns[0][@"finished"] isEqual:@600] && [nasRuns[0][@"started"] isEqual:@590] &&
+               [nasRuns[2][@"status"] isEqual:@"failure"],
+               @"a NAS share keeps one history across mount-point names, newest first, older failure not flagged");
+        Assert([GDTBackupHistoryGroups(history, 2, 10).lastObject[@"runs"] count] <= 2 &&
+               GDTBackupHistoryGroups(history, 3, 1).count == 1 &&
+               GDTBackupHistoryGroups(@"", 3, 5).count == 0,
+               @"history respects run and group limits and handles an empty file");
+        Assert([GDTBackupHistoryPath() hasSuffix:
+                   @"Library/Application Support/GDrive Backup Tiger/run-history.tsv"],
+               @"run history lives next to the summaries");
     }
 
     if (failures > 0) {

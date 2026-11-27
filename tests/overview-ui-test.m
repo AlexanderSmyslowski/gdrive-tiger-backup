@@ -176,6 +176,52 @@ int main(void) {
         view.storageText = @"812 GB free of 2 TB";
         view.status = @"success";
 
+        {
+            TigerOverviewView *historyView = [[TigerOverviewView alloc] initWithFrame:NSMakeRect(0, 0, 620, 520)];
+            historyView.language = @"de";
+            CGFloat buttonTop = NSMinY(historyView.backupButton.frame);
+            AppDelegate *formatter = [AppDelegate new];
+            formatter.language = @"de";
+            NSCalendar *calendar = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
+            calendar.timeZone = [NSTimeZone timeZoneWithName:@"Europe/Berlin"];
+            NSDate *now = [NSDate dateWithTimeIntervalSince1970:1795800000]; // 2026-11-27 15:40
+            NSArray *groups = GDTBackupHistoryGroups([@[
+                @"v1\t1795723615\tsuccess\tnas\t/Volumes/share/GoogleDrive-Backup\tschedule\t1795719605",
+                @"v1\t1795633000\tsuccess\tnas\t/Volumes/share/GoogleDrive-Backup\tschedule\t1795630000",
+                @"v1\t1795400000\tfailure\tapfs\t/Volumes/Archive/GoogleDrive-Backup\tmanual\t1795390000\t5861298E-D6FE-445F-A407-71EC3C8DE30B\tSamsung PSSD T7\t1000204886016\tyes\tUSB"
+            ] componentsJoinedByString:@"\n"], 8, 5);
+            NSArray *rows = [formatter historyRowsForGroups:groups now:now calendar:calendar];
+            historyView.historyRows = rows;
+            NSDictionary *nasRow = rows.count ? rows[0] : nil;
+            NSDictionary *diskRow = rows.count > 1 ? rows[1] : nil;
+            Assert(rows.count == 2 && [nasRow[@"title"] isEqual:@"NAS · GoogleDrive-Backup"] &&
+                   [nasRow[@"last"] isEqual:@"Zuletzt abgeschlossen: Gestern, 21:06"] &&
+                   [nasRow[@"runs"] count] == 2 &&
+                   [[nasRow[@"runs"] firstObject][@"text"] containsString:@"Dauer"],
+                   @"history names the NAS, its last completed backup and its runs with duration");
+            Assert([diskRow[@"title"] isEqual:@"Samsung PSSD T7"] &&
+                   [diskRow[@"subtitle"] isEqual:@"SSD · 1 TB · USB · Volume „Archive“"] &&
+                   [diskRow[@"failure"] hasPrefix:@"✕ Fehlgeschlagen"] &&
+                   [diskRow[@"last"] isEqual:T(@"de", @"overviewHistoryNone")] &&
+                   [[diskRow[@"runs"] firstObject][@"symbol"] isEqual:@"✕"],
+                   @"a disk is named by its device, says SSD and size, and shows its failed attempt");
+            CGFloat collapsed = [historyView historyHeight];
+            Assert(!historyView.historyCaptionLabel.hidden && collapsed == 30.0 + 2 * 40.0 &&
+                   fabs(NSMinY(historyView.backupButton.frame) - buttonTop - collapsed) < 0.5 &&
+                   fabs(NSHeight(historyView.frame) - 520.0 - collapsed) < 0.5,
+                   @"collapsed history rows push the run controls down and grow the overview");
+            [historyView toggleHistoryRowAtIndex:0];
+            Assert([historyView historyHeight] == collapsed + 2 * 17.0 + 6.0 &&
+                   fabs(NSMinY(historyView.backupButton.frame) - buttonTop - [historyView historyHeight]) < 0.5,
+                   @"expanding a destination lists its runs and moves the controls further down");
+            [historyView toggleHistoryRowAtIndex:0];
+            Assert([historyView historyHeight] == collapsed, @"collapsing a destination restores the compact rows");
+            historyView.historyRows = @[];
+            Assert(historyView.historyCaptionLabel.hidden && historyView.historyLabels.count == 0 &&
+                   fabs(NSMinY(historyView.backupButton.frame) - buttonTop) < 0.5,
+                   @"without history the overview keeps its compact layout");
+        }
+
         NSArray<NSTextField *> *valueLabels = @[
             view.lastRunValueLabel,
             view.lastRunDetailLabel,

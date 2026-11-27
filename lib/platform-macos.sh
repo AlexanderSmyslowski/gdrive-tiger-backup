@@ -22,6 +22,10 @@
 #                               device id of every directory below ROOT,
 #                               without crossing into other file systems
 #   platform_first_symlink ROOT  first symbolic link below ROOT, same file system
+#   platform_destination_device_info PATH
+#                               "uuid TAB device TAB bytes TAB solid TAB bus"
+#                               for the disk holding PATH; solid is yes, no or
+#                               empty, unknown fields stay empty
 #   platform_confirm_dialog_available
 #   platform_confirm_dialog TITLE DETAIL PRIMARY SECONDARY
 #                               prints "yes" or "no"
@@ -88,6 +92,46 @@ platform_directory_devices() {
 
 platform_first_symlink() {
   /usr/bin/find -x "$1" -type l -print -quit
+}
+
+# Describes the physical disk behind a backup volume for the run history, so
+# the app can tell "Samsung PSSD T7 · SSD · 1 TB" from another disk that holds
+# a volume with the same name. Uses the whole disk behind the APFS container.
+platform_destination_device_info() {
+  local volume_plist="" store_plist="" whole_plist="" uuid="" store="" whole=""
+  local device="" size="" solid="" bus=""
+
+  volume_plist="$(run_with_timeout 8 "$DISKUTIL_BIN" info -plist "$1" 2>/dev/null)" || return 1
+  uuid="$(plist_data_value "$volume_plist" VolumeUUID || true)"
+  store="$(plist_data_value "$volume_plist" APFSPhysicalStores.0.APFSPhysicalStore || true)"
+  if [[ "$store" =~ ^disk[0-9]+s[0-9]+$ ]]; then
+    store_plist="$(run_with_timeout 8 "$DISKUTIL_BIN" info -plist "$store" 2>/dev/null || true)"
+    whole="$(plist_data_value "$store_plist" ParentWholeDisk || true)"
+  else
+    whole="$(plist_data_value "$volume_plist" ParentWholeDisk || true)"
+  fi
+  if [[ "$whole" =~ ^disk[0-9]+$ ]]; then
+    whole_plist="$(run_with_timeout 8 "$DISKUTIL_BIN" info -plist "$whole" 2>/dev/null || true)"
+  fi
+  [[ -n "$whole_plist" ]] || whole_plist="$volume_plist"
+
+  device="$(plist_data_value "$whole_plist" IORegistryEntryName || true)"
+  device="${device% Media}"
+  if [[ -z "$device" ]]; then
+    device="$(first_nonempty_display_value \
+      "$(plist_data_value "$whole_plist" DeviceModel || true)" \
+      "$(plist_data_value "$whole_plist" MediaName || true)" || true)"
+  fi
+  device="$(display_metadata_value "$device")"
+  size="$(plist_data_value "$whole_plist" TotalSize || true)"
+  [[ "$size" =~ ^[0-9]{1,16}$ ]] || size=""
+  case "$(plist_data_value "$whole_plist" SolidState || true)" in
+    true) solid="yes" ;;
+    false) solid="no" ;;
+  esac
+  bus="$(display_metadata_value "$(plist_data_value "$whole_plist" BusProtocol || true)")"
+  [[ "$uuid" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || uuid=""
+  printf '%s\t%s\t%s\t%s\t%s\n' "$uuid" "${device//$'\t'/ }" "$size" "$solid" "${bus//$'\t'/ }"
 }
 
 platform_confirm_dialog_available() {
