@@ -27,15 +27,20 @@ than a late launch.
   verified download from the official release (SHA-256, payload), install
   through the macOS administrator prompt, never during a running backup.
 - [x] Release as v2.9.0 and install it once by hand on the maintainer's Mac.
-- [ ] First real run of the updater with the following release (v2.9.1 or
-  later): offer, password prompt, restart, confirmation. Fix whatever breaks
-  before anyone else relies on it.
+- [x] First real run of the updater (2026-11-27, v2.9.0 to v2.9.1): offer,
+  verified download, password prompt, installation and restart worked. Found:
+  the restarted app missed the result written two seconds later, so the
+  confirmation was skipped and the download stayed (fixed afterwards; confirm
+  with the next update). The macOS prompt names "bash" and warns about
+  malware, because the script is unsigned; replace it with a prompt in the
+  app's name once the project has a Developer ID (step 2).
 - [~] Until releases are signed, every update looks like a new app to macOS:
   it asks again for access to removable volumes and re-registers the
   background items. Once (2026-11-27, update to v2.8.0) it also blocked the
   first hourly schedule start ("Launch Constraint Violation"). The installer
-  now re-registers the schedule agent too; check with the next update that no
-  start is blocked. Only step 2 removes the cause.
+  now re-registers the schedule agent too (confirmed working in the update to
+  v2.9.1); check after the next hourly start that none is blocked. Only step 2
+  removes the cause.
 
 ## 2. Apple Developer ID (maintainer decision, about 99 USD per year)
 

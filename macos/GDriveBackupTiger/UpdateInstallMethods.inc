@@ -247,10 +247,30 @@ static NSTimeInterval const GDTUpdateCheckInterval = 24.0 * 60.0 * 60.0;
     [NSApp terminate:nil];
 }
 
-// After the restart: confirm a successful update once and clean up.
+// After the restart: confirm a successful update once and clean up. The
+// package's postinstall starts this new process a moment before the old
+// installer process writes its result, so wait for it while the download of
+// this version is still present (at most two minutes).
 - (void)reportInstalledUpdateIfNeeded {
+    [self reportInstalledUpdateAttempt:0];
+}
+
+- (void)reportInstalledUpdateAttempt:(NSUInteger)attempt {
     NSDictionary *result = [self readUpdateResult];
-    if (!result) return;
+    if (!result) {
+        NSString *current = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"";
+        BOOL justInstalled = current.length && [NSFileManager.defaultManager fileExistsAtPath:
+            [[self updateWorkDirectory] stringByAppendingPathComponent:current]];
+        if (justInstalled && attempt < 60) {
+            __weak typeof(self) weakSelf = self;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [weakSelf reportInstalledUpdateAttempt:attempt + 1];
+            });
+        } else if (justInstalled) {
+            [NSFileManager.defaultManager removeItemAtPath:[self updateWorkDirectory] error:nil];
+        }
+        return;
+    }
     NSString *current = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"";
     BOOL installed = [result[@"status"] isEqualToString:@"0"] && [result[@"version"] isEqualToString:current];
     [NSFileManager.defaultManager removeItemAtPath:[self updateWorkDirectory] error:nil];

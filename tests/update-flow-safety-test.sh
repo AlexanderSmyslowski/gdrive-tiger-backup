@@ -61,6 +61,11 @@ check "downloads use only the official repository and GitHub asset hosts" \
      "$support_contents" == *"willPerformHTTPRedirection"* &&
      "$support_contents" == *"https://api.github.com/repos/AlexanderSmyslowski/gdrive-tiger-backup/releases/latest"* ]]'
 
+report_method="$(method_body "$FLOW" '- (void)reportInstalledUpdateAttempt:')"
+check "the restarted app waits for the installer result instead of missing it" \
+  '[[ "$report_method" == *"dispatch_after"* && "$report_method" == *"attempt < 60"* &&
+     "$report_method" == *"removeItemAtPath"* ]]'
+
 if (( failures > 0 )); then
   printf '%s update flow safety test(s) failed.\n' "$failures"
   exit 1
