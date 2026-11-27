@@ -19,12 +19,18 @@ FOUNDATION_EXPORT NSDictionary<NSString *, NSString *> * _Nullable GDTLatestSucc
     NSString *root, NSDate *now);
 
 // Run history written by the engine (run-history.tsv), one group per
-// destination, most recently used first. Each group: target ("nas"/"apfs"),
-// label (volume or folder name, never a host), successes (up to `limit`
-// epoch seconds, newest first), lastFailure (epoch, only when newer than the
-// newest success) and lastActivity (epoch).
+// destination, most recently used first. Each group has:
+//   key          stable identity ("apfs:<volume uuid>", "apfs-name:<name>",
+//                "nas:<folder>")
+//   target       "nas" or "apfs"
+//   label        volume name (disk) or backup folder (NAS), never a host
+//   device, bytes, solid, bus   newest known disk description (optional)
+//   lastSuccess  epoch of the newest success (optional)
+//   lastFailure  epoch of a failure newer than lastSuccess (optional)
+//   lastActivity epoch of the newest run
+//   runs         up to `runLimit` runs, newest first: status, finished, started
 FOUNDATION_EXPORT NSString *GDTBackupHistoryPath(void);
 FOUNDATION_EXPORT NSArray<NSDictionary<NSString *, id> *> *GDTBackupHistoryGroups(
-    NSString *content, NSUInteger limit, NSUInteger maxGroups);
+    NSString *content, NSUInteger runLimit, NSUInteger maxGroups);
 
 NS_ASSUME_NONNULL_END

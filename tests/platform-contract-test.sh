@@ -165,7 +165,35 @@ $hits"
   fi
 }
 
+test_device_info_describes_the_whole_disk() {
+  local fake="$WORK_DIR/fake-diskutil" result
+  cat >"$fake" <<'FAKE'
+#!/bin/bash
+key_plist() { printf '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>%s</dict></plist>' "$1"; }
+case "$3" in
+  /Volumes/Backup) key_plist '<key>VolumeUUID</key><string>5861298E-D6FE-445F-A407-71EC3C8DE30B</string><key>APFSPhysicalStores</key><array><dict><key>APFSPhysicalStore</key><string>disk6s2</string></dict></array>' ;;
+  disk6s2) key_plist '<key>ParentWholeDisk</key><string>disk6</string>' ;;
+  disk6) key_plist '<key>IORegistryEntryName</key><string>Samsung PSSD T7 Media</string><key>TotalSize</key><integer>1000204886016</integer><key>SolidState</key><true/><key>BusProtocol</key><string>USB</string>' ;;
+  *) exit 1 ;;
+esac
+FAKE
+  /bin/chmod 755 "$fake"
+  result="$(/bin/bash -c '
+    source "$1"
+    for f in run_with_timeout display_metadata_value first_nonempty_display_value; do
+      eval "$(/usr/bin/awk -v f="$f" '"'"'$0 == f"() {" {p=1} p {print} p && /^}$/ {exit}'"'"' "$2")"
+    done
+    DISKUTIL_BIN="$3"
+    platform_destination_device_info /Volumes/Backup' _ "$PLATFORM" "$ENGINE" "$fake")"
+  if [[ "$result" == $'5861298E-D6FE-445F-A407-71EC3C8DE30B\tSamsung PSSD T7\t1000204886016\tyes\tUSB' ]]; then
+    pass "device info names the physical disk, its size, SSD and bus"
+  else
+    fail "device info: ${result//$'\t'/|}"
+  fi
+}
+
 test_contract_is_defined
+test_device_info_describes_the_whole_disk
 test_linux_contract_is_defined
 test_primitives_match_bsd_tools
 test_engine_requires_platform_file

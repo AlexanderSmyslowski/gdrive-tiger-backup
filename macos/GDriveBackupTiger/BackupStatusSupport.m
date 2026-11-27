@@ -263,56 +263,100 @@ static NSString *GDTBackupHistoryLabel(NSString *target, NSString *destination) 
     return [last isEqualToString:@"/"] ? @"" : (last ?: @"");
 }
 
+static BOOL GDTHistoryNumber(NSString *value, NSUInteger maxLength) {
+    return value.length && value.length <= maxLength &&
+        [value rangeOfCharacterFromSet:NSCharacterSet.decimalDigitCharacterSet.invertedSet].location == NSNotFound;
+}
+
+static NSString *GDTHistoryText(NSString *value) {
+    if (!value.length || value.length > 255 ||
+        [value rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound) return @"";
+    return [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+}
+
 NSArray<NSDictionary<NSString *, id> *> *GDTBackupHistoryGroups(
-    NSString *content, NSUInteger limit, NSUInteger maxGroups) {
+    NSString *content, NSUInteger runLimit, NSUInteger maxGroups) {
     NSMutableDictionary<NSString *, NSMutableDictionary *> *groups = [NSMutableDictionary dictionary];
-    NSCharacterSet *digits = NSCharacterSet.decimalDigitCharacterSet.invertedSet;
+    NSRegularExpression *uuidPattern = [NSRegularExpression regularExpressionWithPattern:
+        @"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$" options:0 error:nil];
     for (NSString *line in [content componentsSeparatedByString:@"\n"]) {
         NSArray<NSString *> *fields = [line componentsSeparatedByString:@"\t"];
         if (fields.count < 7 || ![fields[0] isEqualToString:@"v1"]) continue;
-        NSString *finished = fields[1], *status = fields[2], *target = fields[3];
-        if (!finished.length || finished.length > 12 ||
-            [finished rangeOfCharacterFromSet:digits].location != NSNotFound) continue;
+        NSString *finished = fields[1], *status = fields[2], *target = fields[3], *started = fields[6];
+        if (!GDTHistoryNumber(finished, 12)) continue;
         if (![@[@"nas", @"apfs"] containsObject:target] ||
             ![@[@"success", @"failure", @"cancelled"] containsObject:status]) continue;
-        NSString *label = GDTBackupHistoryLabel(target, fields[4]);
-        if (!label.length || label.length > 255 ||
-            [label rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound) continue;
-        NSString *key = [NSString stringWithFormat:@"%@\n%@", target, label];
+        NSString *label = GDTHistoryText(GDTBackupHistoryLabel(target, fields[4]));
+        if (!label.length) continue;
+        NSString *uuid = fields.count >= 12 ? fields[7].uppercaseString : @"";
+        if (![uuidPattern firstMatchInString:uuid options:0 range:NSMakeRange(0, uuid.length)]) uuid = @"";
+        NSString *key = [target isEqualToString:@"nas"]
+            ? [@"nas:" stringByAppendingString:label]
+            : (uuid.length ? [@"apfs:" stringByAppendingString:uuid] : [@"apfs-name:" stringByAppendingString:label]);
         NSMutableDictionary *group = groups[key];
         if (!group) {
-            group = [@{@"target": target, @"label": label,
-                       @"successes": [NSMutableArray array]} mutableCopy];
+            group = [@{@"key": key, @"target": target, @"label": label,
+                       @"runs": [NSMutableArray array]} mutableCopy];
             groups[key] = group;
         }
         NSNumber *at = @(finished.longLongValue);
-        if ([at compare:group[@"lastActivity"] ?: @0] == NSOrderedDescending) group[@"lastActivity"] = at;
-        if ([status isEqualToString:@"success"]) {
-            [group[@"successes"] addObject:at];
-        } else if ([status isEqualToString:@"failure"] &&
-                   [at compare:group[@"failureAt"] ?: @0] == NSOrderedDescending) {
-            group[@"failureAt"] = at;
+        NSMutableDictionary *run = [@{@"status": status, @"finished": at} mutableCopy];
+        if (GDTHistoryNumber(started, 12) && started.longLongValue > 0 &&
+            started.longLongValue <= finished.longLongValue) run[@"started"] = @(started.longLongValue);
+        [group[@"runs"] addObject:run];
+        if ([at compare:group[@"lastActivity"] ?: @-1] != NSOrderedAscending) {
+            group[@"lastActivity"] = at;
+            group[@"label"] = label;
+            if (fields.count >= 12) {
+                NSString *device = GDTHistoryText(fields[8]);
+                if (device.length) group[@"device"] = device;
+                if (GDTHistoryNumber(fields[9], 16)) group[@"bytes"] = @(fields[9].longLongValue);
+                if ([@[@"yes", @"no"] containsObject:fields[10]]) group[@"solid"] = fields[10];
+                NSString *bus = GDTHistoryText(fields[11]);
+                if (bus.length) group[@"bus"] = bus;
+            }
         }
+    }
+    // Lines rebuilt from old logs carry no volume UUID. Attach them to the
+    // one identified disk whose volume has the same name; with two such
+    // disks the name is ambiguous and they stay a separate row.
+    for (NSString *key in groups.allKeys) {
+        if (![key hasPrefix:@"apfs-name:"]) continue;
+        NSMutableDictionary *named = groups[key];
+        NSMutableDictionary *match = nil;
+        NSUInteger matches = 0;
+        for (NSMutableDictionary *candidate in groups.allValues) {
+            if ([candidate[@"key"] hasPrefix:@"apfs:"] && [candidate[@"label"] isEqualToString:named[@"label"]]) {
+                match = candidate;
+                matches++;
+            }
+        }
+        if (matches != 1) continue;
+        [match[@"runs"] addObjectsFromArray:named[@"runs"]];
+        [groups removeObjectForKey:key];
     }
     NSMutableArray *result = [NSMutableArray array];
     for (NSMutableDictionary *group in groups.allValues) {
-        NSArray *successes = [group[@"successes"] sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
-            return [b compare:a];
+        NSArray *runs = [group[@"runs"] sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+            return [b[@"finished"] compare:a[@"finished"]];
         }];
-        NSMutableDictionary *entry = [@{
-            @"target": group[@"target"], @"label": group[@"label"],
-            @"successes": [successes subarrayWithRange:NSMakeRange(0, MIN(limit, successes.count))],
-            @"lastActivity": group[@"lastActivity"]
-        } mutableCopy];
-        NSNumber *failure = group[@"failureAt"];
-        if (failure && (!successes.count || [failure compare:successes.firstObject] == NSOrderedDescending)) {
-            entry[@"lastFailure"] = failure;
+        NSMutableDictionary *entry = [group mutableCopy];
+        entry[@"runs"] = [runs subarrayWithRange:NSMakeRange(0, MIN(runLimit, runs.count))];
+        entry[@"lastActivity"] = [runs.firstObject objectForKey:@"finished"] ?: @0;
+        NSNumber *lastSuccess = nil, *lastFailure = nil;
+        for (NSDictionary *run in runs) {
+            if (!lastSuccess && [run[@"status"] isEqual:@"success"]) lastSuccess = run[@"finished"];
+            if (!lastFailure && [run[@"status"] isEqual:@"failure"]) lastFailure = run[@"finished"];
+        }
+        if (lastSuccess) entry[@"lastSuccess"] = lastSuccess;
+        if (lastFailure && (!lastSuccess || [lastFailure compare:lastSuccess] == NSOrderedDescending)) {
+            entry[@"lastFailure"] = lastFailure;
         }
         [result addObject:entry];
     }
     [result sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
         NSComparisonResult order = [b[@"lastActivity"] compare:a[@"lastActivity"]];
-        return order != NSOrderedSame ? order : [a[@"label"] compare:b[@"label"]];
+        return order != NSOrderedSame ? order : [a[@"key"] compare:b[@"key"]];
     }];
     return [result subarrayWithRange:NSMakeRange(0, MIN(maxGroups, result.count))];
 }

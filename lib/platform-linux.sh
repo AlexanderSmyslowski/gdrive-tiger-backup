@@ -23,6 +23,10 @@
 #                               device id of every directory below ROOT,
 #                               without crossing into other file systems
 #   platform_first_symlink ROOT  first symbolic link below ROOT, same file system
+#   platform_destination_device_info PATH
+#                               "uuid TAB device TAB bytes TAB solid TAB bus"
+#                               for the disk holding PATH; solid is yes, no or
+#                               empty, unknown fields stay empty
 #   platform_confirm_dialog_available
 #   platform_confirm_dialog TITLE DETAIL PRIMARY SECONDARY
 #                               prints "yes" or "no"
@@ -116,6 +120,28 @@ platform_directory_devices() {
 
 platform_first_symlink() {
   find "$1" -xdev -type l -print -quit
+}
+
+# Describes the physical disk behind a destination for the run history.
+platform_destination_device_info() {
+  local source="" uuid="" parent="" disk="" device="" size="" rotational="" solid="" bus=""
+
+  source="$(findmnt -rn --target "$1" -o SOURCE 2>/dev/null | head -n 1)" || return 1
+  [[ "$source" == /dev/* ]] || return 1
+  uuid="$(findmnt -rn --target "$1" -o UUID 2>/dev/null | head -n 1 || true)"
+  parent="$(lsblk -no PKNAME "$source" 2>/dev/null | head -n 1 || true)"
+  disk="/dev/${parent:-${source#/dev/}}"
+  device="$(lsblk -dno MODEL "$disk" 2>/dev/null | head -n 1 || true)"
+  size="$(lsblk -bdno SIZE "$disk" 2>/dev/null | head -n 1 | tr -d ' ' || true)"
+  rotational="$(lsblk -dno ROTA "$disk" 2>/dev/null | head -n 1 | tr -d ' ' || true)"
+  bus="$(lsblk -dno TRAN "$disk" 2>/dev/null | head -n 1 | tr -d ' ' || true)"
+  case "$rotational" in
+    0) solid="yes" ;;
+    1) solid="no" ;;
+  esac
+  [[ "$size" =~ ^[0-9]{1,16}$ ]] || size=""
+  device="$(display_metadata_value "${device%"${device##*[![:space:]]}"}")"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$uuid" "${device//$'\t'/ }" "$size" "$solid" "$bus"
 }
 
 platform_confirm_dialog_available() {

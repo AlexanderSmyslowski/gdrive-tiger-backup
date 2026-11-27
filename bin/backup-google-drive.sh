@@ -2236,6 +2236,9 @@ write_last_run_summary() {
 # Run history: one tab-separated line per finished run, oldest first.
 #   v1 <TAB> finished_at <TAB> status <TAB> target <TAB> destination
 #      <TAB> trigger <TAB> started_at
+#      [<TAB> volume_uuid <TAB> device <TAB> bytes <TAB> solid <TAB> bus]
+# The device fields describe an external disk at the end of the run; readers
+# must accept lines without them (NAS runs, older lines, a vanished disk).
 # status is success, failure or cancelled; times are epoch seconds. Lines
 # rebuilt from the log before the history existed carry the trigger "log".
 history_field() {
@@ -2247,8 +2250,11 @@ history_field() {
 }
 
 history_record() {
-  printf 'v1\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$(history_field "$3")" \
+  printf 'v1\t%s\t%s\t%s\t%s\t%s\t%s' "$1" "$2" "$(history_field "$3")" \
     "$(history_field "$4")" "$(history_field "$5")" "$6"
+  # Optional device fields: volume uuid, device name, size, solid state, bus.
+  [[ -z "${7-}" ]] || printf '\t%s' "$7"
+  printf '\n'
 }
 
 # "[2026-11-26 20:00:05+0100]" -> epoch, through the platform's date parser.
@@ -2299,7 +2305,7 @@ seed_run_history_from_log() {
 }
 
 append_run_history() {
-  local status="$1" directory tmp finished_at
+  local status="$1" directory tmp finished_at device_info
   [[ "$DRY_RUN" == "0" && "$SETUP_UI" == "0" && -n "$RUN_HISTORY_FILE" ]] || return 0
   case "$status" in
     success|failure|cancelled) ;;
@@ -2313,6 +2319,15 @@ append_run_history() {
   [[ ! -L "$RUN_HISTORY_FILE" ]] || return 1
   [[ ! -e "$RUN_HISTORY_FILE" || -f "$RUN_HISTORY_FILE" ]] || return 1
   finished_at="$(date +%s 2>/dev/null)" || return 1
+  device_info=""
+  # Only a successful run has validated the destination's identity; a
+  # rejected or unverified volume must not be queried after the fact.
+  if [[ "$status" == "success" && "$BACKUP_TARGET" == "apfs" && -d "$VOLUME" ]]; then
+    device_info="$(platform_destination_device_info "$VOLUME" 2>/dev/null | head -n 1 || true)"
+    # Exactly five tab-separated fields, or nothing.
+    [[ "$(printf '%s' "$device_info" | tr -cd '\t' | wc -c | tr -d ' ')" == "4" &&
+       ! "${device_info//$'\t'/}" =~ [[:cntrl:]] ]] || device_info=""
+  fi
 
   tmp="${RUN_HISTORY_FILE}.$$"
   if ! (umask 077 && {
@@ -2322,7 +2337,7 @@ append_run_history() {
         seed_run_history_from_log | tail -n "$((RUN_HISTORY_MAX_LINES - 1))"
       fi
       history_record "$finished_at" "$status" "$BACKUP_TARGET" "$DEST_ROOT" \
-        "$BACKUP_TRIGGER" "$RUN_STARTED_AT"
+        "$BACKUP_TRIGGER" "$RUN_STARTED_AT" "$device_info"
     } >"$tmp") || ! chmod 600 "$tmp" || ! mv -f "$tmp" "$RUN_HISTORY_FILE"; then
     cleanup_temp_file "$tmp"
     return 1

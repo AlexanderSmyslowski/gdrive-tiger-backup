@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Show completed backups per destination in the overview: for the NAS and for every external disk the last three completed backups ("Yesterday, 21:06 · 25.11., 21:16 · …"), and a failed attempt in red when it is newer than the last success. The engine now appends every finished run to `run-history.tsv` (kept to the newest 1,000 runs). After the update the history is rebuilt once from the backup log (`backup-google-drive.sh --init-history`, started by the app), so earlier backups appear right away. A failure to write the history is logged and never changes the backup result.
+- Show backups per destination in the overview. Each NAS and external drive gets one row with its last completed backup and, in red, a failed attempt that is newer. External drives are named by the physical device ("Samsung PSSD T7 · SSD · 1 TB · USB · Volume …") and identified by volume UUID, so two drives with the same volume name stay apart. Each row expands to the last eight runs with date, duration and outcome. The engine appends every finished run to `run-history.tsv` (newest 1,000 runs) with the device details of external drives (`platform_destination_device_info`). After the update the history is rebuilt once from the backup log (`backup-google-drive.sh --init-history`, started by the app), so earlier backups appear right away; they show the volume name until the drive is backed up again. A failure to write the history is logged and never changes the backup result.
 
 - Initialized the retention path array explicitly for Bash 5, preventing an unbound-array failure when existing versions are inventoried on Linux.
 
