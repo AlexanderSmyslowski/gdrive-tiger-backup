@@ -42,6 +42,46 @@ else
   fail 'an installer can still recreate the broad mount trigger'
 fi
 
+schedule_reregistration_case() {
+  local label="$1" state="$2" make_plist="$3" expected="$4"
+  local work agents fake calls actual
+  work="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/gdrive-schedule-agent.XXXXXX")"
+  agents="$work/LaunchAgents"
+  fake="$work/launchctl"
+  calls="$work/calls"
+  /bin/mkdir -p "$agents"
+  case "$make_plist" in
+    file) : >"$agents/com.commcats.gdrivebackup.schedule.plist" ;;
+    symlink) /bin/ln -s /etc/hosts "$agents/com.commcats.gdrivebackup.schedule.plist" ;;
+  esac
+  cat >"$fake" <<FAKE
+#!/bin/bash
+printf '%s\n' "\$1" >>"$calls"
+[[ "\$1" == print ]] && printf '\tstate = %s\n' "$state"
+exit 0
+FAKE
+  /bin/chmod 755 "$fake"
+  /bin/bash -c '
+    eval "$(/usr/bin/awk '"'"'$0 == "reregister_schedule_agent() {" {p=1} p {print} p && /^}$/ {exit}'"'"' "$1")"
+    reregister_schedule_agent 501 "$2" "$3"' _ "$POSTINSTALL" "$agents" "$fake"
+  actual="$(/usr/bin/paste -sd, "$calls" 2>/dev/null)"
+  "$ROOT/scripts/trash-path.sh" "$work" >/dev/null 2>&1 || true
+  if [[ "$actual" == "$expected" ]]; then
+    pass "$label"
+  else
+    fail "$label (launchctl calls: ${actual:-none})"
+  fi
+}
+
+schedule_reregistration_case 'an idle schedule agent is re-registered after an update' \
+  'not running' file 'print,bootout,bootstrap'
+schedule_reregistration_case 'a running scheduled backup is never interrupted by an update' \
+  'running' file 'print'
+schedule_reregistration_case 'without a schedule agent the installer leaves launchd alone' \
+  'not running' none ''
+schedule_reregistration_case 'a symlinked schedule agent is not bootstrapped' \
+  'not running' symlink ''
+
 if /usr/bin/grep -Fq 'launchctl bootout' "$POSTINSTALL" &&
    /usr/bin/grep -Fq 'launchctl bootstrap' "$POSTINSTALL" &&
    /usr/bin/grep -Fq 'launchctl bootout' "$INSTALLER" &&

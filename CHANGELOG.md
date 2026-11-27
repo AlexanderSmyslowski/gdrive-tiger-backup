@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Re-register the schedule agent during installation, like the controller agent, so macOS records the new app build at install time. On 2026-11-27 the first hourly schedule start after an update was blocked once by macOS ("Launch Constraint Violation") for the ad-hoc signed app; whether this prevents it is confirmed only with the next update. A scheduled backup that is running during the installation is never interrupted.
+
 ## v2.9.0 - 2026-11-27
 
 Updates now come to you: the app checks daily, verifies and installs new versions with the macOS password prompt.

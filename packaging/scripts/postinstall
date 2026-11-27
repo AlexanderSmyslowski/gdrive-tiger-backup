@@ -33,6 +33,22 @@ path_has_untrusted_component() {
   [[ -L "$candidate" || ( -e "$candidate" && ! -d "$candidate" ) ]]
 }
 
+# The app writes its own schedule agent. Re-register it with launchd after an
+# update, like the controller agent, so macOS records the new app build at
+# install time instead of when the next hourly run starts. A scheduled backup
+# that is running right now is never interrupted; it re-registers next time.
+reregister_schedule_agent() {
+  local uid="$1" agents="$2" launchctl_bin="$3"
+  local plist="$agents/com.commcats.gdrivebackup.schedule.plist"
+  local service="gui/$uid/com.commcats.gdrivebackup.schedule"
+  [[ -f "$plist" && ! -L "$plist" ]] || return 0
+  if "$launchctl_bin" print "$service" 2>/dev/null | /usr/bin/grep -Eq '^[[:space:]]*state = running'; then
+    return 0
+  fi
+  "$launchctl_bin" bootout "gui/$uid" "$plist" >/dev/null 2>&1 || true
+  "$launchctl_bin" bootstrap "gui/$uid" "$plist" >/dev/null 2>&1 || true
+}
+
 require_trusted_config_store() {
   local store="$1"
   local config_parent="${store%/*}"
@@ -67,6 +83,7 @@ if [[ -f "$AGENT_SOURCE" ]]; then
   /bin/launchctl bootstrap "gui/$console_uid" "$agent_dest" >/dev/null 2>&1 || true
   /bin/launchctl enable "gui/$console_uid/com.commcats.gdrivebackup" >/dev/null 2>&1 || true
 fi
+reregister_schedule_agent "$console_uid" "$agent_dir" /bin/launchctl
 
 if [[ ! -f "$config_file" ]]; then
   new_install=1
