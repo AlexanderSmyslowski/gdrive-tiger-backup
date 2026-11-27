@@ -47,7 +47,8 @@ than a late launch.
 More urgent since the updater: without a stable signature every automatic
 update costs the user permission prompts and can block a scheduled start.
 
-- [ ] Enroll in the Apple Developer Program.
+- [~] Enroll in the Apple Developer Program (paid 2026-11-27; Apple's
+  identity verification is pending).
 - [ ] Create `Developer ID Application` and `Developer ID Installer`
   certificates and a notarization profile (see `docs/signing-and-release.md`).
 - [ ] Switch the release workflow to signed and notarized packages; remove the
@@ -57,7 +58,8 @@ update costs the user permission prompts and can block a scheduled start.
 
 ## 3. First run on a Mac that is not the maintainer's
 
-- [ ] Fresh macOS user account or virtual machine, no Homebrew, no rclone:
+- [ ] Fresh macOS user account or virtual machine, no Homebrew, no rclone
+  (checklist: `docs/fresh-mac-test.md`):
   install the package, connect Google, choose a disk or NAS, run a backup,
   restore a file, all without help and without the Terminal. Write down every
   stumble and fix it.
@@ -70,15 +72,20 @@ update costs the user permission prompts and can block a scheduled start.
 
 ## 4. Shop window
 
-- [ ] Short README: the core message, three screenshots, a 30-second GIF of
-  setup and the overview, then the quick start; move the long technical
-  reference (engine, safety rules, release history) into `docs/`.
-- [ ] Social preview image for links (GitHub repository settings).
+- [x] Short README with the core message, overview screenshots (neutral demo
+  data), why/what, quick start; the long reference moved to
+  `docs/reference.md`.
+- [ ] A 30-second GIF of setup and the first backup (needs a real recording on
+  a test account, see step 3).
+- [~] Social preview image: `docs/images/social-preview.png` exists; upload it
+  in GitHub › Settings › General › Social preview (no API for this).
 - [ ] Simple landing page via GitHub Pages with the same message and download.
 - [ ] Reconsider the name: "Tiger" refers to the visual style but suggests an
   old Mac OS X version; decide whether to keep it before the launch.
-- [ ] Issue templates (bug report with the diagnostics report, feature
+- [x] Issue templates (bug report with the diagnostics report, feature
   request), `CONTRIBUTING.md`, `SECURITY.md`.
+- [ ] Turn on private vulnerability reporting in the repository settings, so
+  the link in `SECURITY.md` works.
 
 ## 5. Launch
 

@@ -1,0 +1,46 @@
+name: Bug report
+description: Something does not work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please do not paste passwords, Google account
+        names, NAS addresses or file names. The app's safe diagnostics report
+        leaves those out on purpose.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: dropdown
+    id: destination
+    attributes:
+      label: Backup destination
+      options:
+        - External disk
+        - NAS / network share
+        - Both
+        - Not set up yet
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: App and macOS version
+      placeholder: "e.g. GDrive Backup Tiger 2.9.1, macOS 15.2, Apple silicon"
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Safe diagnostics report
+      description: Menu bar icon › Diagnostics › Copy safe report, then paste it here.
+      render: text
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: Optional. Please hide private names before uploading.

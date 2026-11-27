@@ -4790,7 +4790,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     } else {
         BOOL sameYear = [calendar component:NSCalendarUnitYear fromDate:date] ==
             [calendar component:NSCalendarUnitYear fromDate:now];
-        [formatter setLocalizedDateFormatFromTemplate:sameYear ? @"ddMMHHmm" : @"ddMMyyHHmm"];
+        [formatter setLocalizedDateFormatFromTemplate:sameYear ? @"ddMMjmm" : @"ddMMyyjmm"];
     }
     return [formatter stringFromDate:date] ?: @"";
 }
