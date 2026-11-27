@@ -2,7 +2,7 @@
 set -uo pipefail
 
 if [[ "${1:-}" == "--capabilities" ]]; then
-  printf '%s\n' 'adhoc-target-v1'
+  printf '%s\n' 'adhoc-target-v1' 'run-history-v1'
   exit 0
 fi
 
@@ -262,6 +262,16 @@ elif [[ -n "$ACTIVE_PROFILE_ID" ]]; then
 else
   SUMMARY_STATE_FILE="$HOME/Library/Application Support/GDrive Backup Tiger/last-run.status"
 fi
+# One history for all profiles and one-off runs, so every destination's
+# completed backups can be listed side by side.
+if [[ -n "${GDRIVE_BACKUP_HISTORY_FILE:-}" ]]; then
+  RUN_HISTORY_FILE="$GDRIVE_BACKUP_HISTORY_FILE"
+elif [[ "$GDT_PLATFORM" == "linux" ]]; then
+  RUN_HISTORY_FILE="$HOME/.local/state/gdrive-tiger-backup/run-history.tsv"
+else
+  RUN_HISTORY_FILE="$HOME/Library/Application Support/GDrive Backup Tiger/run-history.tsv"
+fi
+RUN_HISTORY_MAX_LINES=1000
 if [[ "$_GDT_PROCESS_PROGRESS_STATE_FILE_SET" == "1" ]]; then
   DURABLE_PROGRESS_FILE="$_GDT_PROCESS_PROGRESS_STATE_FILE_VALUE"
 else
@@ -2223,6 +2233,102 @@ write_last_run_summary() {
   return 1
 }
 
+# Run history: one tab-separated line per finished run, oldest first.
+#   v1 <TAB> finished_at <TAB> status <TAB> target <TAB> destination
+#      <TAB> trigger <TAB> started_at
+# status is success, failure or cancelled; times are epoch seconds. Lines
+# rebuilt from the log before the history existed carry the trigger "log".
+history_field() {
+  local value="${1-}"
+  value="${value//$'\t'/ }"
+  value="${value//$'\n'/ }"
+  value="${value//$'\r'/ }"
+  printf '%s' "$value"
+}
+
+history_record() {
+  printf 'v1\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$(history_field "$3")" \
+    "$(history_field "$4")" "$(history_field "$5")" "$6"
+}
+
+# "[2026-11-26 20:00:05+0100]" -> epoch, through the platform's date parser.
+log_timestamp_epoch() {
+  local stamp="$1"
+  [[ "$stamp" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2})\ ([0-9]{2}):([0-9]{2}):([0-9]{2})([+-][0-9]{4})$ ]] || return 1
+  platform_date_parse '%Y-%m-%dT%H-%M-%S%z' \
+    "${BASH_REMATCH[1]}T${BASH_REMATCH[2]}-${BASH_REMATCH[3]}-${BASH_REMATCH[4]}${BASH_REMATCH[5]}" '+%s'
+}
+
+# Older versions kept no history. Rebuild completed runs from the current and
+# the rotated log once, so the first view is not empty. Runs whose end is not
+# in the log (still running, skipped, killed) are left out.
+seed_run_history_from_log() {
+  local started finished status target destination started_at finished_at
+  {
+    [[ -f "${LOG}.1.gz" ]] && /usr/bin/gzip -dc "${LOG}.1.gz" 2>/dev/null
+    [[ -f "$LOG" ]] && cat "$LOG" 2>/dev/null
+  } | LC_ALL=C awk '
+    match($0, /^\[[0-9-]+ [0-9:]+[+-][0-9]+\] /) {
+      stamp = substr($0, 2, RLENGTH - 3)
+      text = substr($0, RLENGTH + 1)
+      if (text ~ /^Start: remote=.* dry_run=0 target=(nas|apfs) /) {
+        target = text; sub(/.* target=/, "", target); sub(/ .*/, "", target)
+        dest = text; if (!sub(/.* dest=/, "", dest)) dest = ""
+        open_start = stamp; open_target = target; open_dest = dest
+        next
+      }
+      if (open_start == "") next
+      status = ""
+      if (text == "Fertig ohne Fehler." || text ~ /^Fertig: Backup erfolgreich/) status = "success"
+      else if (text ~ /^Fertig mit [0-9]+ Fehler/) status = "failure"
+      if (status != "") {
+        printf "%s\t%s\t%s\t%s\t%s\n", open_start, stamp, status, open_target, open_dest
+        open_start = ""
+      }
+    }' |
+  while IFS=$'\t' read -r started finished status target destination; do
+    started_at="$(log_timestamp_epoch "$started" 2>/dev/null)" || continue
+    finished_at="$(log_timestamp_epoch "$finished" 2>/dev/null)" || continue
+    # The running process has already logged its own start; it is recorded
+    # by append_run_history with its real outcome instead.
+    if [[ "$RUN_STARTED_AT" =~ ^[0-9]+$ ]] && (( RUN_STARTED_AT > 0 && started_at >= RUN_STARTED_AT )); then
+      continue
+    fi
+    history_record "$finished_at" "$status" "$target" "$destination" "log" "$started_at"
+  done | tail -n "$RUN_HISTORY_MAX_LINES"
+}
+
+append_run_history() {
+  local status="$1" directory tmp finished_at
+  [[ "$DRY_RUN" == "0" && "$SETUP_UI" == "0" && -n "$RUN_HISTORY_FILE" ]] || return 0
+  case "$status" in
+    success|failure|cancelled) ;;
+    *) return 0 ;;
+  esac
+  [[ "$BACKUP_TARGET" == "nas" || "$BACKUP_TARGET" == "apfs" ]] || return 0
+
+  directory="${RUN_HISTORY_FILE%/*}"
+  [[ "$directory" != "$RUN_HISTORY_FILE" ]] || directory="."
+  (umask 077 && mkdir -p "$directory") || return 1
+  [[ ! -L "$RUN_HISTORY_FILE" ]] || return 1
+  [[ ! -e "$RUN_HISTORY_FILE" || -f "$RUN_HISTORY_FILE" ]] || return 1
+  finished_at="$(date +%s 2>/dev/null)" || return 1
+
+  tmp="${RUN_HISTORY_FILE}.$$"
+  if ! (umask 077 && {
+      if [[ -f "$RUN_HISTORY_FILE" ]]; then
+        tail -n "$((RUN_HISTORY_MAX_LINES - 1))" "$RUN_HISTORY_FILE"
+      else
+        seed_run_history_from_log | tail -n "$((RUN_HISTORY_MAX_LINES - 1))"
+      fi
+      history_record "$finished_at" "$status" "$BACKUP_TARGET" "$DEST_ROOT" \
+        "$BACKUP_TRIGGER" "$RUN_STARTED_AT"
+    } >"$tmp") || ! chmod 600 "$tmp" || ! mv -f "$tmp" "$RUN_HISTORY_FILE"; then
+    cleanup_temp_file "$tmp"
+    return 1
+  fi
+}
+
 # Epoch of the most recent daily window boundary at or before the given time.
 daily_window_start_epoch() {
   local now="$1" day boundary
@@ -2319,8 +2425,14 @@ finish_run_state() {
   if [[ "$RUN_STATE_OVERRIDE" == "cancelled" ]]; then
     status="cancelled"
   fi
+  local summary_status=0
   write_run_state "$status" "$exit_status"
-  write_last_run_summary "$status" "$exit_status"
+  write_last_run_summary "$status" "$exit_status" || summary_status=$?
+  # The history is informational: a failure there is logged but never changes
+  # the result callers act on, which is the summary publication.
+  append_run_history "$status" ||
+    log "WARNUNG: Backup-Verlauf konnte nicht fortgeschrieben werden."
+  return "$summary_status"
 }
 
 update_progress_from_rclone_line() {
@@ -3460,17 +3572,39 @@ ensure_backup_target() {
 
 DRY_RUN=1
 SETUP_UI=0
+INIT_HISTORY=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     --run) DRY_RUN=0 ;;
     --setup) SETUP_UI=1 ;;
+    --init-history) INIT_HISTORY=1 ;;
     *)
       log "Unbekannter Parameter: $arg"
       exit 64
       ;;
   esac
 done
+
+# The app asks for this once after an update, so the history is not empty
+# until the next backup. It only writes a missing history and never waits for
+# or interferes with a running backup, which seeds the history itself.
+if [[ "$INIT_HISTORY" == "1" ]]; then
+  [[ -n "$RUN_HISTORY_FILE" && ! -e "$RUN_HISTORY_FILE" && ! -L "$RUN_HISTORY_FILE" ]] || exit 0
+  exec 9>"$LOCK" || exit 1
+  acquire_run_lock || exit 0
+  [[ ! -e "$RUN_HISTORY_FILE" && ! -L "$RUN_HISTORY_FILE" ]] || exit 0
+  history_directory="${RUN_HISTORY_FILE%/*}"
+  [[ "$history_directory" != "$RUN_HISTORY_FILE" ]] || history_directory="."
+  (umask 077 && mkdir -p "$history_directory") || exit 1
+  history_tmp="${RUN_HISTORY_FILE}.$$"
+  if (umask 077 && seed_run_history_from_log >"$history_tmp") &&
+     chmod 600 "$history_tmp" && mv -f "$history_tmp" "$RUN_HISTORY_FILE"; then
+    exit 0
+  fi
+  cleanup_temp_file "$history_tmp"
+  exit 1
+fi
 
 RUN_STARTED_AT="$(date +%s 2>/dev/null || printf '0')"
 write_run_state "running"

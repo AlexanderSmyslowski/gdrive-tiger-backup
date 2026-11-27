@@ -1231,6 +1231,12 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, strong) NSTextField *destinationCaption;
 @property(nonatomic, strong) NSTextField *destinationHint;
 @property(nonatomic, copy) void (^destinationHandler)(void);
+// Completed backups per destination: each row has "name", "detail" and an
+// optional "failure" (shown first, in red).
+@property(nonatomic, copy) NSArray<NSDictionary<NSString *, NSString *> *> *historyRows;
+@property(nonatomic, strong) NSTextField *historyCaptionLabel;
+@property(nonatomic, strong) NSMutableArray<NSTextField *> *historyLabels;
+- (CGFloat)historyHeight;
 @end
 
 @implementation TigerOverviewView
@@ -1362,6 +1368,12 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.restoreButton.nextKeyView = self.backupButton;
     self.backupButton.nextKeyView = self.settingsButton;
 
+    self.historyCaptionLabel = [self overviewLabelWithFrame:NSMakeRect(48, 390, 516, 19)
+        font:captionFont color:muted];
+    self.historyCaptionLabel.hidden = YES;
+    [self addSubview:self.historyCaptionLabel];
+    self.historyLabels = [NSMutableArray array];
+
     self.destinationCaption = [self overviewLabelWithFrame:NSMakeRect(28, 394, 550, 20)
         font:captionFont color:ink];
     [self addSubview:self.destinationCaption];
@@ -1406,6 +1418,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     self.restoreButton.title = T(_language, @"restoreTitle");
     self.backupButton.title = T(_language, @"startBackup");
     self.destinationCaption.stringValue = GDTAdHocText(_language, @"choose");
+    self.historyCaptionLabel.stringValue = T(_language, @"overviewHistory");
+    self.historyCaptionLabel.accessibilityLabel = self.historyCaptionLabel.stringValue;
     self.destinationPopup.accessibilityLabel = self.destinationCaption.stringValue;
     self.destinationHint.stringValue = GDTAdHocText(_language, @"once");
     self.settingsButton.accessibilityLabel = self.settingsButton.title;
@@ -1423,16 +1437,97 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
     CGFloat settingsWidth = MAX(140.0, ceil(self.settingsButton.cell.cellSize.width + 18.0));
     CGFloat restoreWidth = MAX(140.0, ceil(self.restoreButton.cell.cellSize.width + 18.0));
     CGFloat rightEdge = NSWidth(self.bounds) - 26.0;
-    self.backupButton.frame = NSMakeRect(rightEdge - backupWidth, 416, backupWidth, 30);
-    self.destinationPopup.frame = NSMakeRect(24, 416, rightEdge - backupWidth - 34, 30);
+    // The history sits between the status rows and the run controls; the
+    // controls move down by its height.
+    CGFloat offset = [self historyHeight];
+    self.destinationCaption.frame = NSMakeRect(28, 394 + offset, 550, 20);
+    self.destinationHint.frame = NSMakeRect(28, 448 + offset, 566, 20);
+    self.backupButton.frame = NSMakeRect(rightEdge - backupWidth, 416 + offset, backupWidth, 30);
+    self.destinationPopup.frame = NSMakeRect(24, 416 + offset, rightEdge - backupWidth - 34, 30);
     self.restoreButton.frame = NSMakeRect(NSMinX(self.backupButton.frame) - 10.0 - restoreWidth,
-                                          476,
+                                          476 + offset,
                                           restoreWidth,
                                           30);
     self.settingsButton.frame = NSMakeRect(NSMinX(self.restoreButton.frame) - 10.0 - settingsWidth,
-                                           476,
+                                           476 + offset,
                                            settingsWidth,
                                            30);
+}
+
+- (CGFloat)historyHeight {
+    return self.historyRows.count ? 30.0 + 22.0 * self.historyRows.count : 0.0;
+}
+
+- (void)setHistoryRows:(NSArray<NSDictionary<NSString *, NSString *> *> *)historyRows {
+    NSArray *rows = [historyRows copy] ?: @[];
+    if ([rows isEqualToArray:_historyRows ?: @[]] && _historyRows) return;
+    _historyRows = rows;
+    for (NSTextField *label in self.historyLabels) [label removeFromSuperview];
+    [self.historyLabels removeAllObjects];
+    self.historyCaptionLabel.hidden = rows.count == 0;
+
+    NSFont *nameFont = [NSFont fontWithName:@"Lucida Grande Bold" size:12] ?: [NSFont boldSystemFontOfSize:12];
+    NSFont *valueFont = [NSFont fontWithName:@"Lucida Grande" size:12] ?: [NSFont systemFontOfSize:12];
+    NSColor *ink = [NSColor colorWithCalibratedWhite:0.13 alpha:1.0];
+    NSColor *muted = [NSColor colorWithCalibratedWhite:0.38 alpha:1.0];
+    NSColor *red = [NSColor colorWithCalibratedRed:0.70 green:0.10 blue:0.08 alpha:1.0];
+    // The name column is as wide as the longest destination name (within
+    // limits), so disk names stay readable and dates get the rest.
+    CGFloat nameWidth = 120.0;
+    for (NSDictionary<NSString *, NSString *> *row in rows) {
+        CGFloat width = ceil([row[@"name"] ?: @"" sizeWithAttributes:@{NSFontAttributeName: nameFont}].width) + 6.0;
+        nameWidth = MAX(nameWidth, MIN(width, 250.0));
+    }
+    CGFloat detailX = 48.0 + nameWidth + 12.0;
+    CGFloat y = 414.0;
+    for (NSDictionary<NSString *, NSString *> *row in rows) {
+        NSTextField *name = [self overviewLabelWithFrame:NSMakeRect(48, y, nameWidth, 20) font:nameFont color:ink];
+        name.stringValue = row[@"name"] ?: @"";
+        name.toolTip = name.stringValue;
+        NSTextField *detail = [self overviewLabelWithFrame:NSMakeRect(detailX, y, NSWidth(self.bounds) - 26 - detailX, 20)
+                                                      font:valueFont color:ink];
+        detail.lineBreakMode = NSLineBreakByTruncatingTail;
+        NSMutableAttributedString *text = [NSMutableAttributedString new];
+        NSString *failure = row[@"failure"] ?: @"";
+        NSString *successes = row[@"detail"] ?: @"";
+        if (failure.length) {
+            [text appendAttributedString:[[NSAttributedString alloc] initWithString:failure
+                attributes:@{NSFontAttributeName: valueFont, NSForegroundColorAttributeName: red}]];
+            if (successes.length) {
+                [text appendAttributedString:[[NSAttributedString alloc] initWithString:@" · "
+                    attributes:@{NSFontAttributeName: valueFont, NSForegroundColorAttributeName: muted}]];
+            }
+        }
+        [text appendAttributedString:[[NSAttributedString alloc] initWithString:successes
+            attributes:@{NSFontAttributeName: valueFont,
+                         NSForegroundColorAttributeName: row[@"empty"].length ? muted : ink}]];
+        detail.attributedStringValue = text;
+        detail.toolTip = text.string;
+        name.accessibilityLabel = name.stringValue;
+        detail.accessibilityLabel = [NSString stringWithFormat:@"%@: %@", name.stringValue, text.string];
+        [self addSubview:name];
+        [self addSubview:detail];
+        [self.historyLabels addObject:name];
+        [self.historyLabels addObject:detail];
+        y += 22.0;
+    }
+
+    // Grow or shrink the window by the history height, keeping its top edge.
+    CGFloat height = 520.0 + [self historyHeight];
+    if (fabs(NSHeight(self.frame) - height) > 0.5) {
+        NSWindow *window = self.window;
+        if (window && window.contentView == self) {
+            NSRect frame = window.frame;
+            NSRect content = [window contentRectForFrameRect:frame];
+            CGFloat delta = height - NSHeight(content);
+            frame.size.height += delta;
+            frame.origin.y -= delta;
+            [window setFrame:frame display:YES animate:NO];
+        } else {
+            [self setFrameSize:NSMakeSize(NSWidth(self.frame), height)];
+        }
+    }
+    [self layoutActionButtons];
 }
 
 - (void)setStatus:(NSString *)status {
@@ -1806,6 +1901,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
 @property(nonatomic, copy) NSDictionary<NSString *, NSString *> *lastOverviewSnapshot;
 @property(nonatomic) NSTimeInterval overviewRefreshInterval;
 @property(nonatomic) BOOL overviewRefreshInFlight;
+@property(nonatomic, copy) NSArray<NSDictionary<NSString *, NSString *> *> *lastHistoryRows;
+@property(nonatomic) BOOL historyInitRequested;
 @property(nonatomic) BOOL overviewLaunchPending;
 @property(nonatomic, copy) NSString *adHocSelectedID;
 @property(nonatomic, copy) NSDictionary *adHocRunChoice;
@@ -4594,6 +4691,49 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
     return formatter;
 }
 
+// "Today, 21:06" and "Yesterday, 21:06" for recent runs, otherwise a short
+// day and time ("24.11., 21:47"), with the year only when it differs.
+- (NSString *)historyDateText:(NSNumber *)epoch now:(NSDate *)now calendar:(NSCalendar *)calendar {
+    NSDate *date = [NSDate dateWithTimeIntervalSince1970:epoch.doubleValue];
+    NSDateFormatter *formatter = [self overviewDateFormatterWithCalendar:calendar];
+    NSDate *yesterday = [calendar dateByAddingUnit:NSCalendarUnitDay value:-1 toDate:now options:0];
+    if ([calendar isDate:date inSameDayAsDate:now] ||
+        (yesterday && [calendar isDate:date inSameDayAsDate:yesterday])) {
+        formatter.dateStyle = NSDateFormatterShortStyle;
+        formatter.doesRelativeDateFormatting = YES;
+    } else {
+        BOOL sameYear = [calendar component:NSCalendarUnitYear fromDate:date] ==
+            [calendar component:NSCalendarUnitYear fromDate:now];
+        [formatter setLocalizedDateFormatFromTemplate:sameYear ? @"ddMMHHmm" : @"ddMMyyHHmm"];
+    }
+    return [formatter stringFromDate:date] ?: @"";
+}
+
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)historyRowsForGroups:(NSArray<NSDictionary *> *)groups
+                                                                      now:(NSDate *)now
+                                                                 calendar:(NSCalendar *)calendar {
+    NSString *language = self.language ?: @"en";
+    NSMutableArray *rows = [NSMutableArray array];
+    for (NSDictionary *group in groups) {
+        NSString *kind = T(language, [group[@"target"] isEqual:@"nas"] ? @"overviewHistoryNAS" : @"overviewHistoryDisk");
+        NSMutableArray<NSString *> *dates = [NSMutableArray array];
+        for (NSNumber *epoch in group[@"successes"]) {
+            [dates addObject:[self historyDateText:epoch now:now calendar:calendar]];
+        }
+        NSMutableDictionary *row = [@{
+            @"name": [NSString stringWithFormat:@"%@ · %@", kind, group[@"label"] ?: @""],
+            @"detail": dates.count ? [dates componentsJoinedByString:@" · "] : T(language, @"overviewHistoryNone")
+        } mutableCopy];
+        if (!dates.count) row[@"empty"] = @"1";
+        if (group[@"lastFailure"]) {
+            row[@"failure"] = [NSString stringWithFormat:T(language, @"overviewHistoryFailed"),
+                [self historyDateText:group[@"lastFailure"] now:now calendar:calendar]];
+        }
+        [rows addObject:row];
+    }
+    return rows;
+}
+
 - (NSDictionary<NSString *, NSString *> *)lastSuccessPresentationForRecord:(NSDictionary *)record
                                                                     calendar:(NSCalendar *)calendar {
     NSString *language = self.language ?: @"en";
@@ -4978,6 +5118,16 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
             @"Library/Application Support/GDrive Backup Tiger"];
         NSDictionary *lastSuccess = [strongSelf lastSuccessPresentationForRecord:
             GDTLatestSuccessfulBackupAtRoot(historyRoot, now) calendar:calendar];
+        NSString *historyPath = GDTBackupHistoryPath();
+        NSDictionary *historyAttributes = [NSFileManager.defaultManager attributesOfItemAtPath:historyPath error:nil];
+        NSString *historyContent = nil;
+        if ([historyAttributes[NSFileType] isEqualToString:NSFileTypeRegular] &&
+            [historyAttributes[NSFileSize] unsignedLongLongValue] <= 1024 * 1024) {
+            historyContent = [NSString stringWithContentsOfFile:historyPath encoding:NSUTF8StringEncoding error:nil];
+        }
+        NSArray *historyRows = [strongSelf historyRowsForGroups:GDTBackupHistoryGroups(historyContent ?: @"", 3, 5)
+                                                            now:now calendar:calendar];
+        BOOL historyMissing = historyAttributes == nil;
         NSDictionary<NSString *, NSString *> *summary = GDTReadBackupSummaryAtPath(summaryPath);
         NSString *status = GDTBackupSummaryStatusForValues(summary);
         NSString *progressPath = GDTBackupProgressPathForSummaryPath(summaryPath);
@@ -5086,16 +5236,41 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
                                       capturedActiveIssueTimestamp:activeIssueTimestamp];
             }
             innerSelf.lastOverviewSnapshot = displaySnapshot;
+            innerSelf.lastHistoryRows = historyRows;
             if ([innerSelf.window.contentView isKindOfClass:TigerOverviewView.class]) {
                 [innerSelf applyOverviewSnapshot:displaySnapshot
                                           toView:(TigerOverviewView *)innerSelf.window.contentView];
+                ((TigerOverviewView *)innerSelf.window.contentView).historyRows = historyRows;
             }
+            if (historyMissing) [innerSelf requestHistoryInitialization];
             if (innerSelf.statusItem) {
                 innerSelf.statusItem.menu = [innerSelf statusMenuForSnapshot:displaySnapshot];
                 innerSelf.statusItem.menu.delegate = innerSelf;
                 [innerSelf updateStatusItemPresentationForSnapshot:displaySnapshot];
             }
             [innerSelf updateOverviewRefreshTimerForStatus:displaySnapshot[@"status"]];
+        });
+    });
+}
+
+// After an update from a version without history, ask the engine once to
+// rebuild it from the backup log, so the overview is not empty until the
+// next backup. The engine skips this while a backup runs.
+- (void)requestHistoryInitialization {
+    if (self.historyInitRequested || !NSApp.isRunning) return;
+    self.historyInitRequested = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        int status = 0;
+        NSString *capabilities = RunCommand(@"/bin/bash",
+            @[@"/usr/local/bin/backup-google-drive.sh", @"--capabilities"],
+            @{@"GDRIVE_BACKUP_CONFIG": @"/dev/null"}, &status);
+        if (status != 0 || ![[capabilities componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]
+                containsObject:@"run-history-v1"]) return;
+        RunCommand(@"/bin/bash", @[@"/usr/local/bin/backup-google-drive.sh", @"--init-history"],
+            @{@"MOUNT_SETTLE_SECONDS": @"0"}, &status);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf refreshOverviewStatus:nil];
         });
     });
 }
@@ -5742,6 +5917,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         @"storage": T(self.language ?: @"en", @"overviewUnavailable")
     };
     [self applyOverviewSnapshot:placeholder toView:content];
+    content.historyRows = self.lastHistoryRows ?: @[];
     [self.window makeFirstResponder:content.backupButton];
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];

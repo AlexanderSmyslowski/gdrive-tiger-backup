@@ -176,6 +176,41 @@ int main(void) {
         view.storageText = @"812 GB free of 2 TB";
         view.status = @"success";
 
+        {
+            TigerOverviewView *historyView = [[TigerOverviewView alloc] initWithFrame:NSMakeRect(0, 0, 620, 520)];
+            historyView.language = @"de";
+            CGFloat buttonTop = NSMinY(historyView.backupButton.frame);
+            AppDelegate *formatter = [AppDelegate new];
+            formatter.language = @"de";
+            NSCalendar *calendar = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
+            calendar.timeZone = [NSTimeZone timeZoneWithName:@"Europe/Berlin"];
+            NSDate *now = [NSDate dateWithTimeIntervalSince1970:1795800000]; // 2026-11-27 15:40
+            NSArray *groups = GDTBackupHistoryGroups([@[
+                @"v1\t1795723615\tsuccess\tnas\t/Volumes/share/GoogleDrive-Backup\tschedule\t1795719605",
+                @"v1\t1795633000\tsuccess\tnas\t/Volumes/share/GoogleDrive-Backup\tschedule\t1795630000",
+                @"v1\t1795400000\tfailure\tapfs\t/Volumes/Archive/GoogleDrive-Backup\tmanual\t1795390000"
+            ] componentsJoinedByString:@"\n"], 3, 5);
+            NSArray *rows = [formatter historyRowsForGroups:groups now:now calendar:calendar];
+            historyView.historyRows = rows;
+            NSDictionary *nasRow = rows.count ? rows[0] : nil;
+            NSDictionary *diskRow = rows.count > 1 ? rows[1] : nil;
+            Assert(rows.count == 2 && [nasRow[@"name"] isEqual:@"NAS · GoogleDrive-Backup"] &&
+                   [nasRow[@"detail"] hasPrefix:@"Gestern"] && [nasRow[@"detail"] containsString:@"25.11."],
+                   @"history names the NAS and lists its completed backups, newest first and relative");
+            Assert([diskRow[@"name"] isEqual:@"Festplatte · Archive"] &&
+                   [diskRow[@"failure"] hasPrefix:@"✕ Fehlgeschlagen"] &&
+                   [diskRow[@"detail"] isEqual:T(@"de", @"overviewHistoryNone")],
+                   @"a disk without a completed backup says so and shows its failed attempt");
+            Assert(!historyView.historyCaptionLabel.hidden && historyView.historyLabels.count == 4 &&
+                   fabs(NSMinY(historyView.backupButton.frame) - buttonTop - [historyView historyHeight]) < 0.5 &&
+                   fabs(NSHeight(historyView.frame) - 520.0 - [historyView historyHeight]) < 0.5,
+                   @"history rows push the run controls down and grow the overview");
+            historyView.historyRows = @[];
+            Assert(historyView.historyCaptionLabel.hidden && historyView.historyLabels.count == 0 &&
+                   fabs(NSMinY(historyView.backupButton.frame) - buttonTop) < 0.5,
+                   @"without history the overview keeps its compact layout");
+        }
+
         NSArray<NSTextField *> *valueLabels = @[
             view.lastRunValueLabel,
             view.lastRunDetailLabel,

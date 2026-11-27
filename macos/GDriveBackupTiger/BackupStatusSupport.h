@@ -18,4 +18,13 @@ FOUNDATION_EXPORT NSDictionary<NSString *, NSString *> * _Nullable GDTLastSucces
 FOUNDATION_EXPORT NSDictionary<NSString *, NSString *> * _Nullable GDTLatestSuccessfulBackupAtRoot(
     NSString *root, NSDate *now);
 
+// Run history written by the engine (run-history.tsv), one group per
+// destination, most recently used first. Each group: target ("nas"/"apfs"),
+// label (volume or folder name, never a host), successes (up to `limit`
+// epoch seconds, newest first), lastFailure (epoch, only when newer than the
+// newest success) and lastActivity (epoch).
+FOUNDATION_EXPORT NSString *GDTBackupHistoryPath(void);
+FOUNDATION_EXPORT NSArray<NSDictionary<NSString *, id> *> *GDTBackupHistoryGroups(
+    NSString *content, NSUInteger limit, NSUInteger maxGroups);
+
 NS_ASSUME_NONNULL_END

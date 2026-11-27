@@ -242,3 +242,77 @@ NSDictionary<NSString *, NSString *> *GDTLatestSuccessfulBackupAtRoot(NSString *
     }
     return latest;
 }
+
+NSString *GDTBackupHistoryPath(void) {
+    NSString *override = NSProcessInfo.processInfo.environment[@"GDRIVE_BACKUP_HISTORY_FILE"];
+    if (override.length) return override;
+    return [NSHomeDirectory() stringByAppendingPathComponent:
+        @"Library/Application Support/GDrive Backup Tiger/run-history.tsv"];
+}
+
+// Which destination a run went to, in words a user recognizes: the disk name
+// for an external disk, the backup folder for a NAS share (whose mount point
+// can change between "share" and "share-1" and must not split the history).
+static NSString *GDTBackupHistoryLabel(NSString *target, NSString *destination) {
+    NSArray<NSString *> *components = destination.stringByStandardizingPath.pathComponents;
+    if ([target isEqualToString:@"apfs"] && components.count >= 3 &&
+        [components[1] isEqualToString:@"Volumes"]) {
+        return components[2];
+    }
+    NSString *last = destination.stringByStandardizingPath.lastPathComponent;
+    return [last isEqualToString:@"/"] ? @"" : (last ?: @"");
+}
+
+NSArray<NSDictionary<NSString *, id> *> *GDTBackupHistoryGroups(
+    NSString *content, NSUInteger limit, NSUInteger maxGroups) {
+    NSMutableDictionary<NSString *, NSMutableDictionary *> *groups = [NSMutableDictionary dictionary];
+    NSCharacterSet *digits = NSCharacterSet.decimalDigitCharacterSet.invertedSet;
+    for (NSString *line in [content componentsSeparatedByString:@"\n"]) {
+        NSArray<NSString *> *fields = [line componentsSeparatedByString:@"\t"];
+        if (fields.count < 7 || ![fields[0] isEqualToString:@"v1"]) continue;
+        NSString *finished = fields[1], *status = fields[2], *target = fields[3];
+        if (!finished.length || finished.length > 12 ||
+            [finished rangeOfCharacterFromSet:digits].location != NSNotFound) continue;
+        if (![@[@"nas", @"apfs"] containsObject:target] ||
+            ![@[@"success", @"failure", @"cancelled"] containsObject:status]) continue;
+        NSString *label = GDTBackupHistoryLabel(target, fields[4]);
+        if (!label.length || label.length > 255 ||
+            [label rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound) continue;
+        NSString *key = [NSString stringWithFormat:@"%@\n%@", target, label];
+        NSMutableDictionary *group = groups[key];
+        if (!group) {
+            group = [@{@"target": target, @"label": label,
+                       @"successes": [NSMutableArray array]} mutableCopy];
+            groups[key] = group;
+        }
+        NSNumber *at = @(finished.longLongValue);
+        if ([at compare:group[@"lastActivity"] ?: @0] == NSOrderedDescending) group[@"lastActivity"] = at;
+        if ([status isEqualToString:@"success"]) {
+            [group[@"successes"] addObject:at];
+        } else if ([status isEqualToString:@"failure"] &&
+                   [at compare:group[@"failureAt"] ?: @0] == NSOrderedDescending) {
+            group[@"failureAt"] = at;
+        }
+    }
+    NSMutableArray *result = [NSMutableArray array];
+    for (NSMutableDictionary *group in groups.allValues) {
+        NSArray *successes = [group[@"successes"] sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
+            return [b compare:a];
+        }];
+        NSMutableDictionary *entry = [@{
+            @"target": group[@"target"], @"label": group[@"label"],
+            @"successes": [successes subarrayWithRange:NSMakeRange(0, MIN(limit, successes.count))],
+            @"lastActivity": group[@"lastActivity"]
+        } mutableCopy];
+        NSNumber *failure = group[@"failureAt"];
+        if (failure && (!successes.count || [failure compare:successes.firstObject] == NSOrderedDescending)) {
+            entry[@"lastFailure"] = failure;
+        }
+        [result addObject:entry];
+    }
+    [result sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        NSComparisonResult order = [b[@"lastActivity"] compare:a[@"lastActivity"]];
+        return order != NSOrderedSame ? order : [a[@"label"] compare:b[@"label"]];
+    }];
+    return [result subarrayWithRange:NSMakeRange(0, MIN(maxGroups, result.count))];
+}

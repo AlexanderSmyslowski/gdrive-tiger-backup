@@ -163,6 +163,41 @@ int main(void) {
                @"unsafe profile identifiers cannot redirect summary state");
         Assert([GDTBackupSummaryPath() hasSuffix:@"Library/Application Support/GDrive Backup Tiger/last-run.status"],
                @"default durable summary lives in private Application Support");
+
+        NSString *history = [@[
+            @"v1\t100\tsuccess\tnas\t/Volumes/share/GoogleDrive-Backup\tlog\t90",
+            @"v1\t200\tsuccess\tapfs\t/Volumes/Disk A/GoogleDrive-Backup\tmanual\t190",
+            @"v1\t300\tsuccess\tnas\t/Volumes/share-1/GoogleDrive-Backup\tschedule\t290",
+            @"v1\t400\tfailure\tnas\t/Volumes/share/GoogleDrive-Backup\tschedule\t390",
+            @"v1\t500\tsuccess\tnas\t/Volumes/share/GoogleDrive-Backup\tschedule\t490",
+            @"v1\t600\tsuccess\tnas\t/Volumes/share/GoogleDrive-Backup\tschedule-retry\t590",
+            @"v1\t700\tfailure\tapfs\t/Volumes/Disk A/GoogleDrive-Backup\tmanual\t690",
+            @"v1\t650\tcancelled\tapfs\t/Volumes/Disk B/GoogleDrive-Backup\tmanual\t640",
+            @"v2\t999\tsuccess\tnas\t/Volumes/x/y\tschedule\t1",
+            @"v1\tabc\tsuccess\tnas\t/Volumes/x/y\tschedule\t1",
+            @"v1\t800\tsuccess\tother\t/Volumes/x/y\tschedule\t1",
+            @"garbage", @""
+        ] componentsJoinedByString:@"\n"];
+        NSArray<NSDictionary *> *groups = GDTBackupHistoryGroups(history, 3, 5);
+        Assert(groups.count == 3, @"history groups one entry per destination and skips unknown lines");
+        NSDictionary *disk = groups.count > 0 ? groups[0] : nil;
+        NSDictionary *bDisk = groups.count > 1 ? groups[1] : nil;
+        NSDictionary *nas = groups.count > 2 ? groups[2] : nil;
+        Assert([disk[@"label"] isEqual:@"Disk A"] && [disk[@"target"] isEqual:@"apfs"] &&
+               [disk[@"successes"] isEqual:@[@200]] && [disk[@"lastFailure"] isEqual:@700],
+               @"an external disk is named by its volume and shows a failure newer than its last success");
+        Assert([bDisk[@"label"] isEqual:@"Disk B"] && [bDisk[@"successes"] count] == 0 &&
+               bDisk[@"lastFailure"] == nil,
+               @"a cancelled run is activity but neither a success nor a failure");
+        Assert([nas[@"label"] isEqual:@"GoogleDrive-Backup"] &&
+               [nas[@"successes"] isEqual:(@[@600, @500, @300])] && nas[@"lastFailure"] == nil,
+               @"a NAS share keeps one history across mount-point names, newest three successes, older failure hidden");
+        Assert(GDTBackupHistoryGroups(history, 3, 1).count == 1 &&
+               GDTBackupHistoryGroups(@"", 3, 5).count == 0,
+               @"history respects the group limit and handles an empty file");
+        Assert([GDTBackupHistoryPath() hasSuffix:
+                   @"Library/Application Support/GDrive Backup Tiger/run-history.tsv"],
+               @"run history lives next to the summaries");
     }
 
     if (failures > 0) {

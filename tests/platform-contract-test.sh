@@ -103,7 +103,7 @@ test_capabilities_need_no_platform_file() {
   /bin/mkdir -p "$copy"
   /bin/cp "$ENGINE" "$copy/backup-google-drive.sh"
   output="$(/bin/bash "$copy/backup-google-drive.sh" --capabilities 2>&1)"
-  if [[ "$output" == "adhoc-target-v1" ]]; then
+  if [[ "$output" == $'adhoc-target-v1\nrun-history-v1' ]]; then
     pass "--capabilities answers before the platform file is loaded"
   else
     fail "--capabilities: $output"

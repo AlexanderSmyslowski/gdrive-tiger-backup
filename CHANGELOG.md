@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Show completed backups per destination in the overview: for the NAS and for every external disk the last three completed backups ("Yesterday, 21:06 · 25.11., 21:16 · …"), and a failed attempt in red when it is newer than the last success. The engine now appends every finished run to `run-history.tsv` (kept to the newest 1,000 runs). After the update the history is rebuilt once from the backup log (`backup-google-drive.sh --init-history`, started by the app), so earlier backups appear right away. A failure to write the history is logged and never changes the backup result.
+
 - Initialized the retention path array explicitly for Bash 5, preventing an unbound-array failure when existing versions are inventoried on Linux.
 
 - Ported retention timestamp parsing and daily catch-up window calculations to GNU date on Linux, preserving the BSD implementation on macOS. Added shared timezone, calendar and DST tests, and versioning/retention engine tests in Ubuntu and Arch Linux CI.

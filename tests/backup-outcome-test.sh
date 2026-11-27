@@ -845,6 +845,96 @@ test_perl_lock_replaces_missing_flock() {
   fi
 }
 
+test_run_history_lists_each_finished_run() {
+  local name="run history records each finished run and rebuilds older runs from the log"
+  local history log_file lines
+  prepare_test_environment
+  history="$TEST_HOME/Library/Application Support/GDrive Backup Tiger/run-history.tsv"
+  log_file="$TEST_HOME/Library/Logs/gdrive-backup.log"
+  /bin/mkdir -p "${log_file%/*}"
+  # Two finished runs, one dry run and one run that never logged its end.
+  cat >"$log_file" <<'LOG'
+[2026-05-01 20:00:05+0200] Start: remote=gdrive: dry_run=0 target=apfs mount=/Volumes/Disk A dest=/Volumes/Disk A/GoogleDrive-Backup
+2026/05/01 20:10:00 INFO  : Fertig ohne Fehler.
+[2026-05-01 20:30:00+0200] Fertig ohne Fehler.
+[2026-05-02 20:00:05+0200] Start: remote=gdrive: dry_run=1 target=nas mount=/Volumes/share dest=/Volumes/share/GoogleDrive-Backup
+[2026-05-02 20:01:00+0200] Fertig ohne Fehler.
+[2026-05-03 20:00:05+0200] Start: remote=gdrive: dry_run=0 target=nas mount=/Volumes/share dest=/Volumes/share/GoogleDrive-Backup
+[2026-05-03 20:20:00+0200] Fertig mit 2 Fehler(n).
+[2026-05-04 20:00:05+0200] Start: remote=gdrive: dry_run=0 target=nas mount=/Volumes/share dest=/Volumes/share/GoogleDrive-Backup
+LOG
+
+  FAKE_RCLONE_COPY_STATUS=0 run_backup >/dev/null 2>&1
+  FAKE_RCLONE_COPY_STATUS=23 run_backup >/dev/null 2>&1
+  lines="$(cut -f1-4,6 "$history" 2>/dev/null | /usr/bin/sed "s|$NAS_MOUNT|NAS|")"
+  local expected
+  expected="$(printf '%s\n' \
+    $'v1\t1777660200\tsuccess\tapfs\tlog' \
+    $'v1\t1777832400\tfailure\tnas\tlog' \
+    'SUCCESS' 'FAILURE')"
+  lines="$(printf '%s\n' "$lines" | /usr/bin/awk -F'\t' '
+    $5 == "log" { print; next }
+    $3 == "success" && $4 == "nas" && $5 == "manual" { print "SUCCESS"; next }
+    $3 == "failure" && $4 == "nas" && $5 == "manual" { print "FAILURE"; next }
+    { print "UNEXPECTED " $0 }')"
+  if [[ "$lines" == "$expected" &&
+        "$(cut -f5 "$history" | /usr/bin/tail -1)" == "$NAS_MOUNT/backup" &&
+        "$(/usr/bin/stat -f '%Lp' "$history")" == "600" ]]; then
+    pass "$name"
+  else
+    fail "$name (got: ${lines//$'\n'/ | })"
+  fi
+}
+
+test_run_history_keeps_the_newest_lines_and_skips_dry_runs() {
+  local name="run history is capped and dry runs do not add entries"
+  local history count
+  prepare_test_environment
+  history="$TEST_HOME/Library/Application Support/GDrive Backup Tiger/run-history.tsv"
+  /bin/mkdir -p "${history%/*}"
+  for count in $(/usr/bin/seq 1 1005); do
+    printf 'v1\t%s\tsuccess\tnas\t/old\tschedule\t%s\n' "$count" "$count"
+  done >"$history"
+  run_dry_backup >/dev/null 2>&1
+  count="$(/usr/bin/wc -l <"$history" | /usr/bin/tr -d ' ')"
+  [[ "$count" == "1005" ]] || { fail "$name (dry run changed history: $count lines)"; return; }
+  run_backup >/dev/null 2>&1
+  count="$(/usr/bin/wc -l <"$history" | /usr/bin/tr -d ' ')"
+  if [[ "$count" == "1000" && "$(/usr/bin/head -1 "$history" | cut -f2)" == "7" &&
+        "$(/usr/bin/tail -1 "$history" | cut -f3,4)" == $'success\tnas' ]]; then
+    pass "$name"
+  else
+    fail "$name (lines=$count first=$(/usr/bin/head -1 "$history" | cut -f2))"
+  fi
+}
+
+test_init_history_rebuilds_only_a_missing_history() {
+  local name="--init-history rebuilds a missing history from the log and keeps an existing one"
+  local history log_file status
+  prepare_test_environment
+  history="$TEST_HOME/Library/Application Support/GDrive Backup Tiger/run-history.tsv"
+  log_file="$TEST_HOME/Library/Logs/gdrive-backup.log"
+  /bin/mkdir -p "${log_file%/*}"
+  cat >"$log_file" <<'LOG'
+[2026-05-01 20:00:05+0200] Start: remote=gdrive: dry_run=0 target=nas mount=/Volumes/share dest=/Volumes/share/GoogleDrive-Backup
+[2026-05-01 20:30:00+0200] Fertig ohne Fehler.
+LOG
+  run_backup_with_mode --init-history >/dev/null 2>&1
+  status=$?
+  local first
+  first="$(cat "$history" 2>/dev/null)"
+  printf 'v1\t1\tsuccess\tnas\t/kept\tschedule\t1\n' >"$history"
+  run_backup_with_mode --init-history >/dev/null 2>&1
+  if [[ "$status" == "0" &&
+        "$first" == $'v1\t1777660200\tsuccess\tnas\t/Volumes/share/GoogleDrive-Backup\tlog\t1777658405' &&
+        "$(cat "$history")" == $'v1\t1\tsuccess\tnas\t/kept\tschedule\t1' &&
+        ! -e "$RUN_STATE_FILE" ]]; then
+    pass "$name"
+  else
+    fail "$name (status=$status first=$first)"
+  fi
+}
+
 test_state_is_versioned_and_identifies_the_process() {
   local name="run state is versioned and identifies its process"
   local state mode
@@ -3043,6 +3133,9 @@ test_visible_manual_confirmation_requests_foreground
 test_early_configuration_error_publishes_failure
 test_existing_backup_is_skipped_not_successful
 test_perl_lock_replaces_missing_flock
+test_run_history_lists_each_finished_run
+test_run_history_keeps_the_newest_lines_and_skips_dry_runs
+test_init_history_rebuilds_only_a_missing_history
 test_state_is_versioned_and_identifies_the_process
 test_active_backup_publishes_running_summary
 test_locked_backup_publishes_running_before_remote_checks
