@@ -43,12 +43,13 @@ records are restored transparently as historical source milestones.
 | v2.6.0 | 38 | tag `v2.6.0` | Catch-up scheduling, unattended NAS reliability and cleanup fixes; previous release |
 | v2.7.0 | 39 | tag `v2.7.0` | Setup without Terminal, bundled rclone and jq, plain-language UI; previous release |
 | v2.8.0 | 40 | tag `v2.8.0` | Backups per destination with drive names and expandable runs; Linux engine groundwork; previous release |
-| v2.9.0 | 41 | tag `v2.9.0` | Updates installed from the app with checksum verification; current release |
+| v2.9.0 | 41 | tag `v2.9.0` | Updates installed from the app with checksum verification; previous release |
+| v2.9.1 | 42 | tag `v2.9.1` | Installer re-registers the schedule agent; first update delivered by the in-app updater; current release |
 
 No retrospectively built installer is presented as an original historical artifact.
 Retrospective release pages expose GitHub's source archives and state
 their later publication date. The v2.4.3, v2.4.4, and v2.4.5 installers are built and verified from their exact tags:
-v2.4.3 during the transparent publication repair, v2.4.4 as its tested successor, and v2.4.5 as v2.4.6's predecessor. v2.9.0 is the current release.
+v2.4.3 during the transparent publication repair, v2.4.4 as its tested successor, and v2.4.5 as v2.4.6's predecessor. v2.9.1 is the current release.
 
 Future version tags trigger the release workflow. It refuses a tag that does
 not match the app version, positive build number, README, and dated changelog
