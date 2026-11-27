@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Confirm an installed update reliably. The first real update (v2.9.0 to v2.9.1) worked, but the restarted app started two seconds before the installer wrote its result, so the confirmation was skipped and the downloaded package stayed in the cache. The app now waits up to two minutes for the result and always removes the download.
+
 ## v2.9.1 - 2026-11-27
 
 A small fix, and the first version meant to arrive through the in-app updater.
