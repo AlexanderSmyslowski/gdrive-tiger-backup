@@ -4,6 +4,23 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Runs on macOS and, in CI, on Linux: BSD and GNU date/stat differ.
+IS_MACOS=0
+[[ "$(/usr/bin/uname -s)" == "Darwin" ]] && IS_MACOS=1
+epoch_to_touch_stamp() {
+  if (( IS_MACOS )); then /bin/date -r "$1" '+%Y%m%d%H%M.%S'; else date -d "@$1" '+%Y%m%d%H%M.%S'; fi
+}
+local_time_epoch() {
+  if (( IS_MACOS )); then
+    LC_ALL=C /bin/date -j -f '%Y-%m-%d %H:%M:%S' "$1" '+%s'
+  else
+    LC_ALL=C date -d "$1" '+%s'
+  fi
+}
+file_mtime() {
+  if (( IS_MACOS )); then /usr/bin/stat -f '%m' "$1"; else stat -c '%Y' "$1"; fi
+}
 BACKUP_SCRIPT="$ROOT/bin/backup-google-drive.sh"
 failures=0
 
@@ -36,8 +53,13 @@ prepare_test_environment() {
   DEST_ROOT="$NAS_MOUNT/backup"
   VERSIONS_ROOT="$DEST_ROOT/.gdrive-versions"
   QUARANTINE="$VERSIONS_ROOT/.retention-trash"
-  BACKUP_LOG="$TEST_HOME/Library/Logs/gdrive-backup.log"
-  SUMMARY="$TEST_HOME/Library/Application Support/GDrive Backup Tiger/last-run.status"
+  if (( IS_MACOS )); then
+    BACKUP_LOG="$TEST_HOME/Library/Logs/gdrive-backup.log"
+    SUMMARY="$TEST_HOME/Library/Application Support/GDrive Backup Tiger/last-run.status"
+  else
+    BACKUP_LOG="$TEST_HOME/.local/state/gdrive-tiger-backup/backup.log"
+    SUMMARY="$TEST_HOME/.local/state/gdrive-tiger-backup/last-run.status"
+  fi
   FAKE_NOW="$(/bin/date '+%s')"
   mkdir -p "$FAKE_BIN" "$NAS_MOUNT" "$FAKE_TRASH_DIR" "$TEST_TMP" "${SUMMARY%/*}"
   : >"$FAKE_RCLONE_LOG"
@@ -83,6 +105,10 @@ SH
 
   cat >"$FAKE_BIN/jq" <<'SH'
 #!/bin/bash
+# The Linux platform file parses findmnt's JSON; give it the real parser.
+case " $* " in
+  *filesystems*|*fstype*) exec /usr/bin/jq "$@" ;;
+esac
 case "${1:-}" in
   length) printf '0\n' ;;
   -r) ;;
@@ -111,6 +137,14 @@ SH
 #!/bin/bash
 [[ -n "${FAKE_MOUNTED_NAS:-}" ]] || exit 0
 printf '%s on %s (smbfs, nodev, nosuid)\n' '//backup.test/share' "$FAKE_MOUNTED_NAS"
+SH
+
+  # Linux asks findmnt instead of mount.
+  cat >"$FAKE_BIN/findmnt" <<'SH'
+#!/bin/bash
+[[ -n "${FAKE_MOUNTED_NAS:-}" ]] || exit 1
+printf '{"filesystems":[{"id":42,"source":"//backup.test/share","target":"%s","fstype":"cifs"}]}\n' \
+  "$FAKE_MOUNTED_NAS"
 SH
 
   local tool
@@ -162,7 +196,7 @@ version_name() {
 
 # touch -t takes local time; this ages a path by whole days before FAKE_NOW.
 age_path_days() {
-  /usr/bin/touch -t "$(/bin/date -r "$((FAKE_NOW - $2 * 86400))" '+%Y%m%d%H%M.%S')" "$1"
+  touch -t "$(epoch_to_touch_stamp "$((FAKE_NOW - $2 * 86400))")" "$1"
 }
 
 test_quarantine_is_purged_after_grace_period() {
@@ -217,7 +251,7 @@ test_expired_state_is_quarantined_not_trashed() {
 
   run_backup
   status=$?
-  stamped="$(/usr/bin/stat -f '%m' "$QUARANTINE/$expired" 2>/dev/null || printf '0')"
+  stamped="$(file_mtime "$QUARANTINE/$expired" 2>/dev/null || printf '0')"
 
   # The grace period starts when the state is quarantined, not when it was created.
   if [[ "$status" == "0" && ! -e "$VERSIONS_ROOT/$expired" && -d "$QUARANTINE/$expired" &&
@@ -349,7 +383,7 @@ test_daily_window_catches_up() {
   local status finished_before window
   prepare_test_environment
   # 21:00 local time: one hour into the daily window that opened at 20:00.
-  FAKE_NOW="$(LC_ALL=C /bin/date -j -f '%Y-%m-%d %H:%M:%S' '2026-11-10 21:00:00' '+%s')"
+  FAKE_NOW="$(local_time_epoch '2026-11-10 21:00:00')"
   window=$((FAKE_NOW - 3600))
 
   # Primary attempt: the NAS is not mounted and the failure is reported.
@@ -404,7 +438,7 @@ test_other_destination_does_not_complete_window() {
   local name="a success on the attached disk does not complete the NAS window"
   local status
   prepare_test_environment
-  FAKE_NOW="$(LC_ALL=C /bin/date -j -f '%Y-%m-%d %H:%M:%S' '2026-11-10 21:00:00' '+%s')"
+  FAKE_NOW="$(local_time_epoch '2026-11-10 21:00:00')"
   cat >"$SUMMARY" <<EOF
 protocol=1
 status=success
@@ -436,7 +470,7 @@ test_daily_window_attempts_are_bounded() {
   local name="a daily window stops retrying after its attempts are used"
   local status window
   prepare_test_environment
-  FAKE_NOW="$(LC_ALL=C /bin/date -j -f '%Y-%m-%d %H:%M:%S' '2026-11-10 23:00:00' '+%s')"
+  FAKE_NOW="$(local_time_epoch '2026-11-10 23:00:00')"
   window=$((FAKE_NOW - 3 * 3600))
   cat >"$SUMMARY" <<EOF
 protocol=1

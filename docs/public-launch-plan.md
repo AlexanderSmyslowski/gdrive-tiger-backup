@@ -65,6 +65,11 @@ update costs the user permission prompts and can block a scheduled start.
   stumble and fix it.
 - [ ] Repeat on the oldest supported macOS (13 Ventura) and on Intel if
   possible.
+- [ ] **Urgent (found 2026-11-27):** rclone 1.76 warns that its shared Google
+  Drive client ID "is being retired and will stop working during 2026". The
+  app and the maintainer's own Mac use it today, so backups can stop without
+  warning. Create an own Google OAuth client ID now, first for the
+  maintainer's Mac, then for the app.
 - [ ] Own Google OAuth client ID instead of rclone's shared one, so many users
   do not run into its rate limits. Read access to Drive is a sensitive scope:
   plan time for Google's verification (privacy policy page, app description,
@@ -77,15 +82,13 @@ update costs the user permission prompts and can block a scheduled start.
   `docs/reference.md`.
 - [ ] A 30-second GIF of setup and the first backup (needs a real recording on
   a test account, see step 3).
-- [~] Social preview image: `docs/images/social-preview.png` exists; upload it
-  in GitHub › Settings › General › Social preview (no API for this).
+- [x] Social preview image uploaded (`docs/images/social-preview.png`).
 - [ ] Simple landing page via GitHub Pages with the same message and download.
 - [ ] Reconsider the name: "Tiger" refers to the visual style but suggests an
   old Mac OS X version; decide whether to keep it before the launch.
 - [x] Issue templates (bug report with the diagnostics report, feature
   request), `CONTRIBUTING.md`, `SECURITY.md`.
-- [ ] Turn on private vulnerability reporting in the repository settings, so
-  the link in `SECURITY.md` works.
+- [x] Private vulnerability reporting turned on.
 
 ## 5. Launch
 

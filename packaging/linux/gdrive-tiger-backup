@@ -1,0 +1,131 @@
+#!/bin/bash
+# gdrive-tiger-backup: command-line front end of the Linux edition.
+#   gdrive-tiger-backup setup        connect Google Drive, choose a destination,
+#                                    enable the daily schedule
+#   gdrive-tiger-backup run          back up now
+#   gdrive-tiger-backup check        dry run: show what would be copied
+#   gdrive-tiger-backup status [--json]
+#   gdrive-tiger-backup waybar       one JSON line for a Waybar custom module
+#   gdrive-tiger-backup log          follow the backup log
+set -euo pipefail
+
+SHARE_DIR="${GDRIVE_TIGER_SHARE_DIR:-$HOME/.local/share/gdrive-tiger-backup}"
+ENGINE="$SHARE_DIR/bin/backup-google-drive.sh"
+CONFIG_DIR="${GDRIVE_BACKUP_CONFIG_DIR:-$HOME/.config/gdrive-tiger-backup}"
+CONFIG_FILE="$CONFIG_DIR/config"
+STATE_DIR="$HOME/.local/state/gdrive-tiger-backup"
+REMOTE="${RCLONE_REMOTE:-gdrive}"
+
+die() { printf 'gdrive-tiger-backup: %s\n' "$*" >&2; exit 1; }
+[[ -x "$ENGINE" ]] || die "engine not found at $ENGINE; run the installer again"
+
+ask() {
+  local prompt="$1" default="${2:-}" answer
+  if [[ -n "$default" ]]; then
+    read -r -p "$prompt [$default]: " answer
+    printf '%s' "${answer:-$default}"
+  else
+    read -r -p "$prompt: " answer
+    printf '%s' "$answer"
+  fi
+}
+
+write_config() {
+  local key
+  (umask 077 && mkdir -p "$CONFIG_DIR")
+  local tmp
+  tmp="$(mktemp "$CONFIG_FILE.XXXXXX")"
+  {
+    printf '# Written by "gdrive-tiger-backup setup". Shell syntax, one KEY=value per line.\n'
+    for key in "$@"; do
+      printf '%s=%q\n' "${key%%=*}" "${key#*=}"
+    done
+  } >"$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$CONFIG_FILE"
+}
+
+setup() {
+  command -v rclone >/dev/null || die "rclone is missing; install it from https://rclone.org/install/"
+  printf 'GDrive Backup Tiger setup\n\n'
+
+  # 1. Google Drive, read-only.
+  if rclone listremotes 2>/dev/null | grep -qx "$REMOTE:"; then
+    printf 'Google Drive: rclone remote "%s:" found.\n' "$REMOTE"
+  else
+    printf 'Google Drive: no rclone remote "%s:" yet.\n' "$REMOTE"
+    printf 'A browser window opens for Google sign-in. The backup asks for read-only access.\n'
+    read -r -p 'Connect now? [Y/n]: ' answer
+    [[ "${answer:-y}" =~ ^[Yy] ]] || die "setup needs a Google Drive remote"
+    rclone config create "$REMOTE" drive scope=drive.readonly >/dev/null
+    rclone listremotes | grep -qx "$REMOTE:" || die "connecting Google Drive failed"
+  fi
+
+  # 2. Destination: a folder on a mounted disk, or on a mounted network share.
+  printf '\nWhere should the backup go? Give a folder on a mounted disk or network share.\n'
+  local destination mount fstype uuid parent
+  destination="$(ask 'Backup folder' "/mnt/backup/GoogleDrive-Backup")"
+  [[ "$destination" == /* ]] || die "please give an absolute path"
+  parent="$destination"
+  while [[ ! -d "$parent" ]]; do parent="$(dirname "$parent")"; done
+  mount="$(findmnt -rn --target "$parent" -o TARGET | head -n 1)"
+  fstype="$(findmnt -rn --target "$parent" -o FSTYPE | head -n 1)"
+  [[ -n "$mount" && "$mount" != "/" ]] ||
+    die "$destination is not on a separate disk or share; a backup on the system disk does not protect against disk failure"
+  mkdir -p "$destination"
+
+  local -a settings=("RCLONE_REMOTE=$REMOTE")
+  case "$fstype" in
+    cifs|smb3|nfs|nfs4)
+      local subdir="${destination#"$mount"/}"
+      [[ "$subdir" != "$destination" && -n "$subdir" ]] || subdir="GoogleDrive-Backup"
+      settings+=("GDRIVE_BACKUP_TARGET=nas" "GDRIVE_BACKUP_NAS_MOUNT=$mount" "GDRIVE_BACKUP_NAS_SUBDIR=$subdir")
+      printf 'Destination: network share %s (%s), folder %s\n' "$mount" "$fstype" "$subdir"
+      ;;
+    *)
+      uuid="$(findmnt -rn --target "$mount" -o UUID | head -n 1)"
+      [[ -n "$uuid" ]] || die "the disk at $mount has no filesystem UUID; the backup identifies its disk by UUID"
+      settings+=("GDRIVE_BACKUP_TARGET=disk" "GDRIVE_BACKUP_VOLUME=$mount"
+                 "GDRIVE_BACKUP_VOLUME_UUID=$uuid" "GDRIVE_BACKUP_DEST_ROOT=$destination")
+      printf 'Destination: disk %s (%s, UUID %s)\n' "$mount" "$fstype" "$uuid"
+      ;;
+  esac
+
+  # 3. Schedule.
+  local schedule
+  read -r -p $'\nBack up automatically every day from 20:00 (missed days are caught up)? [Y/n]: ' schedule
+  if [[ "${schedule:-y}" =~ ^[Yy] ]]; then
+    settings+=("GDRIVE_BACKUP_SCHEDULE=daily")
+  else
+    settings+=("GDRIVE_BACKUP_SCHEDULE=manual")
+  fi
+  settings+=("GDRIVE_BACKUP_VERSIONING=1" "GDRIVE_BACKUP_RETENTION=1" "GDRIVE_BACKUP_CONFIRM=0")
+  write_config "${settings[@]}"
+  printf '\nSaved %s\n' "$CONFIG_FILE"
+
+  if [[ "${schedule:-y}" =~ ^[Yy] ]]; then
+    if command -v systemctl >/dev/null &&
+       systemctl --user daemon-reload 2>/dev/null &&
+       systemctl --user enable --now gdrive-tiger-backup.timer 2>/dev/null; then
+      printf 'Daily schedule enabled (systemctl --user list-timers gdrive-tiger-backup.timer).\n'
+    else
+      printf 'Could not reach the systemd user session. Enable the schedule later with:\n'
+      printf '  systemctl --user enable --now gdrive-tiger-backup.timer\n'
+    fi
+  fi
+  printf '\nNext: "gdrive-tiger-backup check" for a dry run, then "gdrive-tiger-backup run".\n'
+}
+
+case "${1:-status}" in
+  setup) setup ;;
+  run) exec "$ENGINE" --run ;;
+  check) exec "$ENGINE" --dry-run ;;
+  status)
+    if [[ "${2:-}" == "--json" ]]; then exec "$ENGINE" --status-json; fi
+    exec "$ENGINE" --status
+    ;;
+  waybar) exec "$ENGINE" --waybar ;;
+  log) exec tail -n 50 -F "$STATE_DIR/backup.log" ;;
+  -h|--help|help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command: $1 (try --help)" ;;
+esac

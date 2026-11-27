@@ -1,0 +1,15 @@
+[Unit]
+Description=GDrive Backup Tiger: back up Google Drive
+Documentation=https://github.com/AlexanderSmyslowski/gdrive-tiger-backup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=GDRIVE_BACKUP_TRIGGER=schedule
+ExecStart=%h/.local/share/gdrive-tiger-backup/bin/backup-google-drive.sh --run
+Nice=10
+IOSchedulingClass=idle
+# The engine keeps its own log in ~/.local/state/gdrive-tiger-backup.
+StandardOutput=null
+StandardError=journal

@@ -105,6 +105,8 @@ brew install rclone flock jq
   encryption, launchd and packaging
 - [Encryption](docs/encryption.md) · [Version history](docs/version-history.md)
   · [Signing and release](docs/signing-and-release.md)
+- [Linux edition (preview)](docs/linux.md): command, systemd timer,
+  notifications and a Waybar module for Omarchy and other Linux setups
 - [Plan for the public launch](docs/public-launch-plan.md) ·
   [Linux edition plan](docs/linux-omarchy-plan.md)
 

@@ -26,6 +26,9 @@
 #                               "uuid TAB device TAB bytes TAB solid TAB bus"
 #                               for the disk holding PATH; solid is yes, no or
 #                               empty, unknown fields stay empty
+#   platform_notify TITLE BODY URGENCY
+#                               desktop notification (URGENCY normal|critical);
+#                               a no-op where the app shows notifications
 #   platform_confirm_dialog_available
 #   platform_confirm_dialog TITLE DETAIL PRIMARY SECONDARY
 #                               prints "yes" or "no"
@@ -132,6 +135,12 @@ platform_destination_device_info() {
   bus="$(display_metadata_value "$(plist_data_value "$whole_plist" BusProtocol || true)")"
   [[ "$uuid" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || uuid=""
   printf '%s\t%s\t%s\t%s\t%s\n' "$uuid" "${device//$'\t'/ }" "$size" "$solid" "${bus//$'\t'/ }"
+}
+
+# The macOS app shows notifications itself (NotificationSupport); the engine
+# stays silent so nothing is announced twice.
+platform_notify() {
+  return 0
 }
 
 platform_confirm_dialog_available() {

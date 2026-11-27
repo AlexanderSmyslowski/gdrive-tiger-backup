@@ -89,6 +89,8 @@ test: test-retry-countdown test-native-scheduled-backup
 	bash tests/backup-robustness-test.sh
 	bash tests/platform-time-test.sh
 	bash tests/platform-contract-test.sh
+	bash tests/status-output-test.sh
+	bash tests/linux-install-test.sh
 	bash tests/linux-nas-safety-test.sh
 	bash tests/platform-linux-test.sh
 	bash tests/nas-name-codec-integration-test.sh
@@ -337,9 +339,9 @@ test-native: test-test-application-support
 			-o "$$NETWORK_MOUNT_TEST_BIN"; \
 		"$$NETWORK_MOUNT_TEST_BIN"; \
 		./scripts/trash-path.sh "$$NETWORK_MOUNT_TEST_BIN"
-	bash -n bin/backup-google-drive.sh lib/*.sh install.sh packaging/build-pkg.sh packaging/verify-pkg.sh packaging/scripts/postinstall scripts/*.sh tests/*.sh
+	bash -n bin/backup-google-drive.sh lib/*.sh install.sh packaging/linux/install.sh packaging/linux/gdrive-tiger-backup packaging/build-pkg.sh packaging/verify-pkg.sh packaging/scripts/postinstall scripts/*.sh tests/*.sh
 	plutil -lint launchd/com.commcats.gdrivebackup.plist macos/GDriveBackupTiger/Info.plist
-	shellcheck -x bin/backup-google-drive.sh lib/*.sh install.sh packaging/build-pkg.sh packaging/verify-pkg.sh packaging/scripts/postinstall scripts/*.sh tests/*.sh
+	shellcheck -x bin/backup-google-drive.sh lib/*.sh install.sh packaging/linux/install.sh packaging/linux/gdrive-tiger-backup packaging/build-pkg.sh packaging/verify-pkg.sh packaging/scripts/postinstall scripts/*.sh tests/*.sh
 
 clean:
 	@for path in build dist; do if [ -e "$$path" ]; then ./scripts/trash-path.sh "$$path"; fi; done
@@ -368,3 +370,7 @@ test-engine-portable:
 	bash tests/linux-nas-safety-test.sh
 	bash tests/platform-linux-test.sh
 	bash tests/backup-versioning-test.sh
+	bash tests/backup-outcome-test.sh
+	bash tests/backup-robustness-test.sh
+	bash tests/status-output-test.sh
+	bash tests/linux-install-test.sh
