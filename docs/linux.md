@@ -68,6 +68,15 @@ policy; under **Branding** enter
 under **Audience**. Google shows "app not verified" once at sign-in; it is your
 own app.
 
+**Let an AI agent do it.** `gdrive-tiger-backup agent` starts your default
+agent on Omarchy (Claude Code, Codex, OpenCode, …) with a step-by-step guide
+that ships with the backup
+([`packaging/agent-skill/gdrive-backup-google-setup/SKILL.md`](../packaging/agent-skill/gdrive-backup-google-setup/SKILL.md)).
+It walks you through the console one page at a time, finds the downloaded file,
+connects, asks for the backup disk and runs a dry run. It never sees your
+Google password and never shows the client file. Without Omarchy the command
+prints the task to give any agent.
+
 An existing remote that still uses rclone's client is offered the switch in
 `setup`, or later with `gdrive-tiger-backup connect`. It is switched only after
 a temporary remote has signed in and read Drive, and never while a backup runs.
@@ -85,6 +94,7 @@ gdrive-tiger-backup run             back up now
 gdrive-tiger-backup log             follow the backup log
 gdrive-tiger-backup connect         (re)connect Google Drive with your own client
 gdrive-tiger-backup omarchy-menu    add a Drive Backup submenu to the Omarchy menu
+gdrive-tiger-backup agent           let your AI agent guide you through the setup
 ```
 
 The timer starts the engine every hour. From 20:00 it backs up once a day;

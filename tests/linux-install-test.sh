@@ -32,6 +32,7 @@ run_installer() {
 if output="$(run_installer 2>&1)" &&
    [[ -x "$WORK/home/.local/share/gdrive-tiger-backup/bin/backup-google-drive.sh" &&
       -f "$WORK/home/.local/share/gdrive-tiger-backup/lib/platform-linux.sh" &&
+      -f "$WORK/home/.local/share/gdrive-tiger-backup/agent-skill/gdrive-backup-google-setup/SKILL.md" &&
       -x "$WORK/home/.local/bin/gdrive-tiger-backup" &&
       -f "$WORK/home/.config/systemd/user/gdrive-tiger-backup.service" &&
       -f "$WORK/home/.config/systemd/user/gdrive-tiger-backup.timer" ]]; then

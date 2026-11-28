@@ -54,10 +54,12 @@ if [[ -z "$rclone_version" ]] ||
   say "  Backups to a network share need $MIN_RCLONE or later: https://rclone.org/install/"
 fi
 
-install -d -m 755 "$SHARE_DIR/bin" "$SHARE_DIR/lib" "$BIN_DIR" "$UNIT_DIR"
+install -d -m 755 "$SHARE_DIR/bin" "$SHARE_DIR/lib" "$SHARE_DIR/agent-skill/gdrive-backup-google-setup" "$BIN_DIR" "$UNIT_DIR"
 install -m 755 "$ROOT/bin/backup-google-drive.sh" "$SHARE_DIR/bin/backup-google-drive.sh"
 install -m 644 "$ROOT/lib/platform-linux.sh" "$SHARE_DIR/lib/platform-linux.sh"
 install -m 755 "$ROOT/packaging/linux/gdrive-tiger-backup" "$BIN_DIR/gdrive-tiger-backup"
+install -m 644 "$ROOT/packaging/agent-skill/gdrive-backup-google-setup/SKILL.md" \
+  "$SHARE_DIR/agent-skill/gdrive-backup-google-setup/SKILL.md"
 install -m 644 "$ROOT/packaging/linux/gdrive-tiger-backup.service" "$UNIT_DIR/gdrive-tiger-backup.service"
 install -m 644 "$ROOT/packaging/linux/gdrive-tiger-backup.timer" "$UNIT_DIR/gdrive-tiger-backup.timer"
 systemctl_user daemon-reload
