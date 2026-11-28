@@ -4803,6 +4803,14 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         (yesterday && [calendar isDate:date inSameDayAsDate:yesterday])) {
         formatter.dateStyle = NSDateFormatterShortStyle;
         formatter.doesRelativeDateFormatting = YES;
+        // Relative formatting always compares with the real current day, not
+        // with `now`. Move the date by the same number of calendar days so
+        // "Today"/"Yesterday" are relative to `now`; the wall-clock time stays.
+        NSInteger dayOffset = [calendar components:NSCalendarUnitDay
+                                          fromDate:[calendar startOfDayForDate:now]
+                                            toDate:[calendar startOfDayForDate:[NSDate date]]
+                                           options:0].day;
+        date = [calendar dateByAddingUnit:NSCalendarUnitDay value:dayOffset toDate:date options:0] ?: date;
     } else {
         BOOL sameYear = [calendar component:NSCalendarUnitYear fromDate:date] ==
             [calendar component:NSCalendarUnitYear fromDate:now];
