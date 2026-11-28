@@ -53,9 +53,12 @@ and a clear status. No Terminal needed.
    **System Settings › Privacy & Security**, click **Open Anyway** next to the
    package, and confirm.
 2. **Set up in the app.** Open *GDrive Backup Tiger*, click **Set up backup …**,
-   click **Connect Google** (your browser opens Google's sign-in; the app only
-   asks for read access), choose an external disk or your NAS and a schedule,
-   then **Save**.
+   click **Connect Google**, choose an external disk or your NAS and a
+   schedule, then **Save**. Connecting walks you once through creating your own
+   free Google access client (about 3 minutes in the Google Cloud console; the
+   app opens each page and picks up the downloaded file itself), then your
+   browser asks for read access. This is needed because Google is retiring the
+   shared client built into rclone.
 
 The installer includes `rclone` and `jq`, so Homebrew is not required. If
 Homebrew versions are installed, the app and the engine prefer them and keep
@@ -70,17 +73,21 @@ their updates.
    › Datenschutz & Sicherheit** öffnen, bei dem Paket **Dennoch öffnen** klicken
    und bestätigen.
 2. **In der App einrichten:** *GDrive Backup Tiger* öffnen, **Backup einrichten …**
-   wählen, **Mit Google verbinden** klicken (der Browser öffnet die Google-Anmeldung;
-   die App fragt nur Lesezugriff an), externe Festplatte oder NAS und Zeitplan
-   wählen, **Speichern**.
+   wählen, **Mit Google verbinden** klicken, externe Festplatte oder NAS und
+   Zeitplan wählen, **Speichern**. Beim Verbinden führt die App einmalig durch
+   das Anlegen einer eigenen, kostenlosen Google-Zugangskennung (etwa 3 Minuten
+   in der Google-Cloud-Konsole; die App öffnet jede Seite und übernimmt die
+   heruntergeladene Datei selbst), danach fragt der Browser nach Lesezugriff.
+   Nötig ist das, weil Google die in rclone eingebaute gemeinsame Kennung
+   abschaltet.
 
 `rclone` und `jq` sind im Installationspaket enthalten, Homebrew ist nicht nötig.
 Sind Homebrew-Versionen installiert, nutzen App und Backup-Routine diese und
 behalten so deren Updates.
 
-Current release: `v2.9.1` with updates installed from the app (daily check, verified download, macOS administrator prompt), a history of completed backups per destination (named drives, SSD/HDD, expandable runs), setup that needs no Terminal (Google sign-in from the app, rclone and jq included in the installer), plain-language status and setup texts, automatic catch-up of missed daily backups, NAS mounting without a Keychain grant after each update, a watchdog that stops a copy when the NAS disappears, early detection of missing macOS privacy access, no more Trash or destination clutter, one-run destination selection in the main window, automatic NAS retries that wait for another backup to finish, a fail-closed APFS volume-creation contract, macOS-15-compatible physical-disk identity in external-backup confirmations, visible aggregate check activity when a byte total is unavailable, quiet recovery confirmations and opt-in routine success notifications, a truthful running state for automatic retries, private current-phase progress in the overview and menu bar, silent authenticated and guest SMB mounting, one current persistent automatic-failure alert, a safe retry for transient NAS read failures, passive handling of unknown external disks, verified APFS and NAS identity, one coherent Dock presence, optional end-to-end `rclone crypt` backups, retained versions, verified recovery, named profiles, diagnostics, and a persistent menu bar overview.
+Current release: `v2.10.0` with your own Google connection set up from the app (an assistant for the Google Cloud console, because Google is retiring rclone's shared client), updates installed from the app (daily check, verified download, macOS administrator prompt), a history of completed backups per destination (named drives, SSD/HDD, expandable runs), setup that needs no Terminal (Google sign-in from the app, rclone and jq included in the installer), plain-language status and setup texts, automatic catch-up of missed daily backups, NAS mounting without a Keychain grant after each update, a watchdog that stops a copy when the NAS disappears, early detection of missing macOS privacy access, no more Trash or destination clutter, one-run destination selection in the main window, automatic NAS retries that wait for another backup to finish, a fail-closed APFS volume-creation contract, macOS-15-compatible physical-disk identity in external-backup confirmations, visible aggregate check activity when a byte total is unavailable, quiet recovery confirmations and opt-in routine success notifications, a truthful running state for automatic retries, private current-phase progress in the overview and menu bar, silent authenticated and guest SMB mounting, one current persistent automatic-failure alert, a safe retry for transient NAS read failures, passive handling of unknown external disks, verified APFS and NAS identity, one coherent Dock presence, optional end-to-end `rclone crypt` backups, retained versions, verified recovery, named profiles, diagnostics, and a persistent menu bar overview.
 
-The release installer is `GDrive-Backup-Tiger-2.9.1.pkg`, accompanied by `SHA256SUMS.txt` on the [release page](https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/tag/v2.9.1). It is unsigned; see the Gatekeeper instructions below. Fresh-account installation and dry-run tests on macOS 13 and the current macOS release have not yet been completed; CI checks deployment metadata and both binary architectures, not that runtime coverage.
+The release installer is `GDrive-Backup-Tiger-2.10.0.pkg`, accompanied by `SHA256SUMS.txt` on the [release page](https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/releases/tag/v2.10.0). It is unsigned; see the Gatekeeper instructions below. Fresh-account installation and dry-run tests on macOS 13 and the current macOS release have not yet been completed; CI checks deployment metadata and both binary architectures, not that runtime coverage.
 
 ## Requirements
 

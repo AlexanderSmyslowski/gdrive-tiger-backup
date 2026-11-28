@@ -49,6 +49,23 @@ configuration, history and backups.
 `setup` connects Google Drive (read-only, in the browser), asks for the backup
 folder and enables the daily schedule.
 
+### Your own Google connection
+
+Google retires the sign-in client built into rclone during 2026, so the backup
+signs in with a client in your own Google Cloud project. `setup` lists the five
+console pages to open (new project, enable the Drive API, Google sign-in setup,
+for a private Gmail account "Publish app", and a client of type **Desktop
+app**). Click **Download JSON**; `setup` finds the newest `client_secret_*.json`
+in `~/Downloads`, checks it, keeps a private copy in
+`~/.config/gdrive-tiger-backup/google-oauth-client.json` and signs in.
+
+An existing remote that still uses rclone's client is offered the switch in
+`setup`, or later with `gdrive-tiger-backup connect`. It is switched only after
+a temporary remote has signed in and read Drive, and never while a backup runs.
+
+On a machine without a browser, connect over SSH from your computer with
+`ssh -L 53682:127.0.0.1:53682 <machine>` and open the link that rclone prints.
+
 ## Use
 
 ```text
@@ -57,6 +74,7 @@ gdrive-tiger-backup status --json   the same for scripts
 gdrive-tiger-backup check           dry run: show what would be copied
 gdrive-tiger-backup run             back up now
 gdrive-tiger-backup log             follow the backup log
+gdrive-tiger-backup connect         (re)connect Google Drive with your own client
 ```
 
 The timer starts the engine every hour. From 20:00 it backs up once a day;

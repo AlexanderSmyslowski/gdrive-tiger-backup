@@ -30,7 +30,7 @@ body:
     id: versions
     attributes:
       label: App and macOS version
-      placeholder: "e.g. GDrive Backup Tiger 2.9.1, macOS 15.2, Apple silicon"
+      placeholder: "e.g. GDrive Backup Tiger 2.10.0, macOS 15.2, Apple silicon"
     validations:
       required: true
   - type: textarea

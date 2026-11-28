@@ -2,6 +2,8 @@
 # gdrive-tiger-backup: command-line front end of the Linux edition.
 #   gdrive-tiger-backup setup        connect Google Drive, choose a destination,
 #                                    enable the daily schedule
+#   gdrive-tiger-backup connect      (re)connect Google Drive with your own
+#                                    Google client
 #   gdrive-tiger-backup run          back up now
 #   gdrive-tiger-backup check        dry run: show what would be copied
 #   gdrive-tiger-backup status [--json]
@@ -15,6 +17,8 @@ CONFIG_DIR="${GDRIVE_BACKUP_CONFIG_DIR:-$HOME/.config/gdrive-tiger-backup}"
 CONFIG_FILE="$CONFIG_DIR/config"
 STATE_DIR="$HOME/.local/state/gdrive-tiger-backup"
 REMOTE="${RCLONE_REMOTE:-gdrive}"
+CLIENT_FILE="$CONFIG_DIR/google-oauth-client.json"
+LOCK_FILE="${GDRIVE_BACKUP_LOCK:-$STATE_DIR/backup.lock}"
 
 die() { printf 'gdrive-tiger-backup: %s\n' "$*" >&2; exit 1; }
 [[ -x "$ENGINE" ]] || die "engine not found at $ENGINE; run the installer again"
@@ -45,20 +49,145 @@ write_config() {
   mv -f "$tmp" "$CONFIG_FILE"
 }
 
+# --- Own Google connection --------------------------------------------------
+# Google retires the OAuth client built into rclone during 2026. Each user
+# creates a "Desktop app" client in their own Google Cloud project; the
+# downloaded file is read here, so nobody has to copy the secret by hand.
+
+remote_exists() {
+  rclone listremotes 2>/dev/null | grep -qxF "$REMOTE:"
+}
+
+remote_client_id() {
+  rclone config show "$REMOTE" 2>/dev/null | sed -n 's/^client_id = //p' | head -n 1
+}
+
+# Prints "client_id TAB client_secret" from a downloaded Desktop-app client file.
+read_google_client() {
+  local pair id secret
+  pair="$(jq -er '.installed | select(type == "object") | [.client_id, .client_secret] | @tsv' "$1" 2>/dev/null)" || return 1
+  IFS=$'\t' read -r id secret <<<"$pair"
+  [[ "$id" =~ ^[0-9]{1,32}-[a-z0-9]{1,64}\.apps\.googleusercontent\.com$ &&
+     "$secret" =~ ^[A-Za-z0-9_-]{8,128}$ ]] || return 1
+  printf '%s\t%s' "$id" "$secret"
+}
+
+newest_download() {
+  local file newest="" downloads="${XDG_DOWNLOAD_DIR:-$HOME/Downloads}"
+  for file in "$downloads"/client_secret_*.json; do
+    [[ -f "$file" && ( -z "$newest" || "$file" -nt "$newest" ) ]] && newest="$file"
+  done
+  printf '%s' "$newest"
+}
+
+# Asks for the client file (or takes the saved copy), checks it and keeps a
+# private copy. Sets GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.
+choose_google_client() {
+  local file="" found pair answer
+  if [[ -f "$CLIENT_FILE" ]] && pair="$(read_google_client "$CLIENT_FILE")"; then
+    read -r -p "Use your saved Google client (${pair%%-*}-…)? [Y/n]: " answer
+    [[ "${answer:-y}" =~ ^[Yy] ]] && file="$CLIENT_FILE"
+  fi
+  if [[ -z "$file" ]]; then
+    printf '\nThe backup signs in to Google with your own client. Create it once (about 5 minutes):\n'
+    printf '  1. New project:    https://console.cloud.google.com/projectcreate\n'
+    printf '  2. Drive API:      https://console.cloud.google.com/apis/library/drive.googleapis.com  (Enable)\n'
+    printf '  3. Google sign-in: https://console.cloud.google.com/auth/overview  (Get started; Workspace: Internal)\n'
+    printf '  4. Only for a private Gmail account: https://console.cloud.google.com/auth/audience  (Publish app)\n'
+    printf '  5. Client:         https://console.cloud.google.com/auth/clients/create\n'
+    printf '     Type "Desktop app", Create, then "Download JSON".\n\n'
+    found="$(newest_download)"
+    file="$(ask 'Downloaded client file' "$found")"
+  fi
+  [[ -f "$file" ]] || die "no client file at $file"
+  if ! pair="$(read_google_client "$file")"; then
+    if jq -e '.web' "$file" >/dev/null 2>&1; then
+      die "this is a web client; create a client of type \"Desktop app\""
+    fi
+    die "this is not a Google client file (expected the JSON from \"Download JSON\")"
+  fi
+  GOOGLE_CLIENT_ID="${pair%%$'\t'*}"
+  GOOGLE_CLIENT_SECRET="${pair#*$'\t'}"
+  if [[ "$file" != "$CLIENT_FILE" ]]; then
+    (umask 077 && mkdir -p "$CONFIG_DIR" && cp -f "$file" "$CLIENT_FILE.tmp" && mv -f "$CLIENT_FILE.tmp" "$CLIENT_FILE")
+    printf 'Saved a private copy as %s; you can delete the download.\n' "$CLIENT_FILE"
+  fi
+}
+
+# Signs in with the own client. An existing remote is switched only after a
+# temporary remote has signed in and read Drive, and only while holding the
+# engine's run lock, so a running backup cannot write its old token back.
+connect_google() {
+  local temp token
+  command -v jq >/dev/null || die "jq is missing"
+  choose_google_client
+  printf '\nA browser opens for Google sign-in; the backup asks for read-only access.\n'
+  printf 'On a machine without a browser, connect from your computer with\n'
+  printf '  ssh -L 53682:127.0.0.1:53682 <this machine>\n'
+  printf 'and open the link rclone prints.\n'
+
+  if ! remote_exists; then
+    rclone config create "$REMOTE" drive client_id="$GOOGLE_CLIENT_ID" \
+      client_secret="$GOOGLE_CLIENT_SECRET" scope=drive.readonly >/dev/null ||
+      die "Google sign-in did not finish"
+    rclone about "$REMOTE:" >/dev/null 2>&1 || die "signed in, but Google Drive could not be read"
+    printf 'Google Drive connected with your own client.\n'
+    return
+  fi
+
+  temp="${REMOTE:0:50}-tiger-new"
+  rclone config delete "$temp" >/dev/null 2>&1 || true
+  if ! rclone config create "$temp" drive client_id="$GOOGLE_CLIENT_ID" \
+       client_secret="$GOOGLE_CLIENT_SECRET" scope=drive.readonly >/dev/null; then
+    rclone config delete "$temp" >/dev/null 2>&1 || true
+    die "Google sign-in did not finish; \"$REMOTE:\" is unchanged"
+  fi
+  token="$(rclone config show "$temp" 2>/dev/null | sed -n 's/^token = //p' | head -n 1)"
+  if [[ -z "$token" ]] || ! rclone about "$temp:" >/dev/null 2>&1; then
+    rclone config delete "$temp" >/dev/null 2>&1 || true
+    die "signed in, but Google Drive could not be read; \"$REMOTE:\" is unchanged"
+  fi
+
+  mkdir -p "$(dirname "$LOCK_FILE")"
+  exec 8>>"$LOCK_FILE"
+  if ! flock -n 8; then
+    exec 8>&-
+    rclone config delete "$temp" >/dev/null 2>&1 || true
+    die "a backup is running; run \"gdrive-tiger-backup connect\" again when it has finished"
+  fi
+  if ! rclone config update "$REMOTE" client_id="$GOOGLE_CLIENT_ID" \
+       client_secret="$GOOGLE_CLIENT_SECRET" scope=drive.readonly token="$token" \
+       config_refresh_token=false --non-interactive >/dev/null; then
+    exec 8>&-
+    rclone config delete "$temp" >/dev/null 2>&1 || true
+    die "switching \"$REMOTE:\" failed"
+  fi
+  exec 8>&-
+  rclone config delete "$temp" >/dev/null 2>&1 || true
+  rclone about "$REMOTE:" >/dev/null 2>&1 || die "switched, but Google Drive could not be read with \"$REMOTE:\""
+  printf 'Google Drive "%s:" now uses your own client.\n' "$REMOTE"
+}
+
 setup() {
   command -v rclone >/dev/null || die "rclone is missing; install it from https://rclone.org/install/"
   printf 'GDrive Backup Tiger setup\n\n'
 
-  # 1. Google Drive, read-only.
-  if rclone listremotes 2>/dev/null | grep -qx "$REMOTE:"; then
-    printf 'Google Drive: rclone remote "%s:" found.\n' "$REMOTE"
-  else
+  # 1. Google Drive, read-only, through the user's own Google client.
+  local answer
+  if ! remote_exists; then
     printf 'Google Drive: no rclone remote "%s:" yet.\n' "$REMOTE"
-    printf 'A browser window opens for Google sign-in. The backup asks for read-only access.\n'
-    read -r -p 'Connect now? [Y/n]: ' answer
-    [[ "${answer:-y}" =~ ^[Yy] ]] || die "setup needs a Google Drive remote"
-    rclone config create "$REMOTE" drive scope=drive.readonly >/dev/null
-    rclone listremotes | grep -qx "$REMOTE:" || die "connecting Google Drive failed"
+    connect_google
+  elif [[ -z "$(remote_client_id)" ]]; then
+    printf 'Google Drive: "%s:" still uses the Google connection built into rclone,\n' "$REMOTE"
+    printf 'which Google retires during 2026. Backups stop working then.\n'
+    read -r -p 'Set up your own connection now? [Y/n]: ' answer
+    if [[ "${answer:-y}" =~ ^[Yy] ]]; then
+      connect_google
+    else
+      printf 'Kept for now. Run "gdrive-tiger-backup connect" later.\n'
+    fi
+  else
+    printf 'Google Drive: rclone remote "%s:" uses its own Google connection.\n' "$REMOTE"
   fi
 
   # 2. Destination: a folder on a mounted disk, or on a mounted network share.
@@ -118,6 +247,10 @@ setup() {
 
 case "${1:-status}" in
   setup) setup ;;
+  connect)
+    command -v rclone >/dev/null || die "rclone is missing; install it from https://rclone.org/install/"
+    connect_google
+    ;;
   run) exec "$ENGINE" --run ;;
   check) exec "$ENGINE" --dry-run ;;
   status)
@@ -126,6 +259,6 @@ case "${1:-status}" in
     ;;
   waybar) exec "$ENGINE" --waybar ;;
   log) exec tail -n 50 -F "$STATE_DIR/backup.log" ;;
-  -h|--help|help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $1 (try --help)" ;;
 esac
