@@ -57,8 +57,8 @@ prepare_test_environment() {
     BACKUP_LOG="$TEST_HOME/Library/Logs/gdrive-backup.log"
     SUMMARY="$TEST_HOME/Library/Application Support/GDrive Backup Tiger/last-run.status"
   else
-    BACKUP_LOG="$TEST_HOME/.local/state/gdrive-tiger-backup/backup.log"
-    SUMMARY="$TEST_HOME/.local/state/gdrive-tiger-backup/last-run.status"
+    BACKUP_LOG="$TEST_HOME/.local/state/drive-backup/backup.log"
+    SUMMARY="$TEST_HOME/.local/state/drive-backup/last-run.status"
   fi
   FAKE_NOW="$(/bin/date '+%s')"
   mkdir -p "$FAKE_BIN" "$NAS_MOUNT" "$FAKE_TRASH_DIR" "$TEST_TMP" "${SUMMARY%/*}"

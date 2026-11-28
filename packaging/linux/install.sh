@@ -1,15 +1,15 @@
 #!/bin/bash
 # Installs the Linux edition of GDrive Backup Tiger for the current user,
 # without root:
-#   ~/.local/share/gdrive-tiger-backup/{bin,lib}   engine and platform file
-#   ~/.local/bin/gdrive-tiger-backup               command
-#   ~/.config/systemd/user/gdrive-tiger-backup.*   service and hourly timer
+#   ~/.local/share/drive-backup/{bin,lib}   engine and platform file
+#   ~/.local/bin/drive-backup               command
+#   ~/.config/systemd/user/drive-backup.*   service and hourly timer
 # Run it again to update; configuration and history are kept.
 # Usage: packaging/linux/install.sh [--uninstall]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-SHARE_DIR="${GDRIVE_TIGER_SHARE_DIR:-$HOME/.local/share/gdrive-tiger-backup}"
+SHARE_DIR="${DRIVE_BACKUP_SHARE_DIR:-$HOME/.local/share/drive-backup}"
 BIN_DIR="${GDRIVE_TIGER_BIN_DIR:-$HOME/.local/bin}"
 UNIT_DIR="${GDRIVE_TIGER_UNIT_DIR:-$HOME/.config/systemd/user}"
 MIN_RCLONE="1.70.0"
@@ -21,18 +21,18 @@ die() { printf 'install: %s\n' "$*" >&2; exit 1; }
 
 systemctl_user() {
   command -v systemctl >/dev/null 2>&1 || return 0
-  [[ "${GDRIVE_TIGER_SKIP_SYSTEMCTL:-0}" == "1" ]] && return 0
+  [[ "${DRIVE_BACKUP_SKIP_SYSTEMCTL:-0}" == "1" ]] && return 0
   systemctl --user "$@" || true
 }
 
 if [[ "${1:-}" == "--uninstall" ]]; then
-  systemctl_user disable --now gdrive-tiger-backup.timer
-  rm -f "$UNIT_DIR/gdrive-tiger-backup.service" "$UNIT_DIR/gdrive-tiger-backup.timer" \
-        "$BIN_DIR/gdrive-tiger-backup"
+  systemctl_user disable --now drive-backup.timer
+  rm -f "$UNIT_DIR/drive-backup.service" "$UNIT_DIR/drive-backup.timer" \
+        "$BIN_DIR/drive-backup"
   rm -rf "$SHARE_DIR"
   systemctl_user daemon-reload
-  say "Removed the program. Configuration (~/.config/gdrive-tiger-backup), history and"
-  say "log (~/.local/state/gdrive-tiger-backup) and your backups are untouched."
+  say "Removed the program. Configuration (~/.config/drive-backup), history and"
+  say "log (~/.local/state/drive-backup) and your backups are untouched."
   exit 0
 fi
 
@@ -54,19 +54,19 @@ if [[ -z "$rclone_version" ]] ||
   say "  Backups to a network share need $MIN_RCLONE or later: https://rclone.org/install/"
 fi
 
-install -d -m 755 "$SHARE_DIR/bin" "$SHARE_DIR/lib" "$SHARE_DIR/agent-skill/gdrive-backup-google-setup" "$BIN_DIR" "$UNIT_DIR"
+install -d -m 755 "$SHARE_DIR/bin" "$SHARE_DIR/lib" "$SHARE_DIR/agent-skill/drive-backup-google-setup" "$BIN_DIR" "$UNIT_DIR"
 install -m 755 "$ROOT/bin/backup-google-drive.sh" "$SHARE_DIR/bin/backup-google-drive.sh"
 install -m 644 "$ROOT/lib/platform-linux.sh" "$SHARE_DIR/lib/platform-linux.sh"
-install -m 755 "$ROOT/packaging/linux/gdrive-tiger-backup" "$BIN_DIR/gdrive-tiger-backup"
-install -m 644 "$ROOT/packaging/agent-skill/gdrive-backup-google-setup/SKILL.md" \
-  "$SHARE_DIR/agent-skill/gdrive-backup-google-setup/SKILL.md"
-install -m 644 "$ROOT/packaging/linux/gdrive-tiger-backup.service" "$UNIT_DIR/gdrive-tiger-backup.service"
-install -m 644 "$ROOT/packaging/linux/gdrive-tiger-backup.timer" "$UNIT_DIR/gdrive-tiger-backup.timer"
+install -m 755 "$ROOT/packaging/linux/drive-backup" "$BIN_DIR/drive-backup"
+install -m 644 "$ROOT/packaging/agent-skill/drive-backup-google-setup/SKILL.md" \
+  "$SHARE_DIR/agent-skill/drive-backup-google-setup/SKILL.md"
+install -m 644 "$ROOT/packaging/linux/drive-backup.service" "$UNIT_DIR/drive-backup.service"
+install -m 644 "$ROOT/packaging/linux/drive-backup.timer" "$UNIT_DIR/drive-backup.timer"
 systemctl_user daemon-reload
 
-say "Installed GDrive Backup Tiger for Linux."
+say "Installed Drive Backup for Linux."
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) say "Note: $BIN_DIR is not on your PATH; add it to your shell profile." ;;
 esac
-say "Next: gdrive-tiger-backup setup"
+say "Next: drive-backup setup"

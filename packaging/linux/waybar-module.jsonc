@@ -1,11 +1,11 @@
 // Add to ~/.config/waybar/config.jsonc, then put "custom/gdrive-backup" into
 // "modules-right" (or another modules list).
 "custom/gdrive-backup": {
-  "exec": "gdrive-tiger-backup waybar",
+  "exec": "drive-backup waybar",
   "return-type": "json",
   "interval": 300,
   "format": "GDrive {}",
-  "on-click": "alacritty -e gdrive-tiger-backup log"
+  "on-click": "alacritty -e drive-backup log"
 }
 
 // Optional, ~/.config/waybar/style.css:

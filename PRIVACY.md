@@ -1,6 +1,6 @@
 # Privacy
 
-GDrive Tiger Backup copies your Google Drive to a disk or network share you
+GDrive Tiger Backup (on Linux: Drive Backup) copies your Google Drive to a disk or network share you
 choose. It runs entirely on your own computer. There is no server of this
 project, no account with us, no analytics and no telemetry.
 
@@ -21,10 +21,10 @@ Everything stays on your computer:
   (`~/.config/rclone/rclone.conf`),
 - a private copy of your Google client file (macOS:
   `~/Library/Application Support/GDrive Backup Tiger/`, Linux:
-  `~/.config/gdrive-tiger-backup/`),
+  `~/.config/drive-backup/`),
 - settings, logs, status and a run history (macOS: `~/Library/Logs` and
   `~/Library/Application Support/GDrive Backup Tiger/`, Linux:
-  `~/.local/state/gdrive-tiger-backup/`),
+  `~/.local/state/drive-backup/`),
 - the backup itself on your destination.
 
 Removing the program leaves these in place; delete them yourself if you want

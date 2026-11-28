@@ -1,5 +1,9 @@
 # Plan: Linux edition for Omarchy and a local MCP server for AI assistants
 
+> Since 2026-11-28 the Linux edition is called Drive Backup: the command
+> `gdrive-tiger-backup` below is now `drive-backup`, with folders and systemd
+> units renamed to match. This plan keeps the names it was written with.
+
 Status (2026-11-27): phases 1–3 done as a preview (see `docs/linux.md`); a full
 backup of a real Google Drive on Linux is still open. Written 2026-11-16 after v2.7.0.
 

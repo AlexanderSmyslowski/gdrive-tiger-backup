@@ -1,12 +1,12 @@
 #!/bin/bash
-# "gdrive-tiger-backup connect" of the Linux edition: reads the user's own
+# "drive-backup connect" of the Linux edition: reads the user's own
 # Google client file, connects a new remote, switches an existing remote only
 # after a temporary remote has signed in, and never while a backup runs.
 # rclone is replaced by a recording fake; nothing talks to Google.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-COMMAND="$ROOT/packaging/linux/gdrive-tiger-backup"
+COMMAND="$ROOT/packaging/linux/drive-backup"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/gdrive-linux-connect.XXXXXX")"
 failures=0
 trap '"$ROOT/scripts/trash-path.sh" "$WORK" >/dev/null 2>&1 || true' EXIT
@@ -58,7 +58,7 @@ new_home() {
 }
 run_connect() {
   printf '%s' "${1:-}" | env HOME="$HOME_DIR" PATH="$WORK/fakebin:$PATH" FAKE_RCLONE_DIR="$RC" \
-    GDRIVE_TIGER_SHARE_DIR="$WORK/share" FAKE_RCLONE_FAIL_CREATE="${FAIL_CREATE:-0}" \
+    DRIVE_BACKUP_SHARE_DIR="$WORK/share" FAKE_RCLONE_FAIL_CREATE="${FAIL_CREATE:-0}" \
     /bin/bash "$COMMAND" connect 2>&1
 }
 desktop_json() { printf '{"installed":{"client_id":"%s","project_id":"p","client_secret":"%s"}}\n' "$ID" "$SECRET"; }
@@ -67,7 +67,7 @@ desktop_json() { printf '{"installed":{"client_id":"%s","project_id":"p","client
 new_home new
 desktop_json >"$HOME_DIR/Downloads/client_secret_42.json"
 output="$(run_connect $'\n')"
-saved="$HOME_DIR/.config/gdrive-tiger-backup/google-oauth-client.json"
+saved="$HOME_DIR/.config/drive-backup/google-oauth-client.json"
 if grep -q "^client_id = $ID$" "$RC/remotes/gdrive" &&
    grep -q '^scope = drive.readonly$' "$RC/remotes/gdrive" &&
    [[ -f "$saved" && "$(stat -c '%a' "$saved" 2>/dev/null || stat -f '%Lp' "$saved")" == 600 ]] &&
@@ -83,9 +83,9 @@ printf 'type = drive\nscope = drive.readonly\ntoken = {"access_token":"old"}\n' 
 desktop_json >"$HOME_DIR/Downloads/client_secret_42.json"
 output="$(run_connect $'\n')"
 if grep -q "^client_id = $ID$" "$RC/remotes/gdrive" &&
-   grep -q '^token = {"access_token":"new-gdrive-tiger-new"}$' "$RC/remotes/gdrive" &&
+   grep -q '^token = {"access_token":"new-gdrive-backup-new"}$' "$RC/remotes/gdrive" &&
    grep -q 'config_refresh_token=false --non-interactive$' "$RC/calls.log" &&
-   [[ ! -e "$RC/remotes/gdrive-tiger-new" ]]; then
+   [[ ! -e "$RC/remotes/gdrive-backup-new" ]]; then
   pass "an existing remote takes the token of the signed-in temporary remote, which is removed"
 else
   fail "switch: $output"
@@ -95,7 +95,7 @@ fi
 new_home busy
 printf 'type = drive\ntoken = {"access_token":"old"}\n' >"$RC/remotes/gdrive"
 desktop_json >"$HOME_DIR/Downloads/client_secret_42.json"
-lock="$HOME_DIR/.local/state/gdrive-tiger-backup/backup.lock"
+lock="$HOME_DIR/.local/state/drive-backup/backup.lock"
 mkdir -p "${lock%/*}"
 flock "$lock" sleep 30 &
 holder=$!
@@ -104,7 +104,7 @@ output="$(run_connect $'\n')"
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 if [[ "$output" == *"a backup is running"* ]] &&
    grep -q '"old"' "$RC/remotes/gdrive" && ! grep -q client_id "$RC/remotes/gdrive" &&
-   [[ ! -e "$RC/remotes/gdrive-tiger-new" ]]; then
+   [[ ! -e "$RC/remotes/gdrive-backup-new" ]]; then
   pass "while a backup holds the run lock the remote stays unchanged"
 else
   fail "busy lock: $output"
@@ -116,7 +116,7 @@ printf 'type = drive\ntoken = {"access_token":"old"}\n' >"$RC/remotes/gdrive"
 desktop_json >"$HOME_DIR/Downloads/client_secret_42.json"
 output="$(FAIL_CREATE=1 run_connect $'\n')"
 if [[ "$output" == *"is unchanged"* ]] && grep -q '"old"' "$RC/remotes/gdrive" &&
-   [[ ! -e "$RC/remotes/gdrive-tiger-new" ]]; then
+   [[ ! -e "$RC/remotes/gdrive-backup-new" ]]; then
   pass "a failed sign-in leaves the existing remote unchanged"
 else
   fail "failed sign-in: $output"
