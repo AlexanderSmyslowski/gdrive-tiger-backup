@@ -22,6 +22,7 @@
 #                               device id of every directory below ROOT,
 #                               without crossing into other file systems
 #   platform_first_symlink ROOT  first symbolic link below ROOT, same file system
+#   platform_sha256 [-- FILE]   "<hex digest>  <name>" of FILE or of stdin
 #   platform_destination_device_info PATH
 #                               "uuid TAB device TAB bytes TAB solid TAB bus"
 #                               for the disk holding PATH; solid is yes, no or
@@ -95,6 +96,10 @@ platform_directory_devices() {
 
 platform_first_symlink() {
   /usr/bin/find -x "$1" -type l -print -quit
+}
+
+platform_sha256() {
+  /usr/bin/shasum -a 256 "$@"
 }
 
 # Describes the physical disk behind a backup volume for the run history, so

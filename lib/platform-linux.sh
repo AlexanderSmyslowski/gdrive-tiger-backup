@@ -23,6 +23,7 @@
 #                               device id of every directory below ROOT,
 #                               without crossing into other file systems
 #   platform_first_symlink ROOT  first symbolic link below ROOT, same file system
+#   platform_sha256 [-- FILE]   "<hex digest>  <name>" of FILE or of stdin
 #   platform_destination_device_info PATH
 #                               "uuid TAB device TAB bytes TAB solid TAB bus"
 #                               for the disk holding PATH; solid is yes, no or
@@ -123,6 +124,11 @@ platform_directory_devices() {
 
 platform_first_symlink() {
   find "$1" -xdev -type l -print -quit
+}
+
+platform_sha256() {
+  # Arch keeps perl's shasum outside PATH (/usr/bin/core_perl); coreutils is everywhere.
+  sha256sum "$@"
 }
 
 # Describes the physical disk behind a destination for the run history.

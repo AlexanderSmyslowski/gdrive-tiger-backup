@@ -21,9 +21,11 @@ fi
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/gdrive-linux-install.XXXXXX")"
 trap '"$ROOT/scripts/trash-path.sh" "$WORK" >/dev/null 2>&1 || true' EXIT
-mkdir -p "$WORK/home"
+mkdir -p "$WORK/home" "$WORK/fakebin"
+# The installer only checks that rclone exists; CI images do not ship it.
+command -v rclone >/dev/null 2>&1 || { printf '#!/bin/sh\nexit 0\n' >"$WORK/fakebin/rclone"; chmod +x "$WORK/fakebin/rclone"; }
 run_installer() {
-  env HOME="$WORK/home" GDRIVE_TIGER_SKIP_SYSTEMCTL=1 PATH="$WORK/home/.local/bin:$PATH" \
+  env HOME="$WORK/home" GDRIVE_TIGER_SKIP_SYSTEMCTL=1 PATH="$WORK/home/.local/bin:$WORK/fakebin:$PATH" \
     /bin/bash "$INSTALLER" "$@"
 }
 

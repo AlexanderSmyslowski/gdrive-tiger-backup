@@ -4164,7 +4164,7 @@ validate_live_nas_destination() {
 
 stable_sha256() {
   local digest
-  digest="$(printf '%s' "$1" | /usr/bin/shasum -a 256 2>/dev/null)" || return 1
+  digest="$(printf '%s' "$1" | platform_sha256 2>/dev/null)" || return 1
   digest="${digest%% *}"
   [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
   printf '%s' "$digest"
@@ -4803,7 +4803,7 @@ archive_source_collisions() {
               | .storedSha256
               | select(type == "string" and test("^[0-9a-f]{64}$"))
             ' "$manifest_path" 2>/dev/null || true)"
-          local_sha256="$(/usr/bin/shasum -a 256 -- "$archived_file" 2>/dev/null)"
+          local_sha256="$(platform_sha256 -- "$archived_file" 2>/dev/null)"
           local_sha256="${local_sha256%% *}"
           if [[ "$entry_count" == "1" && -n "$recorded_sha256" &&
                 "$local_sha256" == "$recorded_sha256" ]]; then
@@ -5060,7 +5060,7 @@ archive_source_collisions() {
       fi
       if [[ "$DRY_RUN" == "0" && "$mime_type" != "application/vnd.google-apps.folder" ]]; then
         archived_file="$object_directory/$archive_name"
-        local_sha256="$(/usr/bin/shasum -a 256 -- "$archived_file" 2>/dev/null)"
+        local_sha256="$(platform_sha256 -- "$archived_file" 2>/dev/null)"
         local_sha256="${local_sha256%% *}"
         if [[ ! "$local_sha256" =~ ^[0-9a-f]{64}$ ]]; then
           cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"

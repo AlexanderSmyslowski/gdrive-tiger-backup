@@ -34,6 +34,11 @@ file_mode() {
   fi
 }
 
+# Arch keeps perl's shasum outside PATH; coreutils' sha256sum prints the same.
+test_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else /usr/bin/shasum -a 256 "$@"; fi
+}
+
 if (( IS_MACOS )); then
   HISTORY_RELATIVE_PATH="Library/Application Support/GDrive Backup Tiger/run-history.tsv"
   LOG_RELATIVE_PATH="Library/Logs/gdrive-backup.log"
@@ -1306,7 +1311,7 @@ test_nas_codec_classifies_persistent_manifest_read_errors() {
   prepare_test_environment
   write_valid_nas_codec_manifest
   calls_file="$TEST_HOME/cmp-calls"
-  manifest_before="$(/usr/bin/shasum -a 256 \
+  manifest_before="$(test_sha256 \
     "$NAS_MOUNT/backup/.gdrive-name-codec" | /usr/bin/awk '{print $1}')"
 
   FAKE_CMP_STATUS_SEQUENCE='2,2,2' \
@@ -1315,7 +1320,7 @@ test_nas_codec_classifies_persistent_manifest_read_errors() {
   status=$?
   calls="$(/usr/bin/awk 'END { print NR + 0 }' "$calls_file" 2>/dev/null)"
   summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
-  manifest_after="$(/usr/bin/shasum -a 256 \
+  manifest_after="$(test_sha256 \
     "$NAS_MOUNT/backup/.gdrive-name-codec" | /usr/bin/awk '{print $1}')"
 
   if [[ "$status" == "69" &&
@@ -1884,9 +1889,9 @@ test_folder_archive_rejects_unsafe_root_before_writing() {
   local kind scope label object directory status args_file
   for kind in symlink file; do
     prepare_test_environment
-    object="$(printf 'drive-object-id\037folder-id-a' | /usr/bin/shasum -a 256)"; object="${object%% *}"
+    object="$(printf 'drive-object-id\037folder-id-a' | test_sha256)"; object="${object%% *}"
     for label in 'My Drive' 'Shared with me'; do
-      scope="$(printf '%s' "$label" | /usr/bin/shasum -a 256)"; scope="${scope%% *}"
+      scope="$(printf '%s' "$label" | test_sha256)"; scope="${scope%% *}"
       directory="$NAS_MOUNT/backup/.gdrive-collisions/$scope/objects/$object"
       mkdir -p "$directory" "$TEST_HOME/outside"
       if [[ "$kind" == symlink ]]; then
@@ -2280,6 +2285,11 @@ test_unavailable_nas_mount_has_retryable_reason() {
 test_permanent_nas_permission_failure_is_not_retryable() {
   local name="an already mounted permanent permission failure is classified separately"
   local status summary
+  # root ignores directory permissions (the Arch CI container runs as root).
+  if (( EUID == 0 )); then
+    printf 'ok - %s # SKIP as root\n' "$name"
+    return
+  fi
   prepare_test_environment
   chmod 500 "$NAS_MOUNT"
 
