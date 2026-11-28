@@ -15,6 +15,38 @@ pass() {
   printf 'ok - %s\n' "$1"
 }
 
+# The suite runs on macOS and, in CI, on Linux. A few cases cover macOS-only
+# behavior (diskutil disk identity, the app's NAS mount helper and dialogs).
+IS_MACOS=0
+[[ "$(/usr/bin/uname -s)" == "Darwin" ]] && IS_MACOS=1
+
+skip_unless_macos() {
+  (( IS_MACOS )) && return 0
+  printf 'ok - %s # SKIP macOS only\n' "$1"
+  return 1
+}
+
+file_mode() {
+  if (( IS_MACOS )); then
+    /usr/bin/stat -f '%Lp' "$1"
+  else
+    stat -c '%a' "$1"
+  fi
+}
+
+# Arch keeps perl's shasum outside PATH; coreutils' sha256sum prints the same.
+test_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else /usr/bin/shasum -a 256 "$@"; fi
+}
+
+if (( IS_MACOS )); then
+  HISTORY_RELATIVE_PATH="Library/Application Support/GDrive Backup Tiger/run-history.tsv"
+  LOG_RELATIVE_PATH="Library/Logs/gdrive-backup.log"
+else
+  HISTORY_RELATIVE_PATH=".local/state/gdrive-tiger-backup/run-history.tsv"
+  LOG_RELATIVE_PATH=".local/state/gdrive-tiger-backup/backup.log"
+fi
+
 prepare_test_environment() {
   TEST_HOME="$(mktemp -d "${TMPDIR:-/tmp}/gdrive-outcome-test.XXXXXX")"
   FAKE_BIN="$TEST_HOME/fake-bin"
@@ -171,6 +203,10 @@ SH
 if [[ "${FAKE_JQ_USE_SYSTEM:-0}" == "1" ]]; then
   exec /usr/bin/jq "$@"
 fi
+# The Linux platform file parses findmnt's JSON; give it the real parser.
+case " $* " in
+  *filesystems*|*fstype*) exec /usr/bin/jq "$@" ;;
+esac
 case "${1:-}" in
   length) printf '0\n' ;;
   -r) exit 0 ;;
@@ -229,6 +265,23 @@ if [[ "$visible" != "1" ]]; then
   exit 0
 fi
 printf '%s on %s (smbfs, nodev, nosuid)\n' '//backup.test/share' "${FAKE_NAS_MOUNT:?}"
+SH
+
+  # Linux asks findmnt instead of mount; same visibility rules as above.
+  cat >"$FAKE_BIN/findmnt" <<'SH'
+#!/bin/bash
+visible="${FAKE_NAS_MOUNT_VISIBLE:-1}"
+if [[ -n "${FAKE_NAS_MOUNT_VISIBLE_FILE:-}" &&
+      -e "$FAKE_NAS_MOUNT_VISIBLE_FILE" ]]; then
+  visible=1
+fi
+if [[ -n "${FAKE_NAS_MOUNT_HIDDEN_FILE:-}" &&
+      -e "$FAKE_NAS_MOUNT_HIDDEN_FILE" ]]; then
+  visible=0
+fi
+[[ "$visible" == "1" ]] || exit 1
+printf '{"filesystems":[{"id":42,"source":"//backup.test/share","target":"%s","fstype":"cifs"}]}\n' \
+  "${FAKE_NAS_MOUNT:?}"
 SH
 
   cat >"$FAKE_BIN/osascript" <<'SH'
@@ -400,7 +453,7 @@ SH
 exit 0
 SH
   chmod +x "$FAKE_BIN/rclone" "$FAKE_BIN/jq" "$FAKE_BIN/open" "$FAKE_BIN/flock" \
-    "$FAKE_BIN/mount" "$FAKE_BIN/osascript" "$FAKE_BIN/mount-helper" \
+    "$FAKE_BIN/mount" "$FAKE_BIN/findmnt" "$FAKE_BIN/osascript" "$FAKE_BIN/mount-helper" \
     "$FAKE_BIN/cmp" "$FAKE_BIN/trash" "$FAKE_BIN/date" \
     "$FAKE_BIN/diskutil" "$FAKE_BIN/ioreg" "$FAKE_BIN/plutil"
 }
@@ -436,7 +489,11 @@ if [[ "$destination" == */current-progress.status &&
 fi
 if [[ -n "${GDRIVE_BACKUP_FOREGROUND_PROGRESS_MODE_FILE:-}" &&
       "$destination" == */gdrive-backup-progress.* ]]; then
-  /usr/bin/stat -f '%Lp' "$source_path" >"$GDRIVE_BACKUP_FOREGROUND_PROGRESS_MODE_FILE"
+  if [[ "$(/usr/bin/uname -s)" == Darwin ]]; then
+    /usr/bin/stat -f '%Lp' "$source_path"
+  else
+    stat -c '%a' "$source_path"
+  fi >"$GDRIVE_BACKUP_FOREGROUND_PROGRESS_MODE_FILE"
 fi
 if [[ -n "${GDRIVE_BACKUP_FOREGROUND_PROGRESS_SNAPSHOT_FILE:-}" &&
       ! -e "$GDRIVE_BACKUP_FOREGROUND_PROGRESS_SNAPSHOT_FILE" &&
@@ -673,6 +730,7 @@ test_animation_receives_run_state_file() {
 }
 
 test_manual_progress_requests_foreground_activation() {
+  skip_unless_macos "test_manual_progress_requests_foreground_activation" || return 0
   local name="explicit progress request keeps one reopenable Dock window"
   local status
   prepare_test_environment
@@ -715,6 +773,7 @@ test_automatic_backup_does_not_open_progress_ui() {
 }
 
 test_mount_consent_controls_foreground_progress() {
+  skip_unless_macos "test_mount_consent_controls_foreground_progress" || return 0
   local scenario trigger confirm assume decision expected status history
   for scenario in accepted declined timeout disabled assumed scheduled retry; do
     prepare_test_environment
@@ -751,6 +810,7 @@ test_mount_consent_controls_foreground_progress() {
 }
 
 test_visible_manual_confirmation_requests_foreground() {
+  skip_unless_macos "test_visible_manual_confirmation_requests_foreground" || return 0
   local name="visible manual confirmation is the only foreground prompt"
   local status open_args
   prepare_test_environment
@@ -849,8 +909,8 @@ test_run_history_lists_each_finished_run() {
   local name="run history records each finished run and rebuilds older runs from the log"
   local history log_file lines
   prepare_test_environment
-  history="$TEST_HOME/Library/Application Support/GDrive Backup Tiger/run-history.tsv"
-  log_file="$TEST_HOME/Library/Logs/gdrive-backup.log"
+  history="$TEST_HOME/$HISTORY_RELATIVE_PATH"
+  log_file="$TEST_HOME/$LOG_RELATIVE_PATH"
   /bin/mkdir -p "${log_file%/*}"
   # Two finished runs, one dry run and one run that never logged its end.
   cat >"$log_file" <<'LOG'
@@ -879,7 +939,7 @@ LOG
     { print "UNEXPECTED " $0 }')"
   if [[ "$lines" == "$expected" &&
         "$(cut -f5 "$history" | /usr/bin/tail -1)" == "$NAS_MOUNT/backup" &&
-        "$(/usr/bin/stat -f '%Lp' "$history")" == "600" ]]; then
+        "$(file_mode "$history")" == "600" ]]; then
     pass "$name"
   else
     fail "$name (got: ${lines//$'\n'/ | })"
@@ -890,7 +950,7 @@ test_run_history_keeps_the_newest_lines_and_skips_dry_runs() {
   local name="run history is capped and dry runs do not add entries"
   local history count
   prepare_test_environment
-  history="$TEST_HOME/Library/Application Support/GDrive Backup Tiger/run-history.tsv"
+  history="$TEST_HOME/$HISTORY_RELATIVE_PATH"
   /bin/mkdir -p "${history%/*}"
   for count in $(/usr/bin/seq 1 1005); do
     printf 'v1\t%s\tsuccess\tnas\t/old\tschedule\t%s\n' "$count" "$count"
@@ -912,8 +972,8 @@ test_init_history_rebuilds_only_a_missing_history() {
   local name="--init-history rebuilds a missing history from the log and keeps an existing one"
   local history log_file status
   prepare_test_environment
-  history="$TEST_HOME/Library/Application Support/GDrive Backup Tiger/run-history.tsv"
-  log_file="$TEST_HOME/Library/Logs/gdrive-backup.log"
+  history="$TEST_HOME/$HISTORY_RELATIVE_PATH"
+  log_file="$TEST_HOME/$LOG_RELATIVE_PATH"
   /bin/mkdir -p "${log_file%/*}"
   cat >"$log_file" <<'LOG'
 [2026-05-01 20:00:05+0200] Start: remote=gdrive: dry_run=0 target=nas mount=/Volumes/share dest=/Volumes/share/GoogleDrive-Backup
@@ -935,6 +995,36 @@ LOG
   fi
 }
 
+test_automatic_runs_notify_only_on_state_changes() {
+  local name="automatic runs notify on the first failure and on recovery only (Linux; silent on macOS)"
+  local notes expected
+  prepare_test_environment
+  notes="$TEST_HOME/notifications"
+  cat >"$FAKE_BIN/notify-send" <<SH
+#!/bin/bash
+printf '%s|%s\n' "\${@: -2:1}" "\${*:2:1}" >>"$notes"
+SH
+  chmod +x "$FAKE_BIN/notify-send"
+  FAKE_RCLONE_COPY_STATUS=23 run_backup GDRIVE_BACKUP_TRIGGER=schedule DBUS_SESSION_BUS_ADDRESS=unix:path=/fake GDRIVE_BACKUP_LANG=en >/dev/null 2>&1
+  FAKE_RCLONE_COPY_STATUS=23 run_backup GDRIVE_BACKUP_TRIGGER=schedule DBUS_SESSION_BUS_ADDRESS=unix:path=/fake GDRIVE_BACKUP_LANG=en >/dev/null 2>&1
+  FAKE_RCLONE_COPY_STATUS=0 run_backup GDRIVE_BACKUP_TRIGGER=schedule DBUS_SESSION_BUS_ADDRESS=unix:path=/fake GDRIVE_BACKUP_LANG=en >/dev/null 2>&1
+  FAKE_RCLONE_COPY_STATUS=23 run_backup GDRIVE_BACKUP_TRIGGER=manual DBUS_SESSION_BUS_ADDRESS=unix:path=/fake GDRIVE_BACKUP_LANG=en >/dev/null 2>&1
+  if (( IS_MACOS )); then
+    expected=""
+  else
+    expected="$(printf '%s\n%s' 'Google Drive backup failed|--urgency=critical' 'Google Drive backup works again|--urgency=normal')"
+  fi
+  # Exactly one history record per run: a helper subshell (run_with_timeout)
+  # must never publish a second, stale result.
+  if [[ "$(cat "$notes" 2>/dev/null)" == "$expected" &&
+        "$(cut -f3,6 "$TEST_HOME/$HISTORY_RELATIVE_PATH" | tr '\t\n' ':;')" == \
+          "failure:schedule;failure:schedule;success:schedule;failure:manual;" ]]; then
+    pass "$name"
+  else
+    fail "$name (got: $(tr '\n' ';' <"$notes" 2>/dev/null) history: $(cut -f3,6 "$TEST_HOME/$HISTORY_RELATIVE_PATH" | tr '\t\n' ':;'))"
+  fi
+}
+
 test_state_is_versioned_and_identifies_the_process() {
   local name="run state is versioned and identifies its process"
   local state mode
@@ -942,7 +1032,7 @@ test_state_is_versioned_and_identifies_the_process() {
 
   run_backup
   state="$(cat "$RUN_STATE_FILE" 2>/dev/null || true)"
-  mode="$(stat -f '%Lp' "$RUN_STATE_FILE" 2>/dev/null || true)"
+  mode="$(file_mode "$RUN_STATE_FILE" 2>/dev/null || true)"
 
   if [[ "$state" == *$'protocol=1\n'* &&
         "$state" =~ (^|$'\n')pid=[0-9]+($|$'\n') && "$mode" == "600" ]]; then
@@ -1221,7 +1311,7 @@ test_nas_codec_classifies_persistent_manifest_read_errors() {
   prepare_test_environment
   write_valid_nas_codec_manifest
   calls_file="$TEST_HOME/cmp-calls"
-  manifest_before="$(/usr/bin/shasum -a 256 \
+  manifest_before="$(test_sha256 \
     "$NAS_MOUNT/backup/.gdrive-name-codec" | /usr/bin/awk '{print $1}')"
 
   FAKE_CMP_STATUS_SEQUENCE='2,2,2' \
@@ -1230,7 +1320,7 @@ test_nas_codec_classifies_persistent_manifest_read_errors() {
   status=$?
   calls="$(/usr/bin/awk 'END { print NR + 0 }' "$calls_file" 2>/dev/null)"
   summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
-  manifest_after="$(/usr/bin/shasum -a 256 \
+  manifest_after="$(test_sha256 \
     "$NAS_MOUNT/backup/.gdrive-name-codec" | /usr/bin/awk '{print $1}')"
 
   if [[ "$status" == "69" &&
@@ -1391,8 +1481,8 @@ test_duplicate_source_files_are_archived_by_id() {
       {"id":"parent-id","name":"Photos","mimeType":"application/vnd.google-apps.folder"}
     ]' \
     FAKE_RCLONE_COLLISION_QUERY_JSON='[
-      {"id":"file-id-a","name":"image.heic","mimeType":"image/heic","parents":["parent-id"]},
-      {"id":"file-id-b","name":"image.heic","mimeType":"image/heic","parents":["parent-id"]}
+      {"id":"file-id-a","name":"image.heic","mimeType":"image/heic","parents":["parent-id"],"md5Checksum":"d41d8cd98f00b204e9800998ecf8427e","size":"0"},
+      {"id":"file-id-b","name":"image.heic","mimeType":"image/heic","parents":["parent-id"],"md5Checksum":"d41d8cd98f00b204e9800998ecf8427e","size":"0"}
     ]' \
     run_backup
   status=$?
@@ -1799,9 +1889,9 @@ test_folder_archive_rejects_unsafe_root_before_writing() {
   local kind scope label object directory status args_file
   for kind in symlink file; do
     prepare_test_environment
-    object="$(printf 'drive-object-id\037folder-id-a' | /usr/bin/shasum -a 256)"; object="${object%% *}"
+    object="$(printf 'drive-object-id\037folder-id-a' | test_sha256)"; object="${object%% *}"
     for label in 'My Drive' 'Shared with me'; do
-      scope="$(printf '%s' "$label" | /usr/bin/shasum -a 256)"; scope="${scope%% *}"
+      scope="$(printf '%s' "$label" | test_sha256)"; scope="${scope%% *}"
       directory="$NAS_MOUNT/backup/.gdrive-collisions/$scope/objects/$object"
       mkdir -p "$directory" "$TEST_HOME/outside"
       if [[ "$kind" == symlink ]]; then
@@ -2018,6 +2108,7 @@ test_nas_mount_waits_until_it_is_writable() {
 }
 
 test_nas_auto_mount_transitions_to_a_writable_share() {
+  skip_unless_macos "test_nas_auto_mount_transitions_to_a_writable_share" || return 0
   local name="automatic NAS mount waits for the new verified writable share"
   local status summary visible_file
   prepare_test_environment
@@ -2055,7 +2146,7 @@ test_nas_privacy_denial_names_the_macos_grant() {
   GDRIVE_BACKUP_LS_BIN="$fake_ls" run_backup
   status=$?
   summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
-  log_text="$(cat "$TEST_HOME/Library/Logs/gdrive-backup.log" 2>/dev/null || true)"
+  log_text="$(cat "$TEST_HOME/$LOG_RELATIVE_PATH" 2>/dev/null || true)"
 
   if [[ "$status" != "0" && ! -e "$TEST_HOME/rclone-started" &&
         "$summary" == *$'reason=macos_privacy_permission_missing\n'* &&
@@ -2106,7 +2197,7 @@ test_vanished_nas_mount_stops_a_running_copy() {
   status=$?
   finished="$(date +%s)"
   summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
-  log_text="$(cat "$TEST_HOME/Library/Logs/gdrive-backup.log" 2>/dev/null || true)"
+  log_text="$(cat "$TEST_HOME/$LOG_RELATIVE_PATH" 2>/dev/null || true)"
 
   if [[ "$status" != "0" && $(( finished - started )) -lt 30 &&
         "$summary" == *$'reason=nas_connection_lost\n'* &&
@@ -2118,6 +2209,7 @@ test_vanished_nas_mount_stops_a_running_copy() {
 }
 
 test_nas_auto_mount_not_ready_is_retryable() {
+  skip_unless_macos "test_nas_auto_mount_not_ready_is_retryable" || return 0
   local name="automatic NAS mount timeout publishes the retryable readiness reason"
   local status summary visible_file
   prepare_test_environment
@@ -2193,6 +2285,11 @@ test_unavailable_nas_mount_has_retryable_reason() {
 test_permanent_nas_permission_failure_is_not_retryable() {
   local name="an already mounted permanent permission failure is classified separately"
   local status summary
+  # root ignores directory permissions (the Arch CI container runs as root).
+  if (( EUID == 0 )); then
+    printf 'ok - %s # SKIP as root\n' "$name"
+    return
+  fi
   prepare_test_environment
   chmod 500 "$NAS_MOUNT"
 
@@ -2244,6 +2341,7 @@ test_confirmation_uses_injected_open_command() {
 }
 
 test_external_confirmation_counts_stores_without_an_out_of_range_probe() {
+  skip_unless_macos "test_external_confirmation_counts_stores_without_an_out_of_range_probe" || return 0
   local name="external confirmation counts physical stores without probing past the array"
   # macOS 15 can emit non-empty output for an out-of-range numeric key path.
   # Cardinality is therefore the portable way to distinguish one disk from a set.
@@ -2258,6 +2356,7 @@ test_external_confirmation_counts_stores_without_an_out_of_range_probe() {
 }
 
 test_external_confirmation_identifies_physical_disk() {
+  skip_unless_macos "test_external_confirmation_identifies_physical_disk" || return 0
   local name="external confirmation names the physical disk without technical identifiers"
   local app detail_file diskutil_log expected mount uuid status detail
   prepare_test_environment
@@ -2301,6 +2400,7 @@ test_external_confirmation_identifies_physical_disk() {
 }
 
 test_external_confirmation_identifies_multiple_physical_stores_as_a_set() {
+  skip_unless_macos "test_external_confirmation_identifies_multiple_physical_stores_as_a_set" || return 0
   local name="external confirmation identifies a real multi-disk store as a storage set"
   local app detail_file expected mount uuid status detail
   prepare_test_environment
@@ -2338,6 +2438,7 @@ test_external_confirmation_identifies_multiple_physical_stores_as_a_set() {
 }
 
 test_external_confirmation_has_private_fallback() {
+  skip_unless_macos "test_external_confirmation_has_private_fallback" || return 0
   local name="external confirmation fallback stays useful and hides mount suffixes"
   local app detail_file expected mount uuid status detail
   prepare_test_environment
@@ -2380,6 +2481,7 @@ test_external_confirmation_has_private_fallback() {
 }
 
 test_external_confirmation_uses_nonempty_metadata_fallbacks() {
+  skip_unless_macos "test_external_confirmation_uses_nonempty_metadata_fallbacks" || return 0
   local name="external confirmation skips empty disk metadata and uses whole-disk fallbacks"
   local app detail_file expected mount uuid status detail
   prepare_test_environment
@@ -2417,6 +2519,7 @@ test_external_confirmation_uses_nonempty_metadata_fallbacks() {
 }
 
 test_external_confirmation_rejects_bidi_disk_metadata() {
+  skip_unless_macos "test_external_confirmation_rejects_bidi_disk_metadata" || return 0
   local name="external confirmation rejects bidirectional disk labels"
   local app detail_file expected mount uuid status detail
   prepare_test_environment
@@ -2453,6 +2556,7 @@ test_external_confirmation_rejects_bidi_disk_metadata() {
 }
 
 test_external_confirmation_rejects_invalid_physical_store_id() {
+  skip_unless_macos "test_external_confirmation_rejects_invalid_physical_store_id" || return 0
   local name="external confirmation never queries an invalid physical-store identifier"
   local app detail_file diskutil_log expected mount uuid status detail invalid_id
   prepare_test_environment
@@ -2493,6 +2597,7 @@ test_external_confirmation_rejects_invalid_physical_store_id() {
 }
 
 test_external_confirmation_ignores_invalid_capacity() {
+  skip_unless_macos "test_external_confirmation_ignores_invalid_capacity" || return 0
   local name="external confirmation replaces an invalid physical-store capacity"
   local app detail_file expected mount uuid status detail
   prepare_test_environment
@@ -2529,6 +2634,7 @@ test_external_confirmation_ignores_invalid_capacity() {
 }
 
 test_external_confirmation_waits_for_realistic_registry_lookup() {
+  skip_unless_macos "test_external_confirmation_waits_for_realistic_registry_lookup" || return 0
   local name="external confirmation tolerates a realistic delayed media lookup"
   local app detail_file expected mount uuid status detail
   prepare_test_environment
@@ -2627,7 +2733,7 @@ test_success_persists_private_summary() {
 
   run_backup
   summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
-  mode="$(/usr/bin/stat -f '%Lp' "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
+  mode="$(file_mode "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
 
   if [[ "$summary" == *$'protocol=1\n'* &&
         "$summary" == *$'status=success\n'* &&
@@ -2686,6 +2792,7 @@ test_later_failure_preserves_last_success_marker() {
 }
 
 test_legacy_success_destination_survives_failure() {
+  skip_unless_macos "test_legacy_success_destination_survives_failure" || return 0
   local summary status
   prepare_test_environment
   printf 'protocol=1\nstatus=success\npid=123\nstarted_at=100\nfinished_at=200\nexit_code=0\nlast_success_at=200\ntarget=apfs\ndestination=/Volumes/Old=Disk/backup\n' >"$SUMMARY_STATE_FILE"
@@ -2788,7 +2895,7 @@ test_terminal_summary_publish_failure_keeps_progress_live() {
   status=$?
   summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
   progress="$(cat "$progress" 2>/dev/null || true)"
-  log_file="$TEST_HOME/Library/Logs/gdrive-backup.log"
+  log_file="$TEST_HOME/$LOG_RELATIVE_PATH"
   warning_count="$(grep -Fc 'Backup-Status konnte nicht sicher aktualisiert werden.' \
     "$log_file" 2>/dev/null || true)"
 
@@ -2995,7 +3102,7 @@ test_headless_retry_publishes_private_progress() {
     [[ "$content" == *$'percent=63\n'* ]] && break
     sleep 0.05
   done
-  mode="$(stat -f '%Lp' "$progress" 2>/dev/null || true)"
+  mode="$(file_mode "$progress" 2>/dev/null || true)"
   content="$(cat "$progress" 2>/dev/null || true)"
   summary="$(cat "$SUMMARY_STATE_FILE" 2>/dev/null || true)"
   summary_pid="$(awk -F= '$1 == "pid" {print $2}' "$SUMMARY_STATE_FILE")"
@@ -3136,6 +3243,7 @@ test_perl_lock_replaces_missing_flock
 test_run_history_lists_each_finished_run
 test_run_history_keeps_the_newest_lines_and_skips_dry_runs
 test_init_history_rebuilds_only_a_missing_history
+test_automatic_runs_notify_only_on_state_changes
 test_state_is_versioned_and_identifies_the_process
 test_active_backup_publishes_running_summary
 test_locked_backup_publishes_running_before_remote_checks

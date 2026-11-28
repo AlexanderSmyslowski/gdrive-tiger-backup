@@ -1,0 +1,13 @@
+[Unit]
+Description=GDrive Backup Tiger: hourly check of the daily backup window
+Documentation=https://github.com/AlexanderSmyslowski/gdrive-tiger-backup
+
+[Timer]
+# The engine opens one window per day at 20:00 and returns at once on the
+# other hours; hourly starts let it catch up a missed or failed window.
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

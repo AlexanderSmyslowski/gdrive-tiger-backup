@@ -1,7 +1,7 @@
 # Plan: Linux edition for Omarchy and a local MCP server for AI assistants
 
-Status: phase 1 done (engine split, merged), phase 2 started (Linux platform
-file merged in #17; portable time/retention CI in progress). Written 2026-11-16 after v2.7.0.
+Status (2026-11-27): phases 1–3 done as a preview (see `docs/linux.md`); a full
+backup of a real Google Drive on Linux is still open. Written 2026-11-16 after v2.7.0.
 
 ## Goal
 
@@ -76,12 +76,25 @@ itself (that is the Omarchy maintainers' decision).
   versioning fixture keeps the real jq parser and provides platform mount data.
   Minimal Linux images also need `diffutils` (`cmp` verifies the NAS codec
   manifest); include this dependency in the future Linux installer.
-- Left: running the whole engine suite under Linux (the test fakes still use
-  BSD tool paths), a generic destination-identity
-  name in the core, and a Linux installer. Phases 3+ (systemd, Waybar,
-  notify-send) build on this.
+- Done (2026-11-27): the outcome and robustness suites run on Linux in CI
+  (Linux-aware fakes for `findmnt`, portable `date`/`stat` in the tests,
+  macOS-only cases skipped). Log and lock moved to the XDG state directory.
+  Fixed a Linux-only defect: under bash 5 a `run_with_timeout` helper subshell
+  ran the engine's EXIT trap, published a stale result and deleted the running
+  backup's temporary directory; cleanup now runs only in the engine process.
+  User-level installer `packaging/linux/install.sh`.
+- Left: a generic destination-identity name in the core (the APFS_* names stay
+  for now); orphaned `sleep` children of the watchdogs after a run (harmless).
 
 ### 3. Scheduling and status in the Omarchy style
+
+Done (2026-11-27, preview): `gdrive-tiger-backup.service` and an hourly
+`.timer` with `Persistent=true`; the engine's daily window decides. Engine
+options `--status`, `--status-json` and `--waybar`; a Waybar module snippet;
+`notify-send` on the first failure and on recovery (`platform_notify`, a no-op
+on macOS where the app notifies). `gdrive-tiger-backup setup` connects Google,
+detects disk (UUID) or network share, writes the config and enables the timer.
+Tried in an Ubuntu 24.04 VM (Colima).
 
 - systemd user units: `gdrive-tiger-backup.service` and a `.timer` with
   `Persistent=true` (catch-up after the machine was off) and the existing

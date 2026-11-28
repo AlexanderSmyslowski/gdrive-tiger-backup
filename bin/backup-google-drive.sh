@@ -225,8 +225,16 @@ CONFIGURED_APFS_DEST_ROOT="$DEST_ROOT"
 REMOTE="${RCLONE_REMOTE:-gdrive}"
 REMOTE="${REMOTE%:}"
 
-LOG="${GDRIVE_BACKUP_LOG:-$HOME/Library/Logs/gdrive-backup.log}"
-LOCK="${GDRIVE_BACKUP_LOCK:-$HOME/Library/Logs/gdrive-backup.lock}"
+# Linux keeps log and lock with the other state files (XDG state directory).
+if [[ "$GDT_PLATFORM" == "linux" ]]; then
+  DEFAULT_LOG_DIR="$HOME/.local/state/gdrive-tiger-backup"
+  LOG="${GDRIVE_BACKUP_LOG:-$DEFAULT_LOG_DIR/backup.log}"
+  LOCK="${GDRIVE_BACKUP_LOCK:-$DEFAULT_LOG_DIR/backup.lock}"
+else
+  DEFAULT_LOG_DIR="$HOME/Library/Logs"
+  LOG="${GDRIVE_BACKUP_LOG:-$DEFAULT_LOG_DIR/gdrive-backup.log}"
+  LOCK="${GDRIVE_BACKUP_LOCK:-$DEFAULT_LOG_DIR/gdrive-backup.lock}"
+fi
 MOUNT_SETTLE_SECONDS="${MOUNT_SETTLE_SECONDS:-5}"
 NAS_READY_TIMEOUT_SECONDS="${GDRIVE_BACKUP_NAS_READY_TIMEOUT_SECONDS:-60}"
 NAS_MOUNT_TIMEOUT_SECONDS="${GDRIVE_BACKUP_NAS_MOUNT_TIMEOUT_SECONDS:-90}"
@@ -376,7 +384,7 @@ NAS_NAME_CODEC_DOT_BIN_TRANSFORMS=(
   'dir,regex=^\.BIN$/__gdt0__dotbin_111'
 )
 
-mkdir -p "$HOME/Library/Logs"
+(umask 077 && mkdir -p "$DEFAULT_LOG_DIR")
 if [[ -L "$LOG" || ( -e "$LOG" && ! -f "$LOG" ) ||
       ( -e "$LOG" && ! -O "$LOG" ) ]]; then
   printf '%s\n' 'FEHLER: Backup-Protokoll ist kein sicherer eigener Dateipfad.' >&2
@@ -394,6 +402,9 @@ if ! /bin/chmod 600 "$LOG"; then
   printf '%s\n' 'FEHLER: Backup-Protokoll kann nicht auf den Benutzer beschraenkt werden.' >&2
   exit 73
 fi
+# Keep the caller's terminal on fd 8 for the read-only status commands; all
+# other output goes to the log.
+exec 8>&1
 exec >>"$LOG" 2>&1
 
 log() {
@@ -1842,6 +1853,34 @@ t() {
     ko:log_setup_skipped) printf '볼륨 설정이 확인되지 않아 건너뜁니다.' ;;
     ko:progress_preparing) printf '준비 중...' ;;
     ko:progress_done) printf '복사 완료.' ;;
+    de:notify_failed_title) printf '%s' 'Google-Drive-Backup fehlgeschlagen' ;;
+    de:notify_failed_body) printf '%s' 'Details mit „gdrive-tiger-backup status“ im Terminal.' ;;
+    de:notify_recovered_title) printf '%s' 'Google-Drive-Backup läuft wieder' ;;
+    de:notify_recovered_body) printf '%s' 'Das letzte Backup wurde erfolgreich abgeschlossen.' ;;
+    en:notify_failed_title) printf '%s' 'Google Drive backup failed' ;;
+    en:notify_failed_body) printf '%s' 'Run “gdrive-tiger-backup status” in a terminal for details.' ;;
+    en:notify_recovered_title) printf '%s' 'Google Drive backup works again' ;;
+    en:notify_recovered_body) printf '%s' 'The latest backup completed successfully.' ;;
+    fr:notify_failed_title) printf '%s' 'Échec de la sauvegarde Google Drive' ;;
+    fr:notify_failed_body) printf '%s' 'Détails : « gdrive-tiger-backup status » dans un terminal.' ;;
+    fr:notify_recovered_title) printf '%s' 'La sauvegarde Google Drive fonctionne à nouveau' ;;
+    fr:notify_recovered_body) printf '%s' "La dernière sauvegarde s’est terminée avec succès." ;;
+    es:notify_failed_title) printf '%s' 'Falló la copia de Google Drive' ;;
+    es:notify_failed_body) printf '%s' 'Detalles: «gdrive-tiger-backup status» en un terminal.' ;;
+    es:notify_recovered_title) printf '%s' 'La copia de Google Drive vuelve a funcionar' ;;
+    es:notify_recovered_body) printf '%s' 'La última copia se completó correctamente.' ;;
+    ja:notify_failed_title) printf '%s' 'Google Driveのバックアップに失敗しました' ;;
+    ja:notify_failed_body) printf '%s' '詳細はターミナルで「gdrive-tiger-backup status」を実行してください。' ;;
+    ja:notify_recovered_title) printf '%s' 'Google Driveのバックアップが復旧しました' ;;
+    ja:notify_recovered_body) printf '%s' '最新のバックアップが正常に完了しました。' ;;
+    yue:notify_failed_title) printf '%s' 'Google Drive 備份失敗' ;;
+    yue:notify_failed_body) printf '%s' '喺終端機執行「gdrive-tiger-backup status」睇詳情。' ;;
+    yue:notify_recovered_title) printf '%s' 'Google Drive 備份恢復正常' ;;
+    yue:notify_recovered_body) printf '%s' '最近一次備份已成功完成。' ;;
+    ko:notify_failed_title) printf '%s' 'Google Drive 백업 실패' ;;
+    ko:notify_failed_body) printf '%s' '자세한 내용은 터미널에서 “gdrive-tiger-backup status”를 실행하세요.' ;;
+    ko:notify_recovered_title) printf '%s' 'Google Drive 백업이 다시 정상입니다' ;;
+    ko:notify_recovered_body) printf '%s' '최근 백업이 성공적으로 완료되었습니다.' ;;
     *) printf '%s' "$key" ;;
   esac
 }
@@ -2344,6 +2383,133 @@ append_run_history() {
   fi
 }
 
+# Status document built from the last-run summary and the run history:
+#   status          success | failure | running | cancelled | interrupted | never
+#   last_run        {status, started_at, finished_at, target, reason, trigger}
+#   last_success_at epoch or null
+#   schedule, paused
+#   destinations    one per target and destination path, newest first:
+#                   {target, destination, device, last_success, last_failure,
+#                    last_status}
+# target is "disk" or "nas"; the history's internal name "apfs" for a local
+# disk is shown as "disk" on every platform.
+# Paths stay local; nothing here is sent anywhere.
+status_document() {
+  local summary_text="" history_text=""
+  if [[ -f "$SUMMARY_STATE_FILE" && ! -L "$SUMMARY_STATE_FILE" ]]; then
+    summary_text="$(head -c 65536 "$SUMMARY_STATE_FILE")"
+  fi
+  if [[ -f "$RUN_HISTORY_FILE" && ! -L "$RUN_HISTORY_FILE" ]]; then
+    history_text="$(tail -n "$RUN_HISTORY_MAX_LINES" "$RUN_HISTORY_FILE")"
+  fi
+  jq -n --arg summary "$summary_text" --arg history "$history_text" \
+        --arg schedule "$SCHEDULE_MODE" --arg paused "${GDRIVE_BACKUP_PAUSED:-0}" '
+    def num: if type == "string" and test("^[0-9]{1,12}$") then tonumber else null end;
+    def target_name: if . == "apfs" then "disk" else . end;
+    ($summary | split("\n") | map(capture("^(?<key>[a-z_]+)=(?<value>.*)$")?) | from_entries) as $s
+    | ($history | split("\n") | map(split("\t")) | map(select(length >= 7 and .[0] == "v1"))
+        | map({finished: (.[1] | num), status: .[2], target: (.[3] | target_name), destination: .[4],
+               device: (if length >= 9 and .[8] != "" then .[8] else null end)})
+        | map(select(.finished != null))) as $runs
+    | {
+        status: (if ($s | length) == 0 then "never"
+                 elif $s.status == "running" then "running"
+                 else ($s.status // "never") end),
+        last_run: (if ($s | length) == 0 then null else {
+          status: $s.status, started_at: ($s.started_at | num), finished_at: ($s.finished_at | num),
+          target: ($s.target | target_name), reason: $s.reason, trigger: $s.trigger } end),
+        last_success_at: ($s.last_success_at | num),
+        schedule: $schedule,
+        paused: ($paused == "1"),
+        destinations: ($runs | group_by([.target, .destination])
+          | map(sort_by(.finished) | {
+              target: .[0].target,
+              destination: .[0].destination,
+              device: (map(.device) | map(select(. != null)) | last),
+              last_success: (map(select(.status == "success") | .finished) | max),
+              last_failure: (map(select(.status == "failure") | .finished) | max),
+              last_status: (last | .status),
+              last_activity: (last | .finished) })
+          | sort_by(-.last_activity) | map(del(.last_activity)))
+      }'
+}
+
+format_status_time() {
+  [[ "${1:-}" =~ ^[0-9]{1,12}$ ]] || { printf -- '-'; return 0; }
+  platform_date_from_epoch "$1" '+%Y-%m-%d %H:%M' 2>/dev/null || printf '%s' "$1"
+}
+
+print_status() {
+  local format="$1" document now
+  document="$(status_document)" || return 1
+  case "$format" in
+    json)
+      printf '%s\n' "$document"
+      ;;
+    waybar)
+      # One JSON line for a Waybar custom module: short text, a CSS class and
+      # a tooltip. Older than 36 hours without a success counts as "stale".
+      now="$(date +%s)"
+      printf '%s' "$document" | jq -c --argjson now "$now" \
+          --arg success_at "$(format_status_time "$(printf '%s' "$document" | jq -r '.last_success_at // empty')")" '
+        def age($t): if $t == null then null else (($now - $t) / 3600 | floor) end;
+        (age(.last_success_at)) as $hours
+        | (if .status == "running" then "running"
+           elif .status == "failure" then "failure"
+           elif .last_success_at == null then "never"
+           elif $hours >= 36 then "stale"
+           else "success" end) as $class
+        | {
+            text: ({running: "↻", failure: "✕", never: "–", stale: "!", success: "✓"}[$class]
+                   + (if $hours == null then "" else " " + ($hours | tostring) + "h" end)),
+            alt: $class,
+            class: $class,
+            tooltip: ("Google Drive backup: " + .status
+                      + "\nLast success: " + (if .last_success_at == null then "never" else $success_at end)
+                      + (if (.destinations | length) > 0 then
+                           "\n" + (.destinations | map("• " + .target + " " + (.device // (.destination | split("/") | last))
+                             + ": " + .last_status) | join("\n"))
+                         else "" end))
+          }'
+      ;;
+    *)
+      printf '%s' "$document" | jq -r '"Status:        \(.status)", "Schedule:      \(.schedule)\(if .paused then " (paused)" else "" end)"'
+      printf 'Last run:      %s\n' "$(format_status_time "$(printf '%s' "$document" | jq -r '.last_run.finished_at // .last_run.started_at // empty')")"
+      printf 'Last success:  %s\n' "$(format_status_time "$(printf '%s' "$document" | jq -r '.last_success_at // empty')")"
+      printf 'Destinations:\n'
+      # Unit separator, not a tab: read collapses empty whitespace-separated fields.
+      printf '%s' "$document" | jq -r '.destinations[] | [.target, (.device // ""), .destination,
+          (.last_success // "" | tostring), (.last_status // "")] | join("\u001f")' |
+        while IFS=$'\x1f' read -r target device destination success last_status; do
+          printf '  %-5s %s%s\n        last success %s, last run %s\n' "$target" \
+            "${device:+$device · }" "$destination" "$(format_status_time "$success")" "$last_status"
+        done
+      ;;
+  esac
+}
+
+# Automatic runs announce a change of state only: the first failure, and the
+# first success after a failure. Repeated hourly catch-up failures stay quiet.
+# Reads the previous outcome for this target from the history before this
+# run is appended to it.
+notify_run_outcome() {
+  local status="$1" previous=""
+  [[ "$DRY_RUN" == "0" && "$SETUP_UI" == "0" ]] || return 0
+  case "$BACKUP_TRIGGER" in
+    schedule|schedule-retry|mount) ;;
+    *) return 0 ;;
+  esac
+  if [[ -f "$RUN_HISTORY_FILE" && ! -L "$RUN_HISTORY_FILE" ]]; then
+    previous="$(awk -F '\t' -v target="$BACKUP_TARGET" '
+      $1 == "v1" && $4 == target { last = $3 } END { print last }' "$RUN_HISTORY_FILE" 2>/dev/null)"
+  fi
+  if [[ "$status" == "failure" && "$previous" != "failure" ]]; then
+    platform_notify "$(t notify_failed_title)" "$(t notify_failed_body)" critical
+  elif [[ "$status" == "success" && "$previous" == "failure" ]]; then
+    platform_notify "$(t notify_recovered_title)" "$(t notify_recovered_body)" normal
+  fi
+}
+
 # Epoch of the most recent daily window boundary at or before the given time.
 daily_window_start_epoch() {
   local now="$1" day boundary
@@ -2443,6 +2609,7 @@ finish_run_state() {
   local summary_status=0
   write_run_state "$status" "$exit_status"
   write_last_run_summary "$status" "$exit_status" || summary_status=$?
+  notify_run_outcome "$status"
   # The history is informational: a failure there is logged but never changes
   # the result callers act on, which is the summary publication.
   append_run_history "$status" ||
@@ -2824,12 +2991,23 @@ prepare_run_tmpdir() {
   fi
 }
 
+# Background helpers (run_with_timeout starts engine functions with "&") are
+# subshells. bash 4 and later run the EXIT trap in such a subshell when it
+# ends; that copy would publish a stale result, kill the watchdogs and delete
+# the running backup's temporary directory. Only the engine process itself
+# cleans up. bash 3.2 (macOS) has no BASHPID and never runs the trap there.
+is_engine_process() {
+  [[ "${BASHPID:-$$}" == "$$" ]]
+}
+
 on_exit() {
   local exit_status=$?
+  is_engine_process || return 0
   cleanup "$exit_status"
 }
 
 cancel_run() {
+  is_engine_process || exit "$1"
   RUN_STATE_OVERRIDE="cancelled"
   RUN_STATE_SIGNAL="$2"
   # Without this line an interrupted run (logout, restart, manual stop) ends
@@ -3588,18 +3766,30 @@ ensure_backup_target() {
 DRY_RUN=1
 SETUP_UI=0
 INIT_HISTORY=0
+STATUS_FORMAT=""
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     --run) DRY_RUN=0 ;;
     --setup) SETUP_UI=1 ;;
     --init-history) INIT_HISTORY=1 ;;
+    --status) STATUS_FORMAT="text" ;;
+    --status-json) STATUS_FORMAT="json" ;;
+    --waybar) STATUS_FORMAT="waybar" ;;
     *)
       log "Unbekannter Parameter: $arg"
       exit 64
       ;;
   esac
 done
+
+# Read-only status for terminals, scripts and status bars (Waybar). Never
+# takes the run lock, never writes state, works while a backup is running.
+if [[ -n "$STATUS_FORMAT" ]]; then
+  print_status "$STATUS_FORMAT" >&8
+  exit $?
+fi
+exec 8>&-
 
 # The app asks for this once after an update, so the history is not empty
 # until the next backup. It only writes a missing history and never waits for
@@ -3977,7 +4167,7 @@ validate_live_nas_destination() {
 
 stable_sha256() {
   local digest
-  digest="$(printf '%s' "$1" | /usr/bin/shasum -a 256 2>/dev/null)" || return 1
+  digest="$(printf '%s' "$1" | platform_sha256 2>/dev/null)" || return 1
   digest="${digest%% *}"
   [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
   printf '%s' "$digest"
@@ -4595,7 +4785,7 @@ archive_source_collisions() {
           entry_count="$(/usr/bin/find "$object_directory" -mindepth 1 -maxdepth 1 \
             -exec /usr/bin/printf 'x\n' \; 2>/dev/null | /usr/bin/wc -l |
             /usr/bin/tr -d '[:space:]')"
-          local_md5="$(/sbin/md5 -q -- "$archived_file" 2>/dev/null || true)"
+          local_md5="$(platform_md5 "$archived_file" 2>/dev/null || true)"
           if [[ "$entry_count" == "1" &&
                 "$(lowercase "$local_md5")" == "$(lowercase "$source_md5")" ]]; then
             existing_is_current=1
@@ -4616,7 +4806,7 @@ archive_source_collisions() {
               | .storedSha256
               | select(type == "string" and test("^[0-9a-f]{64}$"))
             ' "$manifest_path" 2>/dev/null || true)"
-          local_sha256="$(/usr/bin/shasum -a 256 -- "$archived_file" 2>/dev/null)"
+          local_sha256="$(platform_sha256 -- "$archived_file" 2>/dev/null)"
           local_sha256="${local_sha256%% *}"
           if [[ "$entry_count" == "1" && -n "$recorded_sha256" &&
                 "$local_sha256" == "$recorded_sha256" ]]; then
@@ -4690,7 +4880,7 @@ archive_source_collisions() {
               "$source_size" ]] || copy_status=1
           fi
           if [[ "$copy_status" == "0" && "$source_md5" =~ ^[0-9a-fA-F]{32}$ ]]; then
-            local_md5="$(/sbin/md5 -q -- "$archived_file" 2>/dev/null || true)"
+            local_md5="$(platform_md5 "$archived_file" 2>/dev/null || true)"
             [[ "$(lowercase "$local_md5")" == "$(lowercase "$source_md5")" ]] ||
               copy_status=1
           fi
@@ -4873,7 +5063,7 @@ archive_source_collisions() {
       fi
       if [[ "$DRY_RUN" == "0" && "$mime_type" != "application/vnd.google-apps.folder" ]]; then
         archived_file="$object_directory/$archive_name"
-        local_sha256="$(/usr/bin/shasum -a 256 -- "$archived_file" 2>/dev/null)"
+        local_sha256="$(platform_sha256 -- "$archived_file" 2>/dev/null)"
         local_sha256="${local_sha256%% *}"
         if [[ ! "$local_sha256" =~ ^[0-9a-f]{64}$ ]]; then
           cleanup_temp_file "$validated_json" "$objects_tsv" "$manifest_objects"

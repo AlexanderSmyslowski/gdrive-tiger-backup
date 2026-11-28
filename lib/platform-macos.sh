@@ -22,10 +22,15 @@
 #                               device id of every directory below ROOT,
 #                               without crossing into other file systems
 #   platform_first_symlink ROOT  first symbolic link below ROOT, same file system
+#   platform_sha256 [-- FILE]   "<hex digest>  <name>" of FILE or of stdin
+#   platform_md5 FILE           hex MD5 digest of FILE (Drive reports MD5)
 #   platform_destination_device_info PATH
 #                               "uuid TAB device TAB bytes TAB solid TAB bus"
 #                               for the disk holding PATH; solid is yes, no or
 #                               empty, unknown fields stay empty
+#   platform_notify TITLE BODY URGENCY
+#                               desktop notification (URGENCY normal|critical);
+#                               a no-op where the app shows notifications
 #   platform_confirm_dialog_available
 #   platform_confirm_dialog TITLE DETAIL PRIMARY SECONDARY
 #                               prints "yes" or "no"
@@ -94,6 +99,14 @@ platform_first_symlink() {
   /usr/bin/find -x "$1" -type l -print -quit
 }
 
+platform_sha256() {
+  /usr/bin/shasum -a 256 "$@"
+}
+
+platform_md5() {
+  /sbin/md5 -q -- "$1"
+}
+
 # Describes the physical disk behind a backup volume for the run history, so
 # the app can tell "Samsung PSSD T7 · SSD · 1 TB" from another disk that holds
 # a volume with the same name. Uses the whole disk behind the APFS container.
@@ -132,6 +145,12 @@ platform_destination_device_info() {
   bus="$(display_metadata_value "$(plist_data_value "$whole_plist" BusProtocol || true)")"
   [[ "$uuid" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || uuid=""
   printf '%s\t%s\t%s\t%s\t%s\n' "$uuid" "${device//$'\t'/ }" "$size" "$solid" "${bus//$'\t'/ }"
+}
+
+# The macOS app shows notifications itself (NotificationSupport); the engine
+# stays silent so nothing is announced twice.
+platform_notify() {
+  return 0
 }
 
 platform_confirm_dialog_available() {

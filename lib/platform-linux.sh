@@ -23,10 +23,15 @@
 #                               device id of every directory below ROOT,
 #                               without crossing into other file systems
 #   platform_first_symlink ROOT  first symbolic link below ROOT, same file system
+#   platform_sha256 [-- FILE]   "<hex digest>  <name>" of FILE or of stdin
+#   platform_md5 FILE           hex MD5 digest of FILE (Drive reports MD5)
 #   platform_destination_device_info PATH
 #                               "uuid TAB device TAB bytes TAB solid TAB bus"
 #                               for the disk holding PATH; solid is yes, no or
 #                               empty, unknown fields stay empty
+#   platform_notify TITLE BODY URGENCY
+#                               desktop notification (URGENCY normal|critical);
+#                               a no-op where the app shows notifications
 #   platform_confirm_dialog_available
 #   platform_confirm_dialog TITLE DETAIL PRIMARY SECONDARY
 #                               prints "yes" or "no"
@@ -122,6 +127,17 @@ platform_first_symlink() {
   find "$1" -xdev -type l -print -quit
 }
 
+platform_sha256() {
+  # Arch keeps perl's shasum outside PATH (/usr/bin/core_perl); coreutils is everywhere.
+  sha256sum "$@"
+}
+
+platform_md5() {
+  local digest
+  digest="$(md5sum -- "$1")" || return 1
+  printf '%s\n' "${digest%% *}"
+}
+
 # Describes the physical disk behind a destination for the run history.
 platform_destination_device_info() {
   local source="" uuid="" parent="" disk="" device="" size="" rotational="" solid="" bus=""
@@ -142,6 +158,18 @@ platform_destination_device_info() {
   [[ "$size" =~ ^[0-9]{1,16}$ ]] || size=""
   device="$(display_metadata_value "${device%"${device##*[![:space:]]}"}")"
   printf '%s\t%s\t%s\t%s\t%s\n' "$uuid" "${device//$'\t'/ }" "$size" "$solid" "$bus"
+}
+
+# Desktop notification through the session's notification daemon (mako in
+# Omarchy). Silent when there is no session bus, e.g. on a headless server.
+platform_notify() {
+  command -v notify-send >/dev/null 2>&1 || return 0
+  [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" || -S "${XDG_RUNTIME_DIR:-/nonexistent}/bus" ]] || return 0
+  if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+    export DBUS_SESSION_BUS_ADDRESS
+  fi
+  notify-send --app-name="GDrive Backup Tiger" --urgency="${3:-normal}" -- "$1" "$2" >/dev/null 2>&1 || true
 }
 
 platform_confirm_dialog_available() {

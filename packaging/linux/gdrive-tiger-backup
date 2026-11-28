@@ -1,0 +1,349 @@
+#!/bin/bash
+# gdrive-tiger-backup: command-line front end of the Linux edition.
+#   gdrive-tiger-backup setup        connect Google Drive, choose a destination,
+#                                    enable the daily schedule
+#   gdrive-tiger-backup connect      (re)connect Google Drive with your own
+#                                    Google client
+#   gdrive-tiger-backup run          back up now
+#   gdrive-tiger-backup check        dry run: show what would be copied
+#   gdrive-tiger-backup status [--json]
+#   gdrive-tiger-backup waybar       one JSON line for a Waybar custom module
+#   gdrive-tiger-backup log          follow the backup log
+#   gdrive-tiger-backup omarchy-menu add a Drive Backup submenu to the Omarchy menu
+#   gdrive-tiger-backup agent        let your AI agent guide you through the setup
+set -euo pipefail
+
+SHARE_DIR="${GDRIVE_TIGER_SHARE_DIR:-$HOME/.local/share/gdrive-tiger-backup}"
+ENGINE="$SHARE_DIR/bin/backup-google-drive.sh"
+CONFIG_DIR="${GDRIVE_BACKUP_CONFIG_DIR:-$HOME/.config/gdrive-tiger-backup}"
+CONFIG_FILE="$CONFIG_DIR/config"
+STATE_DIR="$HOME/.local/state/gdrive-tiger-backup"
+REMOTE="${RCLONE_REMOTE:-gdrive}"
+CLIENT_FILE="$CONFIG_DIR/google-oauth-client.json"
+LOCK_FILE="${GDRIVE_BACKUP_LOCK:-$STATE_DIR/backup.lock}"
+
+die() { printf 'gdrive-tiger-backup: %s\n' "$*" >&2; exit 1; }
+[[ -x "$ENGINE" ]] || die "engine not found at $ENGINE; run the installer again"
+
+ask() {
+  local prompt="$1" default="${2:-}" answer
+  if [[ -n "$default" ]]; then
+    read -r -p "$prompt [$default]: " answer
+    printf '%s' "${answer:-$default}"
+  else
+    read -r -p "$prompt: " answer
+    printf '%s' "$answer"
+  fi
+}
+
+write_config() {
+  local key
+  (umask 077 && mkdir -p "$CONFIG_DIR")
+  local tmp
+  tmp="$(mktemp "$CONFIG_FILE.XXXXXX")"
+  {
+    printf '# Written by "gdrive-tiger-backup setup". Shell syntax, one KEY=value per line.\n'
+    for key in "$@"; do
+      printf '%s=%q\n' "${key%%=*}" "${key#*=}"
+    done
+  } >"$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$CONFIG_FILE"
+}
+
+# --- Own Google connection --------------------------------------------------
+# Google retires the OAuth client built into rclone during 2026. Each user
+# creates a "Desktop app" client in their own Google Cloud project; the
+# downloaded file is read here, so nobody has to copy the secret by hand.
+
+remote_exists() {
+  rclone listremotes 2>/dev/null | grep -qxF "$REMOTE:"
+}
+
+remote_client_id() {
+  rclone config show "$REMOTE" 2>/dev/null | sed -n 's/^client_id = //p' | head -n 1
+}
+
+# Prints "client_id TAB client_secret" from a downloaded Desktop-app client file.
+read_google_client() {
+  local pair id secret
+  pair="$(jq -er '.installed | select(type == "object") | [.client_id, .client_secret] | @tsv' "$1" 2>/dev/null)" || return 1
+  IFS=$'\t' read -r id secret <<<"$pair"
+  [[ "$id" =~ ^[0-9]{1,32}-[a-z0-9]{1,64}\.apps\.googleusercontent\.com$ &&
+     "$secret" =~ ^[A-Za-z0-9_-]{8,128}$ ]] || return 1
+  printf '%s\t%s' "$id" "$secret"
+}
+
+newest_download() {
+  local file newest="" downloads="${XDG_DOWNLOAD_DIR:-$HOME/Downloads}"
+  for file in "$downloads"/client_secret_*.json; do
+    [[ -f "$file" && ( -z "$newest" || "$file" -nt "$newest" ) ]] && newest="$file"
+  done
+  printf '%s' "$newest"
+}
+
+# Asks for the client file (or takes the saved copy), checks it and keeps a
+# private copy. Sets GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.
+choose_google_client() {
+  local file="" found pair answer
+  if [[ -f "$CLIENT_FILE" ]] && pair="$(read_google_client "$CLIENT_FILE")"; then
+    read -r -p "Use your saved Google client (${pair%%-*}-…)? [Y/n]: " answer
+    [[ "${answer:-y}" =~ ^[Yy] ]] && file="$CLIENT_FILE"
+  fi
+  if [[ -z "$file" ]]; then
+    printf '\nThe backup signs in to Google with your own client. Create it once (about 5 minutes):\n'
+    printf '  (Easier: "gdrive-tiger-backup agent" lets your AI agent guide you through it.)\n'
+    printf '  1. New project:    https://console.cloud.google.com/projectcreate\n'
+    printf '  2. Drive API:      https://console.cloud.google.com/apis/library/drive.googleapis.com  (Enable)\n'
+    printf '  3. Google sign-in: https://console.cloud.google.com/auth/overview  (Get started; Workspace: Internal, Gmail: External)\n'
+    printf '  4. Only for a private Gmail account, or Google signs the backup out after 7 days:\n'
+    printf '     Branding: https://console.cloud.google.com/auth/branding\n'
+    printf '       App home page:  https://github.com/AlexanderSmyslowski/gdrive-tiger-backup\n'
+    printf '       Privacy policy: https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/blob/main/PRIVACY.md\n'
+    printf '       (if asked, add github.com as an authorized domain), Save\n'
+    printf '     Audience: https://console.cloud.google.com/auth/audience  (Publish app)\n'
+    printf '  5. Client:         https://console.cloud.google.com/auth/clients/create\n'
+    printf '     Type "Desktop app", Create, then "Download JSON".\n\n'
+    found="$(newest_download)"
+    file="$(ask 'Downloaded client file' "$found")"
+  fi
+  [[ -f "$file" ]] || die "no client file at $file"
+  if ! pair="$(read_google_client "$file")"; then
+    if jq -e '.web' "$file" >/dev/null 2>&1; then
+      die "this is a web client; create a client of type \"Desktop app\""
+    fi
+    die "this is not a Google client file (expected the JSON from \"Download JSON\")"
+  fi
+  GOOGLE_CLIENT_ID="${pair%%$'\t'*}"
+  GOOGLE_CLIENT_SECRET="${pair#*$'\t'}"
+  if [[ "$file" != "$CLIENT_FILE" ]]; then
+    (umask 077 && mkdir -p "$CONFIG_DIR" && cp -f "$file" "$CLIENT_FILE.tmp" && mv -f "$CLIENT_FILE.tmp" "$CLIENT_FILE")
+    printf 'Saved a private copy as %s; you can delete the download.\n' "$CLIENT_FILE"
+  fi
+}
+
+# Signs in with the own client. An existing remote is switched only after a
+# temporary remote has signed in and read Drive, and only while holding the
+# engine's run lock, so a running backup cannot write its old token back.
+connect_google() {
+  local temp token
+  command -v jq >/dev/null || die "jq is missing"
+  choose_google_client
+  printf '\nA browser opens for Google sign-in; the backup asks for read-only access.\n'
+  printf 'On a machine without a browser, connect from your computer with\n'
+  printf '  ssh -L 53682:127.0.0.1:53682 <this machine>\n'
+  printf 'and open the link rclone prints.\n'
+
+  if ! remote_exists; then
+    rclone config create "$REMOTE" drive client_id="$GOOGLE_CLIENT_ID" \
+      client_secret="$GOOGLE_CLIENT_SECRET" scope=drive.readonly >/dev/null ||
+      die "Google sign-in did not finish"
+    rclone about "$REMOTE:" >/dev/null 2>&1 || die "signed in, but Google Drive could not be read"
+    printf 'Google Drive connected with your own client.\n'
+    return
+  fi
+
+  temp="${REMOTE:0:50}-tiger-new"
+  rclone config delete "$temp" >/dev/null 2>&1 || true
+  if ! rclone config create "$temp" drive client_id="$GOOGLE_CLIENT_ID" \
+       client_secret="$GOOGLE_CLIENT_SECRET" scope=drive.readonly >/dev/null; then
+    rclone config delete "$temp" >/dev/null 2>&1 || true
+    die "Google sign-in did not finish; \"$REMOTE:\" is unchanged"
+  fi
+  token="$(rclone config show "$temp" 2>/dev/null | sed -n 's/^token = //p' | head -n 1)"
+  if [[ -z "$token" ]] || ! rclone about "$temp:" >/dev/null 2>&1; then
+    rclone config delete "$temp" >/dev/null 2>&1 || true
+    die "signed in, but Google Drive could not be read; \"$REMOTE:\" is unchanged"
+  fi
+
+  mkdir -p "$(dirname "$LOCK_FILE")"
+  exec 8>>"$LOCK_FILE"
+  if ! flock -n 8; then
+    exec 8>&-
+    rclone config delete "$temp" >/dev/null 2>&1 || true
+    die "a backup is running; run \"gdrive-tiger-backup connect\" again when it has finished"
+  fi
+  if ! rclone config update "$REMOTE" client_id="$GOOGLE_CLIENT_ID" \
+       client_secret="$GOOGLE_CLIENT_SECRET" scope=drive.readonly token="$token" \
+       config_refresh_token=false --non-interactive >/dev/null; then
+    exec 8>&-
+    rclone config delete "$temp" >/dev/null 2>&1 || true
+    die "switching \"$REMOTE:\" failed"
+  fi
+  exec 8>&-
+  rclone config delete "$temp" >/dev/null 2>&1 || true
+  rclone about "$REMOTE:" >/dev/null 2>&1 || die "switched, but Google Drive could not be read with \"$REMOTE:\""
+  printf 'Google Drive "%s:" now uses your own client.\n' "$REMOTE"
+}
+
+setup() {
+  command -v rclone >/dev/null || die "rclone is missing; install it from https://rclone.org/install/"
+  printf 'GDrive Backup Tiger setup\n\n'
+
+  # 1. Google Drive, read-only, through the user's own Google client.
+  local answer
+  if ! remote_exists; then
+    printf 'Google Drive: no rclone remote "%s:" yet.\n' "$REMOTE"
+    connect_google
+  elif [[ -z "$(remote_client_id)" ]]; then
+    printf 'Google Drive: "%s:" still uses the Google connection built into rclone,\n' "$REMOTE"
+    printf 'which Google retires during 2026. Backups stop working then.\n'
+    read -r -p 'Set up your own connection now? [Y/n]: ' answer
+    if [[ "${answer:-y}" =~ ^[Yy] ]]; then
+      connect_google
+    else
+      printf 'Kept for now. Run "gdrive-tiger-backup connect" later.\n'
+    fi
+  else
+    printf 'Google Drive: rclone remote "%s:" uses its own Google connection.\n' "$REMOTE"
+  fi
+
+  # 2. Destination: a folder on a mounted disk, or on a mounted network share.
+  printf '\nWhere should the backup go? Give a folder on a mounted disk or network share.\n'
+  local destination mount fstype uuid parent
+  destination="$(ask 'Backup folder' "/mnt/backup/GoogleDrive-Backup")"
+  [[ "$destination" == /* ]] || die "please give an absolute path"
+  parent="$destination"
+  while [[ ! -d "$parent" ]]; do parent="$(dirname "$parent")"; done
+  mount="$(findmnt -rn --target "$parent" -o TARGET | head -n 1)"
+  fstype="$(findmnt -rn --target "$parent" -o FSTYPE | head -n 1)"
+  [[ -n "$mount" && "$mount" != "/" ]] ||
+    die "$destination is not on a separate disk or share; a backup on the system disk does not protect against disk failure"
+  mkdir -p "$destination"
+
+  local -a settings=("RCLONE_REMOTE=$REMOTE")
+  case "$fstype" in
+    cifs|smb3|nfs|nfs4)
+      local subdir="${destination#"$mount"/}"
+      [[ "$subdir" != "$destination" && -n "$subdir" ]] || subdir="GoogleDrive-Backup"
+      settings+=("GDRIVE_BACKUP_TARGET=nas" "GDRIVE_BACKUP_NAS_MOUNT=$mount" "GDRIVE_BACKUP_NAS_SUBDIR=$subdir")
+      printf 'Destination: network share %s (%s), folder %s\n' "$mount" "$fstype" "$subdir"
+      ;;
+    *)
+      uuid="$(findmnt -rn --target "$mount" -o UUID | head -n 1)"
+      [[ -n "$uuid" ]] || die "the disk at $mount has no filesystem UUID; the backup identifies its disk by UUID"
+      settings+=("GDRIVE_BACKUP_TARGET=disk" "GDRIVE_BACKUP_VOLUME=$mount"
+                 "GDRIVE_BACKUP_VOLUME_UUID=$uuid" "GDRIVE_BACKUP_DEST_ROOT=$destination")
+      printf 'Destination: disk %s (%s, UUID %s)\n' "$mount" "$fstype" "$uuid"
+      ;;
+  esac
+
+  # 3. Schedule.
+  local schedule
+  read -r -p $'\nBack up automatically every day from 20:00 (missed days are caught up)? [Y/n]: ' schedule
+  if [[ "${schedule:-y}" =~ ^[Yy] ]]; then
+    settings+=("GDRIVE_BACKUP_SCHEDULE=daily")
+  else
+    settings+=("GDRIVE_BACKUP_SCHEDULE=manual")
+  fi
+  settings+=("GDRIVE_BACKUP_VERSIONING=1" "GDRIVE_BACKUP_RETENTION=1" "GDRIVE_BACKUP_CONFIRM=0")
+  write_config "${settings[@]}"
+  printf '\nSaved %s\n' "$CONFIG_FILE"
+
+  if [[ "${schedule:-y}" =~ ^[Yy] ]]; then
+    if command -v systemctl >/dev/null &&
+       systemctl --user daemon-reload 2>/dev/null &&
+       systemctl --user enable --now gdrive-tiger-backup.timer 2>/dev/null; then
+      printf 'Daily schedule enabled (systemctl --user list-timers gdrive-tiger-backup.timer).\n'
+    else
+      printf 'Could not reach the systemd user session. Enable the schedule later with:\n'
+      printf '  systemctl --user enable --now gdrive-tiger-backup.timer\n'
+    fi
+  fi
+  printf '\nNext: "gdrive-tiger-backup check" for a dry run, then "gdrive-tiger-backup run".\n'
+}
+
+# Omarchy plugins cannot add rows to the Omarchy menu (Super + Space); the menu
+# reads only Omarchy's own file and the user's extension file. This adds a
+# submenu to the user's file, once and only when asked. Omarchy's parser drops
+# whole-line comments and tolerates trailing commas.
+OMARCHY_MENU_FILE="$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
+omarchy_menu_rows() {
+  cat <<'EOF'
+  // Added by "gdrive-tiger-backup omarchy-menu"; delete these lines to remove the submenu.
+  "drive-backup": {"icon":"󰅠","label":"Drive Backup","description":"Google Drive backup"},
+  "drive-backup.panel": {"icon":"󰅠","label":"Show Status","when":"[[ -d ~/.config/omarchy/plugins/drive-backup ]]","action":"omarchy-shell drive-backup toggle"},
+  "drive-backup.run": {"icon":"󰅧","label":"Back Up Now","action":"gdrive-tiger-backup run"},
+  "drive-backup.check": {"icon":"󰈞","label":"Dry Run","action":"omarchy-launch-floating-terminal-with-presentation gdrive-tiger-backup check"},
+  "drive-backup.log": {"icon":"󰦪","label":"Show Log","action":"omarchy-launch-floating-terminal-with-presentation gdrive-tiger-backup log"},
+EOF
+}
+
+add_omarchy_menu() {
+  local file="$OMARCHY_MENU_FILE" rows tmp
+  [[ -d "$HOME/.config/omarchy" ]] || die "Omarchy not found (no ~/.config/omarchy)"
+  if [[ -f "$file" ]] && grep -q '"drive-backup":' "$file"; then
+    printf 'The Omarchy menu already has the Drive Backup submenu (%s).\n' "$file"
+    return 0
+  fi
+  mkdir -p "${file%/*}"
+  if [[ ! -f "$file" ]]; then
+    { printf '{\n'; omarchy_menu_rows; printf '}\n'; } >"$file"
+    printf 'Added the Drive Backup submenu to the Omarchy menu (%s).\n' "$file"
+    return 0
+  fi
+
+  rows="$(mktemp "${TMPDIR:-/tmp}/gdrive-menu-rows.XXXXXX")"
+  tmp="$(mktemp "$file.XXXXXX")"
+  omarchy_menu_rows >"$rows"
+  cp -p "$file" "$tmp"   # the replacement keeps the file's permissions
+  # Insert before the last closing brace; give the entry before it a comma.
+  if ! awk -v rows="$rows" '
+    { line[NR] = $0 }
+    END {
+      close_at = 0
+      for (i = NR; i > 0; i--) if (line[i] ~ /^[[:space:]]*}[[:space:]]*$/) { close_at = i; break }
+      if (!close_at) exit 3
+      last = 0
+      for (i = close_at - 1; i > 0; i--) if (line[i] !~ /^[[:space:]]*(\/\/.*)?$/) { last = i; break }
+      for (i = 1; i < close_at; i++) {
+        if (i == last && line[i] !~ /[,{][[:space:]]*$/) line[i] = line[i] ","
+        print line[i]
+      }
+      while ((getline r < rows) > 0) print r
+      for (i = close_at; i <= NR; i++) print line[i]
+    }' "$file" >"$tmp"; then
+    rm -f "$tmp" "$rows"
+    printf 'Could not find the closing brace in %s. Add these lines there yourself:\n' "$file" >&2
+    omarchy_menu_rows >&2
+    exit 1
+  fi
+  rm -f "$rows"
+  mv -f "$tmp" "$file"
+  printf 'Added the Drive Backup submenu to the Omarchy menu (%s).\n' "$file"
+}
+
+# The Google client can only be created by clicking through Google's console.
+# An AI agent can guide the user through it and do everything else; on Omarchy
+# the user's default agent starts with the task, elsewhere the task is printed.
+AGENT_SKILL="$SHARE_DIR/agent-skill/gdrive-backup-google-setup/SKILL.md"
+start_agent_setup() {
+  [[ -f "$AGENT_SKILL" ]] || die "agent guide not found at $AGENT_SKILL; run the installer again"
+  local task="Set up my Google Drive backup: read $AGENT_SKILL and follow it step by step."
+  if command -v omarchy >/dev/null 2>&1; then
+    omarchy agent prompt "$task" && return 0
+    printf '\nPick your agent with "omarchy default agent <name>", or give any agent this task:\n\n  %s\n' "$task"
+    return 1
+  fi
+  printf 'Give your AI agent (Claude Code, Codex, OpenCode, ...) this task:\n\n  %s\n' "$task"
+}
+
+case "${1:-status}" in
+  setup) setup ;;
+  connect)
+    command -v rclone >/dev/null || die "rclone is missing; install it from https://rclone.org/install/"
+    connect_google
+    ;;
+  run) exec "$ENGINE" --run ;;
+  check) exec "$ENGINE" --dry-run ;;
+  status)
+    if [[ "${2:-}" == "--json" ]]; then exec "$ENGINE" --status-json; fi
+    exec "$ENGINE" --status
+    ;;
+  waybar) exec "$ENGINE" --waybar ;;
+  log) exec tail -n 50 -F "$STATE_DIR/backup.log" ;;
+  omarchy-menu) add_omarchy_menu ;;
+  agent) start_agent_setup ;;
+  -h|--help|help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command: $1 (try --help)" ;;
+esac

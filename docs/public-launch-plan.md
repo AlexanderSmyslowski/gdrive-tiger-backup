@@ -80,15 +80,13 @@ update costs the user permission prompts and can block a scheduled start.
   `docs/reference.md`.
 - [ ] A 30-second GIF of setup and the first backup (needs a real recording on
   a test account, see step 3).
-- [~] Social preview image: `docs/images/social-preview.png` exists; upload it
-  in GitHub › Settings › General › Social preview (no API for this).
+- [x] Social preview image uploaded (`docs/images/social-preview.png`).
 - [ ] Simple landing page via GitHub Pages with the same message and download.
 - [ ] Reconsider the name: "Tiger" refers to the visual style but suggests an
   old Mac OS X version; decide whether to keep it before the launch.
 - [x] Issue templates (bug report with the diagnostics report, feature
   request), `CONTRIBUTING.md`, `SECURITY.md`.
-- [ ] Turn on private vulnerability reporting in the repository settings, so
-  the link in `SECURITY.md` works.
+- [x] Private vulnerability reporting turned on.
 
 ## 5. Launch
 
