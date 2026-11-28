@@ -75,6 +75,7 @@ gdrive-tiger-backup check           dry run: show what would be copied
 gdrive-tiger-backup run             back up now
 gdrive-tiger-backup log             follow the backup log
 gdrive-tiger-backup connect         (re)connect Google Drive with your own client
+gdrive-tiger-backup omarchy-menu    add a Drive Backup submenu to the Omarchy menu
 ```
 
 The timer starts the engine every hour. From 20:00 it backs up once a day;
@@ -95,3 +96,14 @@ into your Waybar configuration and add `"custom/gdrive-backup"` to a modules
 list. It shows `✓ 3h` (hours since the last success), `✕` after a failure,
 `↻` while a backup runs and `!` when the last success is older than 36 hours,
 with CSS classes `success`, `failure`, `running`, `stale` and `never`.
+
+## Omarchy menu
+
+`gdrive-tiger-backup omarchy-menu` adds a **Drive Backup** submenu to the
+Omarchy menu (Super + Space) with Back Up Now, Dry Run and Show Log, plus Show
+Status when the Drive Backup shell plugin is installed. Omarchy plugins cannot
+add menu rows themselves; the menu reads only Omarchy's own file and yours, so
+the command writes the rows once into
+`~/.config/omarchy/extensions/omarchy-menu.jsonc`, keeps everything else in
+that file and does nothing if the submenu is already there. To remove it,
+delete the lines below the comment `Added by "gdrive-tiger-backup omarchy-menu"`.

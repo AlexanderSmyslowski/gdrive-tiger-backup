@@ -92,6 +92,7 @@ test: test-retry-countdown test-native-scheduled-backup
 	bash tests/status-output-test.sh
 	bash tests/linux-install-test.sh
 	bash tests/linux-connect-test.sh
+	bash tests/linux-omarchy-menu-test.sh
 	bash tests/linux-nas-safety-test.sh
 	bash tests/platform-linux-test.sh
 	bash tests/nas-name-codec-integration-test.sh
@@ -376,3 +377,4 @@ test-engine-portable:
 	bash tests/status-output-test.sh
 	bash tests/linux-install-test.sh
 	bash tests/linux-connect-test.sh
+	bash tests/linux-omarchy-menu-test.sh

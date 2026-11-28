@@ -9,6 +9,7 @@
 #   gdrive-tiger-backup status [--json]
 #   gdrive-tiger-backup waybar       one JSON line for a Waybar custom module
 #   gdrive-tiger-backup log          follow the backup log
+#   gdrive-tiger-backup omarchy-menu add a Drive Backup submenu to the Omarchy menu
 set -euo pipefail
 
 SHARE_DIR="${GDRIVE_TIGER_SHARE_DIR:-$HOME/.local/share/gdrive-tiger-backup}"
@@ -245,6 +246,66 @@ setup() {
   printf '\nNext: "gdrive-tiger-backup check" for a dry run, then "gdrive-tiger-backup run".\n'
 }
 
+# Omarchy plugins cannot add rows to the Omarchy menu (Super + Space); the menu
+# reads only Omarchy's own file and the user's extension file. This adds a
+# submenu to the user's file, once and only when asked. Omarchy's parser drops
+# whole-line comments and tolerates trailing commas.
+OMARCHY_MENU_FILE="$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
+omarchy_menu_rows() {
+  cat <<'EOF'
+  // Added by "gdrive-tiger-backup omarchy-menu"; delete these lines to remove the submenu.
+  "drive-backup": {"icon":"󰅠","label":"Drive Backup","description":"Google Drive backup"},
+  "drive-backup.panel": {"icon":"󰅠","label":"Show Status","when":"[[ -d ~/.config/omarchy/plugins/drive-backup ]]","action":"omarchy-shell drive-backup toggle"},
+  "drive-backup.run": {"icon":"󰅧","label":"Back Up Now","action":"gdrive-tiger-backup run"},
+  "drive-backup.check": {"icon":"󰈞","label":"Dry Run","action":"omarchy-launch-floating-terminal-with-presentation gdrive-tiger-backup check"},
+  "drive-backup.log": {"icon":"󰦪","label":"Show Log","action":"omarchy-launch-floating-terminal-with-presentation gdrive-tiger-backup log"},
+EOF
+}
+
+add_omarchy_menu() {
+  local file="$OMARCHY_MENU_FILE" rows tmp
+  [[ -d "$HOME/.config/omarchy" ]] || die "Omarchy not found (no ~/.config/omarchy)"
+  if [[ -f "$file" ]] && grep -q '"drive-backup":' "$file"; then
+    printf 'The Omarchy menu already has the Drive Backup submenu (%s).\n' "$file"
+    return 0
+  fi
+  mkdir -p "${file%/*}"
+  if [[ ! -f "$file" ]]; then
+    { printf '{\n'; omarchy_menu_rows; printf '}\n'; } >"$file"
+    printf 'Added the Drive Backup submenu to the Omarchy menu (%s).\n' "$file"
+    return 0
+  fi
+
+  rows="$(mktemp "${TMPDIR:-/tmp}/gdrive-menu-rows.XXXXXX")"
+  tmp="$(mktemp "$file.XXXXXX")"
+  omarchy_menu_rows >"$rows"
+  cp -p "$file" "$tmp"   # the replacement keeps the file's permissions
+  # Insert before the last closing brace; give the entry before it a comma.
+  if ! awk -v rows="$rows" '
+    { line[NR] = $0 }
+    END {
+      close_at = 0
+      for (i = NR; i > 0; i--) if (line[i] ~ /^[[:space:]]*}[[:space:]]*$/) { close_at = i; break }
+      if (!close_at) exit 3
+      last = 0
+      for (i = close_at - 1; i > 0; i--) if (line[i] !~ /^[[:space:]]*(\/\/.*)?$/) { last = i; break }
+      for (i = 1; i < close_at; i++) {
+        if (i == last && line[i] !~ /[,{][[:space:]]*$/) line[i] = line[i] ","
+        print line[i]
+      }
+      while ((getline r < rows) > 0) print r
+      for (i = close_at; i <= NR; i++) print line[i]
+    }' "$file" >"$tmp"; then
+    rm -f "$tmp" "$rows"
+    printf 'Could not find the closing brace in %s. Add these lines there yourself:\n' "$file" >&2
+    omarchy_menu_rows >&2
+    exit 1
+  fi
+  rm -f "$rows"
+  mv -f "$tmp" "$file"
+  printf 'Added the Drive Backup submenu to the Omarchy menu (%s).\n' "$file"
+}
+
 case "${1:-status}" in
   setup) setup ;;
   connect)
@@ -259,6 +320,7 @@ case "${1:-status}" in
     ;;
   waybar) exec "$ENGINE" --waybar ;;
   log) exec tail -n 50 -F "$STATE_DIR/backup.log" ;;
-  -h|--help|help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' ;;
+  omarchy-menu) add_omarchy_menu ;;
+  -h|--help|help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $1 (try --help)" ;;
 esac
