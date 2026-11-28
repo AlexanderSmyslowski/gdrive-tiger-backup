@@ -4,13 +4,20 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BACKUP_SCRIPT="$ROOT/bin/backup-google-drive.sh"
 failures=0
+# The engine keeps its log in ~/Library/Logs on macOS and in the XDG state
+# directory on Linux.
+if [[ "$(uname -s)" == "Linux" ]]; then
+  LOG_RELATIVE_PATH=".local/state/gdrive-tiger-backup/backup.log"
+else
+  LOG_RELATIVE_PATH="Library/Logs/gdrive-backup.log"
+fi
 
 fail() {
   printf 'not ok - %s\n' "$1"
   failures=$((failures + 1))
   # Only synthetic fixture logs: keep CI failures diagnosable on every OS.
-  if [[ -n "${TEST_HOME:-}" && -f "$TEST_HOME/Library/Logs/gdrive-backup.log" ]]; then
-    tail -20 "$TEST_HOME/Library/Logs/gdrive-backup.log"
+  if [[ -n "${TEST_HOME:-}" && -f "$TEST_HOME/$LOG_RELATIVE_PATH" ]]; then
+    tail -20 "$TEST_HOME/$LOG_RELATIVE_PATH"
   fi
 }
 
@@ -224,7 +231,7 @@ test_invalid_versioning_toggle_is_rejected() {
   local name="invalid versioning toggle is rejected before rclone"
   local status log_file
   prepare_test_environment
-  log_file="$TEST_HOME/Library/Logs/gdrive-backup.log"
+  log_file="$TEST_HOME/$LOG_RELATIVE_PATH"
 
   run_backup GDRIVE_BACKUP_VERSIONING=yes
   status=$?
@@ -279,7 +286,7 @@ test_default_retention_policy() {
   local recent_one recent_two daily_old daily_new daily_other
   local weekly_old weekly_new weekly_other expired invalid_calendar invalid_day invalid_time invalid_zone
   prepare_test_environment
-  log_file="$TEST_HOME/Library/Logs/gdrive-backup.log"
+  log_file="$TEST_HOME/$LOG_RELATIVE_PATH"
 
   recent_one="$(create_version '2026-07-11T10-00-00+0000' 1)"
   recent_two="$(create_version '2026-07-11T11-00-00+0000' 2)"
@@ -346,7 +353,7 @@ test_invalid_retention_toggle_is_rejected() {
   local name="invalid retention toggle is rejected before rclone"
   local status log_file
   prepare_test_environment
-  log_file="$TEST_HOME/Library/Logs/gdrive-backup.log"
+  log_file="$TEST_HOME/$LOG_RELATIVE_PATH"
 
   run_backup GDRIVE_BACKUP_RETENTION=yes
   status=$?
@@ -380,7 +387,7 @@ test_retention_dry_run_only_logs_candidates() {
   local name="retention dry-run logs candidates without moving them"
   local expired status log_file
   prepare_test_environment
-  log_file="$TEST_HOME/Library/Logs/gdrive-backup.log"
+  log_file="$TEST_HOME/$LOG_RELATIVE_PATH"
   expired="$(create_version '2025-06-01T12-00-00+0000' 13)"
 
   run_dry_backup
