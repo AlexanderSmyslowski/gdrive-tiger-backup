@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Connect Google Drive with your own Google client. Google is retiring the client built into rclone during 2026; remotes without their own client will then stop working. **Connect Google** now opens an assistant that opens each Google Cloud console page in order, picks the downloaded client file up from Downloads (no copying of secrets), keeps a private copy and signs in. The setup check marks a remote that still uses rclone's shared client with **!** and offers **Set up own connection**. An existing remote is switched only after a temporary remote has signed in and read Drive, and only while the app holds the backup run lock, so a running backup can never write its old token back.
 - Show times in the backup history in the language's own clock format; English showed "Today, 4:20PM" next to "11/25, 22:10".
 - Shorter README with screenshots and a plain explanation of why a backup differs from Google Drive's sync; the detailed reference moved to `docs/reference.md`. Added issue templates, `CONTRIBUTING.md`, `SECURITY.md`, a social preview image and a checklist for the first test on a fresh Mac (`docs/fresh-mac-test.md`).
 

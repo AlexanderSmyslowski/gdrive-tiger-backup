@@ -1,5 +1,9 @@
 #import "SetupHealthSupport.h"
+#include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
+#include <sys/file.h>
+#include <unistd.h>
 
 static NSDictionary<NSString *, id> *GDTSetupRow(NSString *status,
                                                   NSString *detailKey,
@@ -97,14 +101,15 @@ static BOOL GDTSetupRemoteNameIsSafe(NSString *remoteName) {
                                           range:NSMakeRange(0, remoteName.length)] == 1;
 }
 
-static BOOL GDTRcloneCryptConfigIsValid(NSDictionary<NSString *, id> *result,
-                                        NSString *remoteName,
-                                        NSString *destinationPath) {
+/// Key/value pairs of exactly one `rclone config show <remote>` section, or
+/// nil when the output is missing, oversized, ambiguous or for another remote.
+static NSDictionary<NSString *, NSString *> *GDTRcloneConfigSection(
+    NSDictionary<NSString *, id> *result, NSString *remoteName) {
     if ([result[@"status"] integerValue] != 0 ||
         ![result[@"output"] isKindOfClass:NSString.class] ||
         [result[@"output"] length] > 64 * 1024 ||
-        !GDTSetupRemoteNameIsSafe(remoteName) || !destinationPath.length) {
-        return NO;
+        !GDTSetupRemoteNameIsSafe(remoteName)) {
+        return nil;
     }
     NSMutableDictionary<NSString *, NSString *> *values = [NSMutableDictionary dictionary];
     BOOL sawExpectedSection = NO;
@@ -115,18 +120,28 @@ static BOOL GDTRcloneCryptConfigIsValid(NSDictionary<NSString *, id> *result,
         if (!line.length || [line hasPrefix:@"#"] || [line hasPrefix:@";"]) continue;
         if ([line hasPrefix:@"["] && [line hasSuffix:@"]"]) {
             NSString *section = [line substringWithRange:NSMakeRange(1, line.length - 2)];
-            if (sawExpectedSection || ![section isEqualToString:remoteName]) return NO;
+            if (sawExpectedSection || ![section isEqualToString:remoteName]) return nil;
             sawExpectedSection = YES;
             continue;
         }
         NSRange separator = [line rangeOfString:@"="];
-        if (!sawExpectedSection || separator.location == NSNotFound) return NO;
+        if (!sawExpectedSection || separator.location == NSNotFound) return nil;
         NSString *key = [[line substringToIndex:separator.location]
             stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
         NSString *value = [[line substringFromIndex:NSMaxRange(separator)]
             stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
-        if (!key.length || values[key]) return NO;
+        if (!key.length || values[key]) return nil;
         values[key] = value ?: @"";
+    }
+    return sawExpectedSection ? values : nil;
+}
+
+static BOOL GDTRcloneCryptConfigIsValid(NSDictionary<NSString *, id> *result,
+                                        NSString *remoteName,
+                                        NSString *destinationPath) {
+    NSDictionary<NSString *, NSString *> *values = GDTRcloneConfigSection(result, remoteName);
+    if (!values || !destinationPath.length) {
+        return NO;
     }
     NSString *configuredRoot = [values[@"remote"] stringByStandardizingPath];
     NSString *expectedRoot = destinationPath.stringByStandardizingPath;
@@ -136,7 +151,7 @@ static BOOL GDTRcloneCryptConfigIsValid(NSDictionary<NSString *, id> *result,
     if ([NSFileManager.defaultManager fileExistsAtPath:expectedRoot]) {
         expectedRoot = expectedRoot.stringByResolvingSymlinksInPath;
     }
-    return sawExpectedSection && [values[@"type"] isEqualToString:@"crypt"] &&
+    return [values[@"type"] isEqualToString:@"crypt"] &&
         [configuredRoot isEqualToString:expectedRoot] && values[@"password"].length > 0 &&
         values[@"password2"].length > 0 &&
         [[values[@"filename_encryption"] lowercaseString] isEqualToString:@"standard"] &&
@@ -314,21 +329,178 @@ NSString *GDTSetupInstallCommand(BOOL homebrewAvailable, NSArray<NSString *> *mi
         install];
 }
 
+static BOOL GDTMatchesPattern(NSString *value, NSString *pattern) {
+    if (![value isKindOfClass:NSString.class] || !value.length) return NO;
+    NSRegularExpression *expression = [NSRegularExpression
+        regularExpressionWithPattern:pattern options:0 error:nil];
+    return [expression numberOfMatchesInString:value options:0
+                                          range:NSMakeRange(0, value.length)] == 1;
+}
+
+NSDictionary<NSString *, NSString *> *GDTGoogleOAuthClientFromJSONData(NSData *data,
+                                                                       NSString **reason) {
+    if (reason) *reason = @"invalid";
+    if (![data isKindOfClass:NSData.class] || !data.length || data.length > 64 * 1024) {
+        return nil;
+    }
+    id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![json isKindOfClass:NSDictionary.class]) return nil;
+    NSDictionary *client = json[@"installed"];
+    if (![client isKindOfClass:NSDictionary.class]) {
+        // The console labels other client types "web" etc.; rclone's local
+        // browser sign-in only works with a Desktop ("installed") client.
+        if ([json[@"web"] isKindOfClass:NSDictionary.class] && reason) *reason = @"notDesktop";
+        return nil;
+    }
+    NSString *clientID = client[@"client_id"];
+    NSString *clientSecret = client[@"client_secret"];
+    if (!GDTMatchesPattern(clientID, @"^[0-9]{1,32}-[a-z0-9]{1,64}\\.apps\\.googleusercontent\\.com$") ||
+        !GDTMatchesPattern(clientSecret, @"^[A-Za-z0-9_-]{8,128}$")) {
+        return nil;
+    }
+    if (reason) *reason = nil;
+    return @{@"clientID": clientID, @"clientSecret": clientSecret};
+}
+
+NSString *GDTNewestGoogleOAuthClientFile(NSString *directory, NSDate *notBefore,
+                                         NSFileManager *fileManager) {
+    NSFileManager *manager = fileManager ?: NSFileManager.defaultManager;
+    NSString *newestPath = nil;
+    NSDate *newestDate = nil;
+    for (NSString *name in [manager contentsOfDirectoryAtPath:directory error:nil] ?: @[]) {
+        if (![name hasPrefix:@"client_secret"] ||
+            ![name.pathExtension.lowercaseString isEqualToString:@"json"]) {
+            continue;
+        }
+        NSString *path = [directory stringByAppendingPathComponent:name];
+        NSDictionary<NSFileAttributeKey, id> *attributes = [manager attributesOfItemAtPath:path error:nil];
+        NSDate *modified = attributes.fileModificationDate;
+        if (![attributes.fileType isEqualToString:NSFileTypeRegular] || !modified ||
+            (notBefore && [modified compare:notBefore] == NSOrderedAscending)) {
+            continue;
+        }
+        if (!newestDate || [modified compare:newestDate] == NSOrderedDescending) {
+            newestDate = modified;
+            newestPath = path;
+        }
+    }
+    return newestPath;
+}
+
+/// Takes the engine's run lock exclusively without waiting. Returns the open
+/// descriptor, -2 when no lock is needed, or -1 when a backup holds it.
+static int GDTTakeBackupLock(NSString *path) {
+    if (!path.length) return -2;
+    int descriptor;
+    do {
+        descriptor = open(path.fileSystemRepresentation, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    } while (descriptor < 0 && errno == EINTR);
+    if (descriptor < 0) {
+        // Without the lock's directory the engine cannot run either.
+        return errno == ENOENT ? -2 : -1;
+    }
+    int lockStatus;
+    do {
+        lockStatus = flock(descriptor, LOCK_EX | LOCK_NB);
+    } while (lockStatus != 0 && errno == EINTR);
+    if (lockStatus != 0) {
+        close(descriptor);
+        return -1;
+    }
+    return descriptor;
+}
+
+static void GDTReleaseBackupLock(int descriptor) {
+    if (descriptor >= 0) {
+        (void)flock(descriptor, LOCK_UN);
+        (void)close(descriptor);
+    }
+}
+
 @implementation GDTSetupHealthChecker
 
 - (BOOL)homebrewAvailable {
     return self.commandAvailability && self.commandAvailability(@"brew");
 }
 
-- (NSDictionary<NSString *, id> *)connectGoogleDriveForConfig:(NSDictionary<NSString *, NSString *> *)config {
-    GDTSetupCommandRunner runner = self.interactiveCommandRunner ?: self.commandRunner;
-    if (!runner) {
-        return @{@"status": @127, @"output": @""};
-    }
+static NSDictionary<NSString *, id> *GDTConnectResult(NSInteger status, NSString *reason) {
+    return @{@"status": @(status), @"reason": reason};
+}
+
+- (NSDictionary<NSString *, id> *)connectGoogleDriveForConfig:(NSDictionary<NSString *, NSString *> *)config
+                                                      clientID:(NSString *)clientID
+                                                  clientSecret:(NSString *)clientSecret {
+    GDTSetupCommandRunner interactive = self.interactiveCommandRunner ?: self.commandRunner;
+    GDTSetupCommandRunner runner = self.commandRunner;
     NSString *remote = GDTNormalizedRemote(config[@"RCLONE_REMOTE"]);
+    NSData *probe = [NSJSONSerialization dataWithJSONObject:@{@"installed": @{
+        @"client_id": clientID ?: @"", @"client_secret": clientSecret ?: @""}}
+        options:0 error:nil];
+    if (!interactive || !runner || !GDTSetupRemoteNameIsSafe(remote) ||
+        !GDTGoogleOAuthClientFromJSONData(probe ?: NSData.data, nil)) {
+        return GDTConnectResult(127, @"invalidClient");
+    }
+    NSString *clientIDArgument = [@"client_id=" stringByAppendingString:clientID];
+    NSString *clientSecretArgument = [@"client_secret=" stringByAppendingString:clientSecret];
     // Read-only scope: the backup never needs to change anything in Drive.
-    return runner(@"rclone", @[@"config", @"create", remote, @"drive",
-                               @"scope=drive.readonly"]);
+    NSString *scopeArgument = @"scope=drive.readonly";
+
+    NSDictionary<NSString *, id> *listed = runner(@"rclone", @[@"listremotes"]);
+    NSArray<NSString *> *remotes = [listed[@"output"] isKindOfClass:NSString.class]
+        ? [listed[@"output"] componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]
+        : @[];
+    if ([listed[@"status"] integerValue] != 0) {
+        return GDTConnectResult(1, @"verifyFailed");
+    }
+    if (![remotes containsObject:[remote stringByAppendingString:@":"]]) {
+        NSDictionary<NSString *, id> *created = interactive(@"rclone", @[
+            @"config", @"create", remote, @"drive",
+            clientIDArgument, clientSecretArgument, scopeArgument]);
+        return [created[@"status"] integerValue] == 0
+            ? GDTConnectResult(0, @"connected")
+            : GDTConnectResult(1, @"signInFailed");
+    }
+
+    // Sign in on a temporary remote first: the existing one keeps working
+    // until the new client has proven it can read Drive.
+    NSString *temporary = [[remote substringToIndex:MIN(remote.length, (NSUInteger)50)]
+        stringByAppendingString:@"-tiger-new"];
+    runner(@"rclone", @[@"config", @"delete", temporary]);
+    NSDictionary<NSString *, id> *signedIn = interactive(@"rclone", @[
+        @"config", @"create", temporary, @"drive",
+        clientIDArgument, clientSecretArgument, scopeArgument]);
+    if ([signedIn[@"status"] integerValue] != 0) {
+        runner(@"rclone", @[@"config", @"delete", temporary]);
+        return GDTConnectResult(1, @"signInFailed");
+    }
+    NSString *temporaryRoot = [temporary stringByAppendingString:@":"];
+    NSDictionary<NSString *, id> *readable = runner(@"rclone", @[@"about", temporaryRoot, @"--json"]);
+    NSDictionary<NSString *, id> *dumped = runner(@"rclone", @[@"config", @"dump"]);
+    NSData *dumpData = [dumped[@"output"] isKindOfClass:NSString.class]
+        ? [dumped[@"output"] dataUsingEncoding:NSUTF8StringEncoding] : nil;
+    id dump = dumpData ? [NSJSONSerialization JSONObjectWithData:dumpData options:0 error:nil] : nil;
+    NSDictionary *temporaryConfig = [dump isKindOfClass:NSDictionary.class] ? dump[temporary] : nil;
+    NSString *token = [temporaryConfig isKindOfClass:NSDictionary.class] ? temporaryConfig[@"token"] : nil;
+    if ([readable[@"status"] integerValue] != 0 || [dumped[@"status"] integerValue] != 0 ||
+        ![token isKindOfClass:NSString.class] || !token.length) {
+        runner(@"rclone", @[@"config", @"delete", temporary]);
+        return GDTConnectResult(1, @"verifyFailed");
+    }
+
+    int lock = GDTTakeBackupLock(self.backupLockPath);
+    if (lock == -1) {
+        runner(@"rclone", @[@"config", @"delete", temporary]);
+        return GDTConnectResult(75, @"backupRunning");
+    }
+    NSDictionary<NSString *, id> *updated = runner(@"rclone", @[
+        @"config", @"update", remote, clientIDArgument, clientSecretArgument, scopeArgument,
+        [@"token=" stringByAppendingString:token], @"config_refresh_token=false",
+        @"--non-interactive"]);
+    GDTReleaseBackupLock(lock);
+    runner(@"rclone", @[@"config", @"delete", temporary]);
+    return [updated[@"status"] integerValue] == 0
+        ? GDTConnectResult(0, @"connected")
+        : GDTConnectResult(1, @"updateFailed");
 }
 
 - (instancetype)init {
@@ -410,10 +582,25 @@ NSString *GDTSetupInstallCommand(BOOL homebrewAvailable, NSArray<NSString *> *mi
                 @"rclone",
                 @[@"about", expectedLine, @"--json"]
             );
-            remote = [access[@"status"] integerValue] == 0
-                ? GDTSetupRow(@"ready", @"setupCheckRemoteReady", @{})
-                : GDTSetupRow(@"failure", @"setupCheckRemoteUnavailable",
-                              @{@"action": @"retryRemote"});
+            BOOL reachable = [access[@"status"] integerValue] == 0;
+            // An empty client_id means rclone's shared Google client, which
+            // Google is retiring. Unknown or unreadable config is not flagged.
+            NSDictionary<NSString *, NSString *> *section = GDTRcloneConfigSection(
+                self.commandRunner(@"rclone", @[@"config", @"show", remoteName]), remoteName);
+            BOOL sharedClient = [section[@"type"] isEqualToString:@"drive"] &&
+                !section[@"client_id"].length;
+            if (sharedClient) {
+                remote = reachable
+                    ? GDTSetupRow(@"ready", @"setupCheckRemoteSharedClient",
+                                  @{@"action": @"useOwnGoogleClient"})
+                    : GDTSetupRow(@"failure", @"setupCheckRemoteSharedClientFailed",
+                                  @{@"action": @"useOwnGoogleClient"});
+            } else {
+                remote = reachable
+                    ? GDTSetupRow(@"ready", @"setupCheckRemoteReady", @{})
+                    : GDTSetupRow(@"failure", @"setupCheckRemoteUnavailable",
+                                  @{@"action": @"retryRemote"});
+            }
         }
     }
 

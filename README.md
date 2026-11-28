@@ -53,9 +53,12 @@ and a clear status. No Terminal needed.
    **System Settings › Privacy & Security**, click **Open Anyway** next to the
    package, and confirm.
 2. **Set up in the app.** Open *GDrive Backup Tiger*, click **Set up backup …**,
-   click **Connect Google** (your browser opens Google's sign-in; the app only
-   asks for read access), choose an external disk or your NAS and a schedule,
-   then **Save**.
+   click **Connect Google**, choose an external disk or your NAS and a
+   schedule, then **Save**. Connecting walks you once through creating your own
+   free Google access client (about 3 minutes in the Google Cloud console; the
+   app opens each page and picks up the downloaded file itself), then your
+   browser asks for read access. This is needed because Google is retiring the
+   shared client built into rclone.
 
 The installer includes `rclone` and `jq`, so Homebrew is not required. If
 Homebrew versions are installed, the app and the engine prefer them and keep
@@ -70,9 +73,13 @@ their updates.
    › Datenschutz & Sicherheit** öffnen, bei dem Paket **Dennoch öffnen** klicken
    und bestätigen.
 2. **In der App einrichten:** *GDrive Backup Tiger* öffnen, **Backup einrichten …**
-   wählen, **Mit Google verbinden** klicken (der Browser öffnet die Google-Anmeldung;
-   die App fragt nur Lesezugriff an), externe Festplatte oder NAS und Zeitplan
-   wählen, **Speichern**.
+   wählen, **Mit Google verbinden** klicken, externe Festplatte oder NAS und
+   Zeitplan wählen, **Speichern**. Beim Verbinden führt die App einmalig durch
+   das Anlegen einer eigenen, kostenlosen Google-Zugangskennung (etwa 3 Minuten
+   in der Google-Cloud-Konsole; die App öffnet jede Seite und übernimmt die
+   heruntergeladene Datei selbst), danach fragt der Browser nach Lesezugriff.
+   Nötig ist das, weil Google die in rclone eingebaute gemeinsame Kennung
+   abschaltet.
 
 `rclone` und `jq` sind im Installationspaket enthalten, Homebrew ist nicht nötig.
 Sind Homebrew-Versionen installiert, nutzen App und Backup-Routine diese und
