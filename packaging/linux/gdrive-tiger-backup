@@ -321,7 +321,9 @@ start_agent_setup() {
   [[ -f "$AGENT_SKILL" ]] || die "agent guide not found at $AGENT_SKILL; run the installer again"
   local task="Set up my Google Drive backup: read $AGENT_SKILL and follow it step by step."
   if command -v omarchy >/dev/null 2>&1; then
-    exec omarchy agent prompt "$task"
+    omarchy agent prompt "$task" && return 0
+    printf '\nPick your agent with "omarchy default agent <name>", or give any agent this task:\n\n  %s\n' "$task"
+    return 1
   fi
   printf 'Give your AI agent (Claude Code, Codex, OpenCode, ...) this task:\n\n  %s\n' "$task"
 }

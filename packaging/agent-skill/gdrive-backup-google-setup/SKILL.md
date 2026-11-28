@@ -116,7 +116,7 @@ The backup must go to a separate disk or network share, never the system disk.
 Show what is mounted and let the user choose:
 
 ```bash
-findmnt -rno TARGET,FSTYPE,SIZE,AVAIL | grep -vE '^/(boot|efi|proc|sys|dev|run|tmp)|^/ |^/home ' | grep -vE ' (tmpfs|devtmpfs|overlay|squashfs|proc|sysfs|cgroup2|efivarfs|vfat) '
+findmnt -rno TARGET,FSTYPE,SIZE,AVAIL | grep -vE '^/(boot|efi|proc|sys|dev|run|tmp)|^/ |^/home ' | grep -vE ' (tmpfs|devtmpfs|overlay|squashfs|proc|sysfs|cgroup2|efivarfs|vfat|autofs) '
 ```
 
 Check that the free space is roughly larger than the Drive
