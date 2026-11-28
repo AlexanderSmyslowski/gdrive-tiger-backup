@@ -6,6 +6,7 @@
 - Fix (Linux): under bash 5, a helper subshell started by `run_with_timeout` ran the engine's exit handler, which published a stale result, wrote a second history entry and deleted the running backup's temporary directory. Cleanup and signal handling now run only in the engine process. macOS (bash 3.2) was not affected.
 - The outcome and robustness test suites now also run on Linux in CI.
 - Linux: `setup` and the new `gdrive-tiger-backup connect` sign in with your own Google client, like the Mac app since v2.10.0. They read the downloaded Desktop-app client file from `~/Downloads`, keep a private copy, and switch an existing remote only after a temporary remote has signed in and only while no backup runs.
+- Private Gmail accounts: Google now publishes an app only with a home page and a privacy policy, so the "Publish app" step failed as described. `setup`, `docs/linux.md` and `docs/reference.md` now give both links (the repository and the new `PRIVACY.md`); tried with a private Gmail account on 2026-11-28. The Mac assistant's text follows separately.
 - Linux: `gdrive-tiger-backup omarchy-menu` adds a Drive Backup submenu (status, back up now, dry run, log) to the Omarchy menu. Omarchy plugins cannot add menu rows themselves, so the command writes them once, on request, into your own `~/.config/omarchy/extensions/omarchy-menu.jsonc`, keeps your entries and never adds them twice.
 
 ## v2.10.0 - 2026-11-28

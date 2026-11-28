@@ -90,8 +90,14 @@ The assistant's steps, if you prefer to do it by hand:
 3. Set up the app under [Google Auth Platform](https://console.cloud.google.com/auth/overview)
    with audience **External** (a Google Workspace account may choose **Internal**).
 4. [Publish the app](https://console.cloud.google.com/auth/audience). An app left
-   in *Testing* is signed out by Google after 7 days. Google then shows "app not
-   verified" once at sign-in; it is your own app.
+   in *Testing* is signed out by Google after 7 days. Google publishes only an
+   app with a home page and a privacy policy: first, under
+   [Branding](https://console.cloud.google.com/auth/branding), enter
+   `https://github.com/AlexanderSmyslowski/gdrive-tiger-backup` and
+   `https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/blob/main/PRIVACY.md`
+   (and `github.com` as authorized domain if asked) and save. Google then shows
+   "app not verified" once at sign-in; it is your own app. A Google Workspace
+   app with audience **Internal** skips this step.
 5. [Create a client](https://console.cloud.google.com/auth/clients/create) of
    type **Desktop app** and download its JSON file. Google shows the secret only
    once; the app keeps a copy in

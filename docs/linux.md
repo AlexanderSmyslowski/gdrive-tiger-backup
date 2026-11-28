@@ -54,10 +54,19 @@ folder and enables the daily schedule.
 Google retires the sign-in client built into rclone during 2026, so the backup
 signs in with a client in your own Google Cloud project. `setup` lists the five
 console pages to open (new project, enable the Drive API, Google sign-in setup,
-for a private Gmail account "Publish app", and a client of type **Desktop
-app**). Click **Download JSON**; `setup` finds the newest `client_secret_*.json`
+for a private Gmail account the branding links and "Publish app", and a client
+of type **Desktop app**). Click **Download JSON**; `setup` finds the newest `client_secret_*.json`
 in `~/Downloads`, checks it, keeps a private copy in
 `~/.config/gdrive-tiger-backup/google-oauth-client.json` and signs in.
+
+A private Gmail account needs the app published, or Google signs the backup out
+after 7 days. Google publishes only an app with a home page and a privacy
+policy; under **Branding** enter
+`https://github.com/AlexanderSmyslowski/gdrive-tiger-backup` and
+`https://github.com/AlexanderSmyslowski/gdrive-tiger-backup/blob/main/PRIVACY.md`
+(and `github.com` as authorized domain if asked), save, then **Publish app**
+under **Audience**. Google shows "app not verified" once at sign-in; it is your
+own app.
 
 An existing remote that still uses rclone's client is offered the switch in
 `setup`, or later with `gdrive-tiger-backup connect`. It is switched only after
