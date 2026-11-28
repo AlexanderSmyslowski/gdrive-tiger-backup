@@ -1,10 +1,16 @@
 #import <Foundation/Foundation.h>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
 
 typedef BOOL (^GDTTestCommandAvailability)(NSString *command);
 typedef NSDictionary<NSString *, id> * (^GDTTestCommandRunner)(NSString *command,
                                                                 NSArray<NSString *> *arguments);
 
 extern NSString *GDTSetupInstallCommand(BOOL homebrewAvailable, NSArray<NSString *> *missingCommands);
+extern NSDictionary<NSString *, NSString *> *GDTGoogleOAuthClientFromJSONData(NSData *data, NSString **reason);
+extern NSString *GDTNewestGoogleOAuthClientFile(NSString *directory, NSDate *notBefore,
+                                                NSFileManager *fileManager);
 
 static int failures = 0;
 
@@ -104,10 +110,11 @@ int main(void) {
                [snapshot[@"remote"][@"status"] isEqualToString:@"ready"] &&
                [snapshot[@"destination"][@"status"] isEqualToString:@"ready"],
                @"ready setup exposes three explicit successful checks");
-        Assert(commands.count == 2 &&
+        Assert(commands.count == 3 &&
                [commands[0] hasSuffix:@"listremotes"] &&
-               [commands[1] containsString:@"about gdrive:"],
-               @"remote validation lists configured remotes before testing access");
+               [commands[1] containsString:@"about gdrive:"] &&
+               [commands[2] hasSuffix:@"config show gdrive"],
+               @"remote validation lists remotes, tests access, then checks which Google client is used");
         Assert(!snapshot[@"output"] && !snapshot[@"token"] && !snapshot[@"credentials"],
                @"setup health never returns command output or credentials");
 
@@ -490,21 +497,176 @@ int main(void) {
            [withHomebrew hasSuffix:@"&& brew install jq"],
            @"install command installs Homebrew first when it is missing");
 
+    // --- Own Google OAuth client instead of rclone's retiring shared one ---
+    NSString *clientID = @"422579661830-d9fubsqauhu020p2mk2dftkivptr244l.apps.googleusercontent.com";
+    NSString *clientSecret = @"GOCSPX-test_Secret-123";
+    NSData *(^ClientJSON)(NSString *, NSString *, NSString *) =
+        ^NSData *(NSString *type, NSString *identifier, NSString *secret) {
+            return [NSJSONSerialization dataWithJSONObject:@{type: @{
+                @"client_id": identifier, @"client_secret": secret,
+                @"project_id": @"tiger-backup"}} options:0 error:nil];
+        };
+    NSString *reason = nil;
+    NSDictionary *parsed = GDTGoogleOAuthClientFromJSONData(
+        ClientJSON(@"installed", clientID, clientSecret), &reason);
+    Assert([parsed[@"clientID"] isEqualToString:clientID] &&
+           [parsed[@"clientSecret"] isEqualToString:clientSecret] && reason == nil,
+           @"a downloaded Desktop client file yields its id and secret");
+    Assert(!GDTGoogleOAuthClientFromJSONData(ClientJSON(@"web", clientID, clientSecret), &reason) &&
+           [reason isEqualToString:@"notDesktop"],
+           @"a web client is rejected with a hint to choose Desktop app");
+    Assert(!GDTGoogleOAuthClientFromJSONData([@"not json" dataUsingEncoding:NSUTF8StringEncoding], &reason) &&
+           [reason isEqualToString:@"invalid"] &&
+           !GDTGoogleOAuthClientFromJSONData(ClientJSON(@"installed", clientID, @"secret\nscope=drive"), nil) &&
+           !GDTGoogleOAuthClientFromJSONData(ClientJSON(@"installed", @"evil client_id=x", clientSecret), nil),
+           @"malformed files and values that could smuggle rclone options are rejected");
+
+    NSString *downloads = [NSTemporaryDirectory() stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"gdrive-client-downloads-%@", NSUUID.UUID.UUIDString]];
+    [NSFileManager.defaultManager createDirectoryAtPath:downloads withIntermediateDirectories:YES
+                                             attributes:nil error:nil];
+    NSDate *assistantOpened = [NSDate date];
+    NSString *oldFile = [downloads stringByAppendingPathComponent:@"client_secret_old.apps.googleusercontent.com.json"];
+    NSString *newFile = [downloads stringByAppendingPathComponent:@"client_secret_new.apps.googleusercontent.com.json"];
+    NSString *otherFile = [downloads stringByAppendingPathComponent:@"report.json"];
+    for (NSString *path in @[oldFile, newFile, otherFile]) {
+        [ClientJSON(@"installed", clientID, clientSecret) writeToFile:path atomically:YES];
+    }
+    [NSFileManager.defaultManager setAttributes:@{NSFileModificationDate:
+        [assistantOpened dateByAddingTimeInterval:-3600]} ofItemAtPath:oldFile error:nil];
+    [NSFileManager.defaultManager setAttributes:@{NSFileModificationDate:
+        [assistantOpened dateByAddingTimeInterval:60]} ofItemAtPath:otherFile error:nil];
+    Assert([GDTNewestGoogleOAuthClientFile(downloads, assistantOpened, NSFileManager.defaultManager)
+               isEqualToString:newFile],
+           @"only a client file downloaded after the assistant opened is picked up");
+    [NSFileManager.defaultManager removeItemAtPath:newFile error:nil];
+    Assert(GDTNewestGoogleOAuthClientFile(downloads, assistantOpened, NSFileManager.defaultManager) == nil,
+           @"an old client file in Downloads is never used silently");
+    [NSFileManager.defaultManager removeItemAtPath:downloads error:nil];
+
+    NSString *healthVolume = [NSTemporaryDirectory() stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"gdrive-shared-client-%@", NSUUID.UUID.UUIDString]];
+    [NSFileManager.defaultManager createDirectoryAtPath:healthVolume withIntermediateDirectories:YES
+                                             attributes:nil error:nil];
+    NSDictionary *healthConfig = @{@"GDRIVE_BACKUP_TARGET": @"apfs",
+                                   @"GDRIVE_BACKUP_VOLUME": healthVolume,
+                                   @"GDRIVE_BACKUP_ENCRYPTION": @"none",
+                                   @"RCLONE_REMOTE": @"gdrive"};
+    NSDictionary *(^RemoteRow)(NSString *, NSInteger) = ^NSDictionary *(NSString *section, NSInteger aboutStatus) {
+        return Snapshot(healthConfig, ^BOOL(NSString *command) { (void)command; return YES; },
+            ^NSDictionary<NSString *, id> *(NSString *command, NSArray<NSString *> *arguments) {
+                (void)command;
+                if ([arguments.firstObject isEqualToString:@"listremotes"]) {
+                    return @{@"status": @0, @"output": @"gdrive:\n"};
+                }
+                if ([arguments.firstObject isEqualToString:@"about"]) {
+                    return @{@"status": @(aboutStatus), @"output": @"{}"};
+                }
+                if ([arguments isEqualToArray:@[@"config", @"show", @"gdrive"]]) {
+                    return @{@"status": @0, @"output": section};
+                }
+                return @{@"status": @1, @"output": @""};
+            }, NSFileManager.defaultManager)[@"remote"];
+    };
+    NSDictionary *sharedReady = RemoteRow(@"[gdrive]\ntype = drive\nscope = drive.readonly\nclient_id = \ntoken = {\"x\":1}\n", 0);
+    Assert([sharedReady[@"status"] isEqualToString:@"ready"] &&
+           [sharedReady[@"detailKey"] isEqualToString:@"setupCheckRemoteSharedClient"] &&
+           [sharedReady[@"action"] isEqualToString:@"useOwnGoogleClient"],
+           @"a working remote on rclone's shared client stays ready but offers the own-client setup");
+    NSDictionary *sharedBroken = RemoteRow(@"[gdrive]\ntype = drive\nscope = drive.readonly\n", 1);
+    Assert([sharedBroken[@"status"] isEqualToString:@"failure"] &&
+           [sharedBroken[@"detailKey"] isEqualToString:@"setupCheckRemoteSharedClientFailed"] &&
+           [sharedBroken[@"action"] isEqualToString:@"useOwnGoogleClient"],
+           @"an unreachable remote on the shared client points to the own-client setup");
+    NSDictionary *ownClient = RemoteRow([NSString stringWithFormat:
+        @"[gdrive]\ntype = drive\nclient_id = %@\nclient_secret = s\n", clientID], 0);
+    Assert([ownClient[@"detailKey"] isEqualToString:@"setupCheckRemoteReady"] && !ownClient[@"action"] &&
+           ![ownClient.description containsString:clientID],
+           @"a remote with its own client is simply ready and no config value enters the snapshot");
+    [NSFileManager.defaultManager removeItemAtPath:healthVolume error:nil];
+
     Class checkerClass = NSClassFromString(@"GDTSetupHealthChecker");
-    id connector = [[checkerClass alloc] init];
-    __block NSArray<NSString *> *connectArguments = nil;
-    [connector setValue:^NSDictionary<NSString *, id> *(NSString *command, NSArray<NSString *> *arguments) {
-        connectArguments = [@[command] arrayByAddingObjectsFromArray:arguments];
-        return @{@"status": @0, @"output": @""};
-    } forKey:@"interactiveCommandRunner"];
-    SEL connectSelector = NSSelectorFromString(@"connectGoogleDriveForConfig:");
-    NSDictionary *(*connect)(id, SEL, NSDictionary *) =
-        (NSDictionary *(*)(id, SEL, NSDictionary *))[connector methodForSelector:connectSelector];
-    NSDictionary *connectResult = connect(connector, connectSelector, @{@"RCLONE_REMOTE": @"gdrive:"});
-    Assert([connectResult[@"status"] integerValue] == 0 &&
-           [connectArguments isEqualToArray:@[@"rclone", @"config", @"create", @"gdrive", @"drive",
-                                              @"scope=drive.readonly"]],
-           @"connecting Google Drive creates a read-only remote under the configured name");
+    SEL connectSelector = NSSelectorFromString(@"connectGoogleDriveForConfig:clientID:clientSecret:");
+    typedef NSDictionary *(*ConnectMethod)(id, SEL, NSDictionary *, NSString *, NSString *);
+    NSString *lockPath = [NSTemporaryDirectory() stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"gdrive-backup-%@.lock", NSUUID.UUID.UUIDString]];
+    NSString *clientArgument = [@"client_id=" stringByAppendingString:clientID];
+    NSString *secretArgument = [@"client_secret=" stringByAppendingString:clientSecret];
+    // Fake rclone: records every call; `remotes` is the listremotes output.
+    NSDictionary *(^Connect)(NSString *, NSInteger, NSMutableArray *, NSString *) =
+        ^NSDictionary *(NSString *remotes, NSInteger signInStatus, NSMutableArray *calls, NSString *clientValue) {
+            id connector = [[checkerClass alloc] init];
+            GDTTestCommandRunner runner = ^NSDictionary<NSString *, id> *(NSString *command, NSArray<NSString *> *arguments) {
+                [calls addObject:[@[command] arrayByAddingObjectsFromArray:arguments]];
+                if ([arguments.firstObject isEqualToString:@"listremotes"]) {
+                    return @{@"status": @0, @"output": remotes};
+                }
+                if ([arguments isEqualToArray:@[@"config", @"dump"]]) {
+                    return @{@"status": @0, @"output":
+                        @"{\"gdrive\":{\"type\":\"drive\"},\"gdrive-tiger-new\":{\"type\":\"drive\",\"token\":\"{\\\"refresh_token\\\":\\\"new\\\"}\"}}"};
+                }
+                return @{@"status": @0, @"output": @"{}"};
+            };
+            [connector setValue:runner forKey:@"commandRunner"];
+            [connector setValue:^NSDictionary<NSString *, id> *(NSString *command, NSArray<NSString *> *arguments) {
+                [calls addObject:[@[@"interactive", command] arrayByAddingObjectsFromArray:arguments]];
+                return @{@"status": @(signInStatus), @"output": @""};
+            } forKey:@"interactiveCommandRunner"];
+            [connector setValue:lockPath forKey:@"backupLockPath"];
+            ConnectMethod connect = (ConnectMethod)[connector methodForSelector:connectSelector];
+            return connect(connector, connectSelector, @{@"RCLONE_REMOTE": @"gdrive:"}, clientValue, clientSecret);
+        };
+    BOOL (^Updated)(NSArray *) = ^BOOL(NSArray *calls) {
+        for (NSArray *call in calls) {
+            if ([call containsObject:@"update"]) return YES;
+        }
+        return NO;
+    };
+
+    NSMutableArray *calls = [NSMutableArray array];
+    NSDictionary *result = Connect(@"archive:\n", 0, calls, clientID);
+    Assert([result[@"reason"] isEqualToString:@"connected"] &&
+           [calls.lastObject isEqualToArray:@[@"interactive", @"rclone", @"config", @"create", @"gdrive",
+               @"drive", clientArgument, secretArgument, @"scope=drive.readonly"]],
+           @"a first connection creates the read-only remote with the user's own client");
+
+    calls = [NSMutableArray array];
+    result = Connect(@"gdrive:\n", 0, calls, clientID);
+    NSArray *update = nil;
+    for (NSArray *call in calls) {
+        if ([call containsObject:@"update"]) update = call;
+    }
+    Assert([result[@"reason"] isEqualToString:@"connected"] &&
+           [calls containsObject:@[@"interactive", @"rclone", @"config", @"create", @"gdrive-tiger-new",
+               @"drive", clientArgument, secretArgument, @"scope=drive.readonly"]] &&
+           [calls containsObject:@[@"rclone", @"about", @"gdrive-tiger-new:", @"--json"]] &&
+           [update isEqualToArray:@[@"rclone", @"config", @"update", @"gdrive", clientArgument,
+               secretArgument, @"scope=drive.readonly", @"token={\"refresh_token\":\"new\"}",
+               @"config_refresh_token=false", @"--non-interactive"]] &&
+           [calls.lastObject isEqualToArray:@[@"rclone", @"config", @"delete", @"gdrive-tiger-new"]],
+           @"an existing remote switches only after a temporary remote signed in and read Drive");
+
+    calls = [NSMutableArray array];
+    result = Connect(@"gdrive:\n", 1, calls, clientID);
+    Assert([result[@"reason"] isEqualToString:@"signInFailed"] && !Updated(calls) &&
+           [calls.lastObject isEqualToArray:@[@"rclone", @"config", @"delete", @"gdrive-tiger-new"]],
+           @"a cancelled sign-in leaves the existing remote untouched and cleans up");
+
+    int heldLock = open(lockPath.fileSystemRepresentation, O_RDWR | O_CREAT, 0600);
+    flock(heldLock, LOCK_EX);
+    calls = [NSMutableArray array];
+    result = Connect(@"gdrive:\n", 0, calls, clientID);
+    Assert([result[@"reason"] isEqualToString:@"backupRunning"] && !Updated(calls) &&
+           [calls.lastObject isEqualToArray:@[@"rclone", @"config", @"delete", @"gdrive-tiger-new"]],
+           @"a running backup blocks the switch so it cannot write an old token back");
+    flock(heldLock, LOCK_UN);
+    close(heldLock);
+    unlink(lockPath.fileSystemRepresentation);
+
+    calls = [NSMutableArray array];
+    result = Connect(@"gdrive:\n", 0, calls, @"not-a-client id");
+    Assert([result[@"reason"] isEqualToString:@"invalidClient"] && calls.count == 0,
+           @"an invalid client never reaches rclone");
 
     if (failures > 0) {
         printf("%d setup health test(s) failed.\n", failures);

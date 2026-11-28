@@ -75,11 +75,33 @@ the backup does not preserve Google Drive's native document revision history.
 
 ## Configure rclone
 
-The app's **Connect Google** button does this for you. To do it by hand,
-create a Google Drive remote named `gdrive`:
+The app's **Connect Google** button does this for you, including an own Google
+OAuth client. rclone's shared client is being retired during 2026 (see
+[rclone's notice](https://rclone.org/drive/#making-your-own-client-id)), so a
+remote without its own `client_id` will stop working. The setup check marks such
+a remote with **!** and offers **Set up own connection**; an existing remote is
+switched only after a temporary remote has signed in and read Drive, and only
+while no backup holds the run lock.
+
+The assistant's steps, if you prefer to do it by hand:
+
+1. Create a project in the [Google Cloud console](https://console.cloud.google.com/projectcreate).
+2. Enable the [Google Drive API](https://console.cloud.google.com/apis/library/drive.googleapis.com) in it.
+3. Set up the app under [Google Auth Platform](https://console.cloud.google.com/auth/overview)
+   with audience **External** (a Google Workspace account may choose **Internal**).
+4. [Publish the app](https://console.cloud.google.com/auth/audience). An app left
+   in *Testing* is signed out by Google after 7 days. Google then shows "app not
+   verified" once at sign-in; it is your own app.
+5. [Create a client](https://console.cloud.google.com/auth/clients/create) of
+   type **Desktop app** and download its JSON file. Google shows the secret only
+   once; the app keeps a copy in
+   `~/Library/Application Support/GDrive Backup Tiger/google-oauth-client.json`
+   (mode 600) and moves the download to the Trash.
+
+Then create a Google Drive remote named `gdrive` with that client:
 
 ```bash
-rclone config
+rclone config create gdrive drive client_id=<id> client_secret=<secret> scope=drive.readonly
 ```
 
 Recommended OAuth scope: `drive.readonly`.

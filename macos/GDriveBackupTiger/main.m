@@ -1106,6 +1106,11 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
                 [missing componentsJoinedByString:@", "]];
         }
 
+        if ([detailKey isEqualToString:@"setupCheckRemoteSharedClient"]) {
+            // Works today, but depends on a client Google is retiring.
+            presentation = @[@"!", [NSColor colorWithCalibratedRed:0.72 green:0.42 blue:0.02 alpha:1.0]];
+        }
+
         NSTextField *symbolLabel = self.rowSymbolLabels[index];
         NSTextField *titleLabel = self.rowTitleLabels[index];
         NSTextField *detailLabel = self.rowDetailLabels[index];
@@ -1126,6 +1131,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *DiscoverBonjourStorage(v
         [self showAction:@"copyInstallCommand" titleKey:@"setupActionCopyInstall" row:0];
     } else if ([remote[@"action"] isEqual:@"configureRemote"]) {
         [self showAction:@"connectGoogleDrive" titleKey:@"setupActionConnectDrive" row:1];
+    } else if ([remote[@"action"] isEqual:@"useOwnGoogleClient"]) {
+        [self showAction:@"useOwnGoogleClient" titleKey:@"setupActionOwnGoogleClient" row:1];
     } else {
         [self showAction:nil titleKey:nil row:0];
     }
@@ -1957,6 +1964,11 @@ static const CGFloat GDTHistoryRunHeight = 17.0;
 @property(nonatomic, strong) NSButton *profileDeleteButton;
 @property(nonatomic) BOOL setupHealthCheckInFlight;
 @property(nonatomic) BOOL googleDriveConnectInFlight;
+@property(nonatomic, strong) NSWindow *googleClientWindow;
+@property(nonatomic, strong) NSTextField *googleClientStatusField;
+@property(nonatomic, strong) NSTimer *googleClientTimer;
+@property(nonatomic, strong) NSDate *googleClientStartedAt;
+@property(nonatomic, copy) NSString *googleClientRejectedPath;
 @property(nonatomic) NSUInteger setupHealthGeneration;
 @property(nonatomic) BOOL manualLaunchPending;
 @property(nonatomic) BOOL dryRunPending;
@@ -2040,6 +2052,10 @@ static const CGFloat GDTHistoryRunHeight = 17.0;
                            completion:(void (^)(NSInteger status))completion;
 - (NSString *)automaticRetryLockPath;
 - (BOOL)automaticRetryLockIsAvailable;
+- (void)performSetupHealthAction:(NSString *)action;
+- (void)showGoogleClientAssistant;
+- (void)acceptGoogleClientFileAtPath:(NSString *)path moveToTrash:(BOOL)moveToTrash;
+- (void)cancelGoogleClientAssistant:(id)sender;
 - (NSString *)automaticRetrySummaryPathForProfileID:(NSString *)profileID;
 - (NSDictionary<NSString *, NSString *> *)automaticRetrySummaryAtPath:(NSString *)path;
 - (NSDictionary<NSString *, NSString *> *)automaticRetryDecisionForSummary:
@@ -4787,6 +4803,14 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         (yesterday && [calendar isDate:date inSameDayAsDate:yesterday])) {
         formatter.dateStyle = NSDateFormatterShortStyle;
         formatter.doesRelativeDateFormatting = YES;
+        // Relative formatting always compares with the real current day, not
+        // with `now`. Move the date by the same number of calendar days so
+        // "Today"/"Yesterday" are relative to `now`; the wall-clock time stays.
+        NSInteger dayOffset = [calendar components:NSCalendarUnitDay
+                                          fromDate:[calendar startOfDayForDate:now]
+                                            toDate:[calendar startOfDayForDate:[NSDate date]]
+                                           options:0].day;
+        date = [calendar dateByAddingUnit:NSCalendarUnitDay value:dayOffset toDate:date options:0] ?: date;
     } else {
         BOOL sameYear = [calendar component:NSCalendarUnitYear fromDate:date] ==
             [calendar component:NSCalendarUnitYear fromDate:now];
@@ -6612,6 +6636,7 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
 }
 
 #include "AdHocDestinationMethods.inc"
+#include "GoogleClientSetupMethods.inc"
 #include "UpdateInstallMethods.inc"
 
 - (void)startOverviewBackup:(id)sender {
@@ -7094,29 +7119,11 @@ didReceiveNotificationResponse:(UNNotificationResponse *)response
         return;
     }
 
-    if ([action isEqualToString:@"connectGoogleDrive"]) {
-        if (self.googleDriveConnectInFlight) {
-            return;
+    if ([action isEqualToString:@"connectGoogleDrive"] ||
+        [action isEqualToString:@"useOwnGoogleClient"]) {
+        if (!self.googleDriveConnectInFlight) {
+            [self showGoogleClientAssistant];
         }
-        self.googleDriveConnectInFlight = YES;
-        self.setupHealthView.actionButton.enabled = NO;
-        self.statusField.stringValue = T(language, @"setupConnectRunning");
-        NSMutableDictionary<NSString *, NSString *> *config = [[self savedSetupConfig] mutableCopy];
-        [config addEntriesFromDictionary:[self currentSetupUpdates]];
-        __weak typeof(self) weakSelf = self;
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-            NSDictionary<NSString *, id> *result = [checker connectGoogleDriveForConfig:config];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                typeof(self) strongSelf = weakSelf;
-                if (!strongSelf) return;
-                strongSelf.googleDriveConnectInFlight = NO;
-                strongSelf.setupHealthView.actionButton.enabled = YES;
-                BOOL connected = [result[@"status"] integerValue] == 0;
-                strongSelf.statusField.stringValue = T(strongSelf.language ?: @"en",
-                    connected ? @"setupConnectDone" : @"setupConnectFailed");
-                [strongSelf runSetupHealthCheck:nil];
-            });
-        });
     }
 }
 

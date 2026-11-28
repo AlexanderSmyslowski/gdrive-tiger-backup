@@ -40,8 +40,10 @@ Run the checklist on:
 
 ### Set up
 
-- [ ] **Connect Google** opens the browser, sign-in works, read-only access is
-      requested, and the setup check turns green afterwards.
+- [ ] **Connect Google** opens the own-client assistant; following its five
+      console steps works, the downloaded JSON file is picked up without
+      choosing it, the browser sign-in requests read-only access, and the setup
+      check turns green (not **!**) afterwards.
 - [ ] Choose an external disk: the disk is offered by its device name; nothing
       is formatted without a clear confirmation.
 - [ ] Alternatively choose a NAS: discovery or address entry works with the

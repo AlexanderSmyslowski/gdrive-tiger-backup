@@ -149,7 +149,14 @@ int main(void) {
             @"setupCheckRemoteReady", @"setupCheckRemoteUnavailable",
             @"setupCheckDestinationReady", @"setupCheckDestinationUnavailable",
             @"setupCheckEncryptedAPFSRequired", @"setupCheckEncryptedAPFSReady",
-            @"setupCheckReady", @"setupCheckNeedsAttention"
+            @"setupCheckReady", @"setupCheckNeedsAttention",
+            @"setupActionOwnGoogleClient", @"setupCheckRemoteSharedClient",
+            @"setupCheckRemoteSharedClientFailed", @"googleClientTitle", @"googleClientIntro",
+            @"googleClientStep1", @"googleClientStep2", @"googleClientStep3",
+            @"googleClientStep4", @"googleClientStep5", @"googleClientOpen",
+            @"googleClientWaiting", @"googleClientWrongType", @"googleClientInvalid",
+            @"googleClientChooseFile", @"googleClientCancel", @"googleClientSigningIn",
+            @"googleClientBackupRunning"
         ];
         BOOL localized = YES;
         for (NSString *language in SupportedLanguageCodes()) {
@@ -159,6 +166,27 @@ int main(void) {
             }
         }
         Assert(localized, @"setup health text is localized in every supported language");
+
+        ApplySnapshot(healthView, @{
+            @"overall": @"ready",
+            @"dependencies": @{@"status": @"ready", @"detailKey": @"setupCheckDependenciesReady"},
+            @"remote": @{@"status": @"ready", @"detailKey": @"setupCheckRemoteSharedClient",
+                         @"action": @"useOwnGoogleClient"},
+            @"destination": @{@"status": @"ready", @"detailKey": @"setupCheckDestinationReady"}
+        });
+        NSButton *ownClientButton = [healthView valueForKey:@"actionButton"];
+        Assert([symbolLabels[1].stringValue isEqualToString:@"!"] &&
+               !ownClientButton.hidden &&
+               [ownClientButton.title isEqualToString:T(@"en", @"setupActionOwnGoogleClient")] &&
+               [[healthView valueForKey:@"currentAction"] isEqualToString:@"useOwnGoogleClient"],
+               @"a remote on rclone's retiring shared client is marked and offers the own-client setup");
+        BOOL ownClientTitleFits = YES;
+        for (NSString *language in SupportedLanguageCodes()) {
+            CGFloat titleWidth = ceil([T(language, @"setupActionOwnGoogleClient")
+                sizeWithAttributes:@{NSFontAttributeName: ownClientButton.font}].width) + 28.0;
+            ownClientTitleFits = ownClientTitleFits && titleWidth <= 170.0;
+        }
+        Assert(ownClientTitleFits, @"the own-client button title fits the row button in every language");
 
         [healthView setValue:@"de" forKey:@"language"];
         NSTextField *sectionTitle = nil;
@@ -332,13 +360,43 @@ int main(void) {
             [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode
                                   beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
         }
-        Assert(disabledDuringCheck && ranOffMainThread && asyncRunnerCalls == 2,
+        Assert(disabledDuringCheck && ranOffMainThread && asyncRunnerCalls == 3,
                @"setup check runs off the main thread and disables start actions once");
         Assert(!asyncDelegate.setupHealthCheckInFlight &&
                asyncDelegate.setupBackupButton.enabled &&
                asyncDelegate.setupDryRunButton.enabled &&
                [asyncDelegate.statusField.stringValue isEqualToString:T(@"en", @"setupCheckReady")],
                @"asynchronous setup check restores actions and publishes one final result");
+
+        [asyncDelegate performSetupHealthAction:@"useOwnGoogleClient"];
+        NSWindow *assistant = asyncDelegate.googleClientWindow;
+        NSMutableArray<NSButton *> *stepButtons = [NSMutableArray array];
+        for (NSView *view in assistant.contentView.subviews) {
+            if ([view isKindOfClass:NSButton.class] &&
+                [((NSButton *)view).title isEqualToString:T(@"en", @"googleClientOpen")]) {
+                [stepButtons addObject:(NSButton *)view];
+            }
+        }
+        Assert(assistant.isVisible && stepButtons.count == 5 &&
+               asyncDelegate.googleClientTimer.valid &&
+               !(assistant.styleMask & NSWindowStyleMaskClosable),
+               @"the own-client assistant shows five console steps and watches Downloads");
+        NSString *webClient = [NSTemporaryDirectory() stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"client_secret_web-%@.json", NSUUID.UUID.UUIDString]];
+        [[NSJSONSerialization dataWithJSONObject:@{@"web": @{
+            @"client_id": @"1-a.apps.googleusercontent.com", @"client_secret": @"GOCSPX-abcdefgh"}}
+            options:0 error:nil] writeToFile:webClient atomically:YES];
+        [asyncDelegate acceptGoogleClientFileAtPath:webClient moveToTrash:YES];
+        Assert(asyncDelegate.googleClientWindow == assistant &&
+               [asyncDelegate.googleClientStatusField.stringValue
+                   isEqualToString:T(@"en", @"googleClientWrongType")] &&
+               [NSFileManager.defaultManager fileExistsAtPath:webClient],
+               @"a web client file is explained, kept in place, and the assistant stays open");
+        [NSFileManager.defaultManager removeItemAtPath:webClient error:nil];
+        NSTimer *assistantTimer = asyncDelegate.googleClientTimer;
+        [asyncDelegate cancelGoogleClientAssistant:nil];
+        Assert(!asyncDelegate.googleClientWindow && !assistantTimer.valid && !assistant.isVisible,
+               @"cancelling the assistant closes it and stops watching Downloads");
 
         asyncChecker.commandRunner =
             ^NSDictionary<NSString *, id> *(NSString *command, NSArray<NSString *> *arguments) {
