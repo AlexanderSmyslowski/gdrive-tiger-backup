@@ -48,7 +48,8 @@ if [[ "$(jq -r '.status' <<<"$json")" == "success" &&
       "$(jq -r '.destinations | length' <<<"$json")" == "2" &&
       "$(jq -r '.destinations[0].target' <<<"$json")" == "nas" &&
       "$(jq -r '.destinations[0].last_failure' <<<"$json")" == "$((now - 90000))" &&
-      "$(jq -r '.destinations[1].device' <<<"$json")" == "Samsung PSSD T7" ]]; then
+      "$(jq -r '.destinations[1].device' <<<"$json")" == "Samsung PSSD T7" &&
+      "$(jq -r '.destinations[1].target' <<<"$json")" == "disk" ]]; then
   pass "status JSON combines the summary and the history per destination"
 else
   fail "status JSON: $json"

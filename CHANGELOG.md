@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Linux edition (preview, `docs/linux.md`): user-level installer, `gdrive-tiger-backup` command (`setup`, `run`, `check`, `status [--json]`, `waybar`, `log`), systemd service and hourly timer with catch-up, desktop notifications on the first failure and on recovery, and a Waybar module. Engine options `--status`, `--status-json` and `--waybar`. On Linux, log and lock now live in `~/.local/state/gdrive-tiger-backup`.
+- Linux edition (preview, `docs/linux.md`): user-level installer, `gdrive-tiger-backup` command (`setup`, `run`, `check`, `status [--json]`, `waybar`, `log`), systemd service and hourly timer with catch-up, desktop notifications on the first failure and on recovery, and a Waybar module. Engine options `--status`, `--status-json` and `--waybar`. They name a local disk destination `disk` (the history keeps its internal name `apfs`). On Linux, log and lock now live in `~/.local/state/gdrive-tiger-backup`.
 - Fix (Linux): under bash 5, a helper subshell started by `run_with_timeout` ran the engine's exit handler, which published a stale result, wrote a second history entry and deleted the running backup's temporary directory. Cleanup and signal handling now run only in the engine process. macOS (bash 3.2) was not affected.
 - The outcome and robustness test suites now also run on Linux in CI.
 - Linux: `setup` and the new `gdrive-tiger-backup connect` sign in with your own Google client, like the Mac app since v2.10.0. They read the downloaded Desktop-app client file from `~/Downloads`, keep a private copy, and switch an existing remote only after a temporary remote has signed in and only while no backup runs.

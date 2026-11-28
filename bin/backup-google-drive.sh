@@ -2391,6 +2391,8 @@ append_run_history() {
 #   destinations    one per target and destination path, newest first:
 #                   {target, destination, device, last_success, last_failure,
 #                    last_status}
+# target is "disk" or "nas"; the history's internal name "apfs" for a local
+# disk is shown as "disk" on every platform.
 # Paths stay local; nothing here is sent anywhere.
 status_document() {
   local summary_text="" history_text=""
@@ -2403,9 +2405,10 @@ status_document() {
   jq -n --arg summary "$summary_text" --arg history "$history_text" \
         --arg schedule "$SCHEDULE_MODE" --arg paused "${GDRIVE_BACKUP_PAUSED:-0}" '
     def num: if type == "string" and test("^[0-9]{1,12}$") then tonumber else null end;
+    def target_name: if . == "apfs" then "disk" else . end;
     ($summary | split("\n") | map(capture("^(?<key>[a-z_]+)=(?<value>.*)$")?) | from_entries) as $s
     | ($history | split("\n") | map(split("\t")) | map(select(length >= 7 and .[0] == "v1"))
-        | map({finished: (.[1] | num), status: .[2], target: .[3], destination: .[4],
+        | map({finished: (.[1] | num), status: .[2], target: (.[3] | target_name), destination: .[4],
                device: (if length >= 9 and .[8] != "" then .[8] else null end)})
         | map(select(.finished != null))) as $runs
     | {
@@ -2414,7 +2417,7 @@ status_document() {
                  else ($s.status // "never") end),
         last_run: (if ($s | length) == 0 then null else {
           status: $s.status, started_at: ($s.started_at | num), finished_at: ($s.finished_at | num),
-          target: $s.target, reason: $s.reason, trigger: $s.trigger } end),
+          target: ($s.target | target_name), reason: $s.reason, trigger: $s.trigger } end),
         last_success_at: ($s.last_success_at | num),
         schedule: $schedule,
         paused: ($paused == "1"),
