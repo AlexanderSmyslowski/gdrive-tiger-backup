@@ -25,53 +25,53 @@ mkdir -p "$WORK/home" "$WORK/fakebin"
 # The installer only checks that rclone exists; CI images do not ship it.
 command -v rclone >/dev/null 2>&1 || { printf '#!/bin/sh\nexit 0\n' >"$WORK/fakebin/rclone"; chmod +x "$WORK/fakebin/rclone"; }
 run_installer() {
-  env HOME="$WORK/home" GDRIVE_TIGER_SKIP_SYSTEMCTL=1 PATH="$WORK/home/.local/bin:$WORK/fakebin:$PATH" \
+  env HOME="$WORK/home" DRIVE_BACKUP_SKIP_SYSTEMCTL=1 PATH="$WORK/home/.local/bin:$WORK/fakebin:$PATH" \
     /bin/bash "$INSTALLER" "$@"
 }
 
 if output="$(run_installer 2>&1)" &&
-   [[ -x "$WORK/home/.local/share/gdrive-tiger-backup/bin/backup-google-drive.sh" &&
-      -f "$WORK/home/.local/share/gdrive-tiger-backup/lib/platform-linux.sh" &&
-      -f "$WORK/home/.local/share/gdrive-tiger-backup/agent-skill/gdrive-backup-google-setup/SKILL.md" &&
-      -x "$WORK/home/.local/bin/gdrive-tiger-backup" &&
-      -f "$WORK/home/.config/systemd/user/gdrive-tiger-backup.service" &&
-      -f "$WORK/home/.config/systemd/user/gdrive-tiger-backup.timer" ]]; then
+   [[ -x "$WORK/home/.local/share/drive-backup/bin/backup-google-drive.sh" &&
+      -f "$WORK/home/.local/share/drive-backup/lib/platform-linux.sh" &&
+      -f "$WORK/home/.local/share/drive-backup/agent-skill/drive-backup-google-setup/SKILL.md" &&
+      -x "$WORK/home/.local/bin/drive-backup" &&
+      -f "$WORK/home/.config/systemd/user/drive-backup.service" &&
+      -f "$WORK/home/.config/systemd/user/drive-backup.timer" ]]; then
   pass "installer places engine, platform file, command and units in the user's home"
 else
   fail "installer: $output"
 fi
 
-status="$(env HOME="$WORK/home" "$WORK/home/.local/bin/gdrive-tiger-backup" status --json 2>&1)"
+status="$(env HOME="$WORK/home" "$WORK/home/.local/bin/drive-backup" status --json 2>&1)"
 if [[ "$(jq -r '.status' <<<"$status" 2>/dev/null)" == "never" &&
-      -d "$WORK/home/.local/state/gdrive-tiger-backup" && ! -e "$WORK/home/Library" ]]; then
+      -d "$WORK/home/.local/state/drive-backup" && ! -e "$WORK/home/Library" ]]; then
   pass "the installed command reports status and keeps state in ~/.local/state"
 else
   fail "installed status: $status"
 fi
 
-if grep -q '^OnCalendar=hourly$' "$WORK/home/.config/systemd/user/gdrive-tiger-backup.timer" &&
-   grep -q '^Persistent=true$' "$WORK/home/.config/systemd/user/gdrive-tiger-backup.timer" &&
-   grep -q '^Environment=GDRIVE_BACKUP_TRIGGER=schedule$' "$WORK/home/.config/systemd/user/gdrive-tiger-backup.service"; then
+if grep -q '^OnCalendar=hourly$' "$WORK/home/.config/systemd/user/drive-backup.timer" &&
+   grep -q '^Persistent=true$' "$WORK/home/.config/systemd/user/drive-backup.timer" &&
+   grep -q '^Environment=GDRIVE_BACKUP_TRIGGER=schedule$' "$WORK/home/.config/systemd/user/drive-backup.service"; then
   pass "the timer fires hourly with catch-up and the service runs as a scheduled backup"
 else
   fail "unit contents"
 fi
 
 if command -v systemd-analyze >/dev/null 2>&1; then
-  if systemd-analyze --user verify "$WORK/home/.config/systemd/user/gdrive-tiger-backup.timer" \
-       "$WORK/home/.config/systemd/user/gdrive-tiger-backup.service" >/dev/null 2>&1; then
+  if systemd-analyze --user verify "$WORK/home/.config/systemd/user/drive-backup.timer" \
+       "$WORK/home/.config/systemd/user/drive-backup.service" >/dev/null 2>&1; then
     pass "systemd accepts the units"
   else
     printf 'ok - systemd unit verification unavailable here # SKIP\n'
   fi
 fi
 
-mkdir -p "$WORK/home/.config/gdrive-tiger-backup"
-printf 'GDRIVE_BACKUP_SCHEDULE=daily\n' >"$WORK/home/.config/gdrive-tiger-backup/config"
+mkdir -p "$WORK/home/.config/drive-backup"
+printf 'GDRIVE_BACKUP_SCHEDULE=daily\n' >"$WORK/home/.config/drive-backup/config"
 if run_installer --uninstall >/dev/null 2>&1 &&
-   [[ ! -e "$WORK/home/.local/share/gdrive-tiger-backup" && ! -e "$WORK/home/.local/bin/gdrive-tiger-backup" &&
-      ! -e "$WORK/home/.config/systemd/user/gdrive-tiger-backup.timer" &&
-      -f "$WORK/home/.config/gdrive-tiger-backup/config" ]]; then
+   [[ ! -e "$WORK/home/.local/share/drive-backup" && ! -e "$WORK/home/.local/bin/drive-backup" &&
+      ! -e "$WORK/home/.config/systemd/user/drive-backup.timer" &&
+      -f "$WORK/home/.config/drive-backup/config" ]]; then
   pass "uninstall removes the program and keeps the configuration"
 else
   fail "uninstall"

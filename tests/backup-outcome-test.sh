@@ -43,8 +43,8 @@ if (( IS_MACOS )); then
   HISTORY_RELATIVE_PATH="Library/Application Support/GDrive Backup Tiger/run-history.tsv"
   LOG_RELATIVE_PATH="Library/Logs/gdrive-backup.log"
 else
-  HISTORY_RELATIVE_PATH=".local/state/gdrive-tiger-backup/run-history.tsv"
-  LOG_RELATIVE_PATH=".local/state/gdrive-tiger-backup/backup.log"
+  HISTORY_RELATIVE_PATH=".local/state/drive-backup/run-history.tsv"
+  LOG_RELATIVE_PATH=".local/state/drive-backup/backup.log"
 fi
 
 prepare_test_environment() {

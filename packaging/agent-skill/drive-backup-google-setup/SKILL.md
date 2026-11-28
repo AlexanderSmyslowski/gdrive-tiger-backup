@@ -1,23 +1,23 @@
 ---
-name: gdrive-backup-google-setup
+name: drive-backup-google-setup
 description: >
-  Set up GDrive Tiger Backup (the "Drive Backup" Omarchy plugin and the
-  gdrive-tiger-backup command) for the user: walk them through creating their
+  Set up Drive Backup (the Linux edition of GDrive Tiger Backup: the
+  drive-backup command and its Omarchy plugin) for the user: walk them through creating their
   own Google client in the Google Cloud console, connect Google Drive read-only,
   choose a backup disk, run a dry run. Triggers: set up Drive Backup, connect
-  Google Drive backup, gdrive-tiger-backup setup, back up my Google Drive.
+  Google Drive backup, drive-backup setup, back up my Google Drive.
 ---
 
 # Setting up Google Drive Backup
 
-You help a person connect their Google Drive to `gdrive-tiger-backup` and get a
+You help a person connect their Google Drive to `drive-backup` and get a
 first backup going. Most of the work is theirs to click in Google's console:
 Google offers no API for creating the sign-in client. Your job is to make that
 easy: one page at a time, exact values, and you do everything that can run in
 the terminal.
 
-Done means: `gdrive-tiger-backup status` shows the destination, and a dry run
-(`gdrive-tiger-backup check`) has finished without errors.
+Done means: `drive-backup status` shows the destination, and a dry run
+(`drive-backup check`) has finished without errors.
 
 ## Rules
 
@@ -26,7 +26,7 @@ Done means: `gdrive-tiger-backup status` shows the destination, and a dry run
 - Never print, `cat`, copy into the chat or upload the Google client file
   (`client_secret_*.json`) or `~/.config/rclone/rclone.conf`. Check the client
   file only with the `jq` command below, which prints one word.
-- Do not edit rclone's configuration by hand; `gdrive-tiger-backup connect`
+- Do not edit rclone's configuration by hand; `drive-backup connect`
   does it.
 - Never format, partition or mount a disk unless the user asks you to, and say
   what it would erase first. `sudo` only with the user's explicit yes.
@@ -38,13 +38,13 @@ Done means: `gdrive-tiger-backup status` shows the destination, and a dry run
 ## 0. Where are we?
 
 ```bash
-command -v gdrive-tiger-backup rclone jq
-gdrive-tiger-backup status
+command -v drive-backup rclone jq
+drive-backup status
 rclone listremotes
 rclone config show gdrive 2>/dev/null | grep -c '^client_id = .' # 1 = own client already set
 ```
 
-- `gdrive-tiger-backup` missing: it is installed from
+- `drive-backup` missing: it is installed from
   <https://github.com/AlexanderSmyslowski/gdrive-tiger-backup> with
   `packaging/linux/install.sh`; on Arch/Omarchy first
   `sudo pacman -S rclone jq` (ask before using sudo).
@@ -95,7 +95,7 @@ type **Desktop app**. Anything else is not a Google client file.
 ## 3. Connect Google Drive
 
 ```bash
-printf '\n' | gdrive-tiger-backup connect
+printf '\n' | drive-backup connect
 ```
 
 It picks up the newest client file, keeps a private copy and opens the browser
@@ -124,19 +124,19 @@ Check that the free space is roughly larger than the Drive
 (recommended). Then, with their folder and answer (`y` or `n`):
 
 ```bash
-printf '%s\n%s\n' "/path/on/the/disk/GoogleDrive-Backup" "y" | gdrive-tiger-backup setup
+printf '%s\n%s\n' "/path/on/the/disk/GoogleDrive-Backup" "y" | drive-backup setup
 ```
 
 ## 5. Dry run, then the first backup
 
 ```bash
-gdrive-tiger-backup check
+drive-backup check
 ```
 
 The dry run copies nothing and lists what would be copied. A large Drive takes
 a while (about 15 minutes for 100 GB); say so. If it ends with "Fertig ohne
-Fehler", offer `gdrive-tiger-backup run` for the first real backup. On Omarchy,
-also offer `gdrive-tiger-backup omarchy-menu` for a Drive Backup submenu.
+Fehler", offer `drive-backup run` for the first real backup. On Omarchy,
+also offer `drive-backup omarchy-menu` for a Drive Backup submenu.
 
 ## When something goes wrong
 
@@ -149,4 +149,4 @@ also offer `gdrive-tiger-backup omarchy-menu` for a Drive Backup submenu.
   project; enable the API in `drive-backup`.
 - **"a backup is running":** wait until it finishes, then run `connect` again.
 - **Signed out after 7 days:** the app was never published; do step 4, then
-  `gdrive-tiger-backup connect` again.
+  `drive-backup connect` again.

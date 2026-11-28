@@ -1,28 +1,28 @@
 #!/bin/bash
-# gdrive-tiger-backup: command-line front end of the Linux edition.
-#   gdrive-tiger-backup setup        connect Google Drive, choose a destination,
+# drive-backup: command-line front end of the Linux edition.
+#   drive-backup setup        connect Google Drive, choose a destination,
 #                                    enable the daily schedule
-#   gdrive-tiger-backup connect      (re)connect Google Drive with your own
+#   drive-backup connect      (re)connect Google Drive with your own
 #                                    Google client
-#   gdrive-tiger-backup run          back up now
-#   gdrive-tiger-backup check        dry run: show what would be copied
-#   gdrive-tiger-backup status [--json]
-#   gdrive-tiger-backup waybar       one JSON line for a Waybar custom module
-#   gdrive-tiger-backup log          follow the backup log
-#   gdrive-tiger-backup omarchy-menu add a Drive Backup submenu to the Omarchy menu
-#   gdrive-tiger-backup agent        let your AI agent guide you through the setup
+#   drive-backup run          back up now
+#   drive-backup check        dry run: show what would be copied
+#   drive-backup status [--json]
+#   drive-backup waybar       one JSON line for a Waybar custom module
+#   drive-backup log          follow the backup log
+#   drive-backup omarchy-menu add a Drive Backup submenu to the Omarchy menu
+#   drive-backup agent        let your AI agent guide you through the setup
 set -euo pipefail
 
-SHARE_DIR="${GDRIVE_TIGER_SHARE_DIR:-$HOME/.local/share/gdrive-tiger-backup}"
+SHARE_DIR="${DRIVE_BACKUP_SHARE_DIR:-$HOME/.local/share/drive-backup}"
 ENGINE="$SHARE_DIR/bin/backup-google-drive.sh"
-CONFIG_DIR="${GDRIVE_BACKUP_CONFIG_DIR:-$HOME/.config/gdrive-tiger-backup}"
+CONFIG_DIR="${GDRIVE_BACKUP_CONFIG_DIR:-$HOME/.config/drive-backup}"
 CONFIG_FILE="$CONFIG_DIR/config"
-STATE_DIR="$HOME/.local/state/gdrive-tiger-backup"
+STATE_DIR="$HOME/.local/state/drive-backup"
 REMOTE="${RCLONE_REMOTE:-gdrive}"
 CLIENT_FILE="$CONFIG_DIR/google-oauth-client.json"
 LOCK_FILE="${GDRIVE_BACKUP_LOCK:-$STATE_DIR/backup.lock}"
 
-die() { printf 'gdrive-tiger-backup: %s\n' "$*" >&2; exit 1; }
+die() { printf 'drive-backup: %s\n' "$*" >&2; exit 1; }
 [[ -x "$ENGINE" ]] || die "engine not found at $ENGINE; run the installer again"
 
 ask() {
@@ -42,7 +42,7 @@ write_config() {
   local tmp
   tmp="$(mktemp "$CONFIG_FILE.XXXXXX")"
   {
-    printf '# Written by "gdrive-tiger-backup setup". Shell syntax, one KEY=value per line.\n'
+    printf '# Written by "drive-backup setup". Shell syntax, one KEY=value per line.\n'
     for key in "$@"; do
       printf '%s=%q\n' "${key%%=*}" "${key#*=}"
     done
@@ -92,7 +92,7 @@ choose_google_client() {
   fi
   if [[ -z "$file" ]]; then
     printf '\nThe backup signs in to Google with your own client. Create it once (about 5 minutes):\n'
-    printf '  (Easier: "gdrive-tiger-backup agent" lets your AI agent guide you through it.)\n'
+    printf '  (Easier: "drive-backup agent" lets your AI agent guide you through it.)\n'
     printf '  1. New project:    https://console.cloud.google.com/projectcreate\n'
     printf '  2. Drive API:      https://console.cloud.google.com/apis/library/drive.googleapis.com  (Enable)\n'
     printf '  3. Google sign-in: https://console.cloud.google.com/auth/overview  (Get started; Workspace: Internal, Gmail: External)\n'
@@ -143,7 +143,7 @@ connect_google() {
     return
   fi
 
-  temp="${REMOTE:0:50}-tiger-new"
+  temp="${REMOTE:0:50}-backup-new"
   rclone config delete "$temp" >/dev/null 2>&1 || true
   if ! rclone config create "$temp" drive client_id="$GOOGLE_CLIENT_ID" \
        client_secret="$GOOGLE_CLIENT_SECRET" scope=drive.readonly >/dev/null; then
@@ -161,7 +161,7 @@ connect_google() {
   if ! flock -n 8; then
     exec 8>&-
     rclone config delete "$temp" >/dev/null 2>&1 || true
-    die "a backup is running; run \"gdrive-tiger-backup connect\" again when it has finished"
+    die "a backup is running; run \"drive-backup connect\" again when it has finished"
   fi
   if ! rclone config update "$REMOTE" client_id="$GOOGLE_CLIENT_ID" \
        client_secret="$GOOGLE_CLIENT_SECRET" scope=drive.readonly token="$token" \
@@ -178,7 +178,7 @@ connect_google() {
 
 setup() {
   command -v rclone >/dev/null || die "rclone is missing; install it from https://rclone.org/install/"
-  printf 'GDrive Backup Tiger setup\n\n'
+  printf 'Drive Backup setup\n\n'
 
   # 1. Google Drive, read-only, through the user's own Google client.
   local answer
@@ -192,7 +192,7 @@ setup() {
     if [[ "${answer:-y}" =~ ^[Yy] ]]; then
       connect_google
     else
-      printf 'Kept for now. Run "gdrive-tiger-backup connect" later.\n'
+      printf 'Kept for now. Run "drive-backup connect" later.\n'
     fi
   else
     printf 'Google Drive: rclone remote "%s:" uses its own Google connection.\n' "$REMOTE"
@@ -243,14 +243,14 @@ setup() {
   if [[ "${schedule:-y}" =~ ^[Yy] ]]; then
     if command -v systemctl >/dev/null &&
        systemctl --user daemon-reload 2>/dev/null &&
-       systemctl --user enable --now gdrive-tiger-backup.timer 2>/dev/null; then
-      printf 'Daily schedule enabled (systemctl --user list-timers gdrive-tiger-backup.timer).\n'
+       systemctl --user enable --now drive-backup.timer 2>/dev/null; then
+      printf 'Daily schedule enabled (systemctl --user list-timers drive-backup.timer).\n'
     else
       printf 'Could not reach the systemd user session. Enable the schedule later with:\n'
-      printf '  systemctl --user enable --now gdrive-tiger-backup.timer\n'
+      printf '  systemctl --user enable --now drive-backup.timer\n'
     fi
   fi
-  printf '\nNext: "gdrive-tiger-backup check" for a dry run, then "gdrive-tiger-backup run".\n'
+  printf '\nNext: "drive-backup check" for a dry run, then "drive-backup run".\n'
 }
 
 # Omarchy plugins cannot add rows to the Omarchy menu (Super + Space); the menu
@@ -260,12 +260,12 @@ setup() {
 OMARCHY_MENU_FILE="$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
 omarchy_menu_rows() {
   cat <<'EOF'
-  // Added by "gdrive-tiger-backup omarchy-menu"; delete these lines to remove the submenu.
+  // Added by "drive-backup omarchy-menu"; delete these lines to remove the submenu.
   "drive-backup": {"icon":"󰅠","label":"Drive Backup","description":"Google Drive backup"},
   "drive-backup.panel": {"icon":"󰅠","label":"Show Status","when":"[[ -d ~/.config/omarchy/plugins/drive-backup ]]","action":"omarchy-shell drive-backup toggle"},
-  "drive-backup.run": {"icon":"󰅧","label":"Back Up Now","action":"gdrive-tiger-backup run"},
-  "drive-backup.check": {"icon":"󰈞","label":"Dry Run","action":"omarchy-launch-floating-terminal-with-presentation gdrive-tiger-backup check"},
-  "drive-backup.log": {"icon":"󰦪","label":"Show Log","action":"omarchy-launch-floating-terminal-with-presentation gdrive-tiger-backup log"},
+  "drive-backup.run": {"icon":"󰅧","label":"Back Up Now","action":"drive-backup run"},
+  "drive-backup.check": {"icon":"󰈞","label":"Dry Run","action":"omarchy-launch-floating-terminal-with-presentation drive-backup check"},
+  "drive-backup.log": {"icon":"󰦪","label":"Show Log","action":"omarchy-launch-floating-terminal-with-presentation drive-backup log"},
 EOF
 }
 
@@ -316,7 +316,7 @@ add_omarchy_menu() {
 # The Google client can only be created by clicking through Google's console.
 # An AI agent can guide the user through it and do everything else; on Omarchy
 # the user's default agent starts with the task, elsewhere the task is printed.
-AGENT_SKILL="$SHARE_DIR/agent-skill/gdrive-backup-google-setup/SKILL.md"
+AGENT_SKILL="$SHARE_DIR/agent-skill/drive-backup-google-setup/SKILL.md"
 start_agent_setup() {
   [[ -f "$AGENT_SKILL" ]] || die "agent guide not found at $AGENT_SKILL; run the installer again"
   local task="Set up my Google Drive backup: read $AGENT_SKILL and follow it step by step."

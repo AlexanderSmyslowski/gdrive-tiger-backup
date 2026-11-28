@@ -1,11 +1,11 @@
 #!/bin/bash
-# "gdrive-tiger-backup omarchy-menu" adds a Drive Backup submenu to the user's
+# "drive-backup omarchy-menu" adds a Drive Backup submenu to the user's
 # Omarchy menu extension file once, keeps the file valid for Omarchy's parser
 # (whole-line comments dropped, trailing commas tolerated) and never runs twice.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-COMMAND="$ROOT/packaging/linux/gdrive-tiger-backup"
+COMMAND="$ROOT/packaging/linux/drive-backup"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/gdrive-linux-menu.XXXXXX")"
 failures=0
 trap '"$ROOT/scripts/trash-path.sh" "$WORK" >/dev/null 2>&1 || true' EXIT
@@ -23,14 +23,14 @@ printf '#!/bin/bash\nexit 0\n' >"$WORK/share/bin/backup-google-drive.sh"
 chmod +x "$WORK/share/bin/backup-google-drive.sh"
 
 run_menu() {
-  env HOME="$1" GDRIVE_TIGER_SHARE_DIR="$WORK/share" /bin/bash "$COMMAND" omarchy-menu 2>&1
+  env HOME="$1" DRIVE_BACKUP_SHARE_DIR="$WORK/share" /bin/bash "$COMMAND" omarchy-menu 2>&1
 }
 menu_file() { printf '%s/.config/omarchy/extensions/omarchy-menu.jsonc' "$1"; }
 # Omarchy's reading of the file: drop whole-line comments and trailing commas.
 omarchy_parse() {
   grep -v '^[[:space:]]*//' "$1" | tr -d '\n' | sed -E 's/,[[:space:]]*([]}])/\1/g' | jq -e . 2>/dev/null
 }
-has_rows() { omarchy_parse "$1" | jq -e '."drive-backup" and ."drive-backup.run".action == "gdrive-tiger-backup run"' >/dev/null; }
+has_rows() { omarchy_parse "$1" | jq -e '."drive-backup" and ."drive-backup.run".action == "drive-backup run"' >/dev/null; }
 
 # 1. No extension file yet: it is created with the submenu.
 H="$WORK/home-new"; mkdir -p "$H/.config/omarchy"

@@ -23,8 +23,8 @@ jobs:
       - name: Run portable engine tests and static checks
         run: |
           make test-engine-portable
-          bash -n bin/backup-google-drive.sh lib/*.sh tests/*.sh packaging/linux/install.sh packaging/linux/gdrive-tiger-backup
-          shellcheck -x bin/backup-google-drive.sh lib/*.sh packaging/linux/install.sh packaging/linux/gdrive-tiger-backup
+          bash -n bin/backup-google-drive.sh lib/*.sh tests/*.sh packaging/linux/install.sh packaging/linux/drive-backup
+          shellcheck -x bin/backup-google-drive.sh lib/*.sh packaging/linux/install.sh packaging/linux/drive-backup
 
   test-arch:
     name: Test engine on Arch Linux

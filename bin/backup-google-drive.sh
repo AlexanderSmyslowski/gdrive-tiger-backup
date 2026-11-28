@@ -110,7 +110,12 @@ readonly _GDT_PROCESS_RUN_VOLUME_UUID_SET _GDT_PROCESS_RUN_VOLUME_UUID_VALUE
 readonly _GDT_PROCESS_SUMMARY_STATE_FILE_SET _GDT_PROCESS_SUMMARY_STATE_FILE_VALUE
 readonly _GDT_PROCESS_PROGRESS_STATE_FILE_SET _GDT_PROCESS_PROGRESS_STATE_FILE_VALUE
 
-CONFIG_DIR="${GDRIVE_BACKUP_CONFIG_DIR:-$HOME/.config/gdrive-tiger-backup}"
+# The Linux edition is called Drive Backup; the Mac keeps its original folder.
+if [[ "$GDT_PLATFORM" == "linux" ]]; then
+  CONFIG_DIR="${GDRIVE_BACKUP_CONFIG_DIR:-$HOME/.config/drive-backup}"
+else
+  CONFIG_DIR="${GDRIVE_BACKUP_CONFIG_DIR:-$HOME/.config/gdrive-tiger-backup}"
+fi
 LEGACY_CONFIG_FILE="$CONFIG_DIR/config"
 CONFIG_FILE="${GDRIVE_BACKUP_CONFIG:-}"
 ACTIVE_PROFILE_ID=""
@@ -227,7 +232,7 @@ REMOTE="${REMOTE%:}"
 
 # Linux keeps log and lock with the other state files (XDG state directory).
 if [[ "$GDT_PLATFORM" == "linux" ]]; then
-  DEFAULT_LOG_DIR="$HOME/.local/state/gdrive-tiger-backup"
+  DEFAULT_LOG_DIR="$HOME/.local/state/drive-backup"
   LOG="${GDRIVE_BACKUP_LOG:-$DEFAULT_LOG_DIR/backup.log}"
   LOCK="${GDRIVE_BACKUP_LOCK:-$DEFAULT_LOG_DIR/backup.lock}"
 else
@@ -262,9 +267,9 @@ if [[ "$_GDT_PROCESS_SUMMARY_STATE_FILE_SET" == "1" ]]; then
 elif [[ -n "${GDRIVE_BACKUP_SUMMARY_STATE_FILE:-}" ]]; then
   SUMMARY_STATE_FILE="$GDRIVE_BACKUP_SUMMARY_STATE_FILE"
 elif [[ "$GDT_PLATFORM" == "linux" && -n "$ACTIVE_PROFILE_ID" ]]; then
-  SUMMARY_STATE_FILE="$HOME/.local/state/gdrive-tiger-backup/profiles/$ACTIVE_PROFILE_ID/last-run.status"
+  SUMMARY_STATE_FILE="$HOME/.local/state/drive-backup/profiles/$ACTIVE_PROFILE_ID/last-run.status"
 elif [[ "$GDT_PLATFORM" == "linux" ]]; then
-  SUMMARY_STATE_FILE="$HOME/.local/state/gdrive-tiger-backup/last-run.status"
+  SUMMARY_STATE_FILE="$HOME/.local/state/drive-backup/last-run.status"
 elif [[ -n "$ACTIVE_PROFILE_ID" ]]; then
   SUMMARY_STATE_FILE="$HOME/Library/Application Support/GDrive Backup Tiger/profiles/$ACTIVE_PROFILE_ID/last-run.status"
 else
@@ -275,7 +280,7 @@ fi
 if [[ -n "${GDRIVE_BACKUP_HISTORY_FILE:-}" ]]; then
   RUN_HISTORY_FILE="$GDRIVE_BACKUP_HISTORY_FILE"
 elif [[ "$GDT_PLATFORM" == "linux" ]]; then
-  RUN_HISTORY_FILE="$HOME/.local/state/gdrive-tiger-backup/run-history.tsv"
+  RUN_HISTORY_FILE="$HOME/.local/state/drive-backup/run-history.tsv"
 else
   RUN_HISTORY_FILE="$HOME/Library/Application Support/GDrive Backup Tiger/run-history.tsv"
 fi
@@ -1854,31 +1859,31 @@ t() {
     ko:progress_preparing) printf '준비 중...' ;;
     ko:progress_done) printf '복사 완료.' ;;
     de:notify_failed_title) printf '%s' 'Google-Drive-Backup fehlgeschlagen' ;;
-    de:notify_failed_body) printf '%s' 'Details mit „gdrive-tiger-backup status“ im Terminal.' ;;
+    de:notify_failed_body) printf '%s' 'Details mit „drive-backup status“ im Terminal.' ;;
     de:notify_recovered_title) printf '%s' 'Google-Drive-Backup läuft wieder' ;;
     de:notify_recovered_body) printf '%s' 'Das letzte Backup wurde erfolgreich abgeschlossen.' ;;
     en:notify_failed_title) printf '%s' 'Google Drive backup failed' ;;
-    en:notify_failed_body) printf '%s' 'Run “gdrive-tiger-backup status” in a terminal for details.' ;;
+    en:notify_failed_body) printf '%s' 'Run “drive-backup status” in a terminal for details.' ;;
     en:notify_recovered_title) printf '%s' 'Google Drive backup works again' ;;
     en:notify_recovered_body) printf '%s' 'The latest backup completed successfully.' ;;
     fr:notify_failed_title) printf '%s' 'Échec de la sauvegarde Google Drive' ;;
-    fr:notify_failed_body) printf '%s' 'Détails : « gdrive-tiger-backup status » dans un terminal.' ;;
+    fr:notify_failed_body) printf '%s' 'Détails : « drive-backup status » dans un terminal.' ;;
     fr:notify_recovered_title) printf '%s' 'La sauvegarde Google Drive fonctionne à nouveau' ;;
     fr:notify_recovered_body) printf '%s' "La dernière sauvegarde s’est terminée avec succès." ;;
     es:notify_failed_title) printf '%s' 'Falló la copia de Google Drive' ;;
-    es:notify_failed_body) printf '%s' 'Detalles: «gdrive-tiger-backup status» en un terminal.' ;;
+    es:notify_failed_body) printf '%s' 'Detalles: «drive-backup status» en un terminal.' ;;
     es:notify_recovered_title) printf '%s' 'La copia de Google Drive vuelve a funcionar' ;;
     es:notify_recovered_body) printf '%s' 'La última copia se completó correctamente.' ;;
     ja:notify_failed_title) printf '%s' 'Google Driveのバックアップに失敗しました' ;;
-    ja:notify_failed_body) printf '%s' '詳細はターミナルで「gdrive-tiger-backup status」を実行してください。' ;;
+    ja:notify_failed_body) printf '%s' '詳細はターミナルで「drive-backup status」を実行してください。' ;;
     ja:notify_recovered_title) printf '%s' 'Google Driveのバックアップが復旧しました' ;;
     ja:notify_recovered_body) printf '%s' '最新のバックアップが正常に完了しました。' ;;
     yue:notify_failed_title) printf '%s' 'Google Drive 備份失敗' ;;
-    yue:notify_failed_body) printf '%s' '喺終端機執行「gdrive-tiger-backup status」睇詳情。' ;;
+    yue:notify_failed_body) printf '%s' '喺終端機執行「drive-backup status」睇詳情。' ;;
     yue:notify_recovered_title) printf '%s' 'Google Drive 備份恢復正常' ;;
     yue:notify_recovered_body) printf '%s' '最近一次備份已成功完成。' ;;
     ko:notify_failed_title) printf '%s' 'Google Drive 백업 실패' ;;
-    ko:notify_failed_body) printf '%s' '자세한 내용은 터미널에서 “gdrive-tiger-backup status”를 실행하세요.' ;;
+    ko:notify_failed_body) printf '%s' '자세한 내용은 터미널에서 “drive-backup status”를 실행하세요.' ;;
     ko:notify_recovered_title) printf '%s' 'Google Drive 백업이 다시 정상입니다' ;;
     ko:notify_recovered_body) printf '%s' '최근 백업이 성공적으로 완료되었습니다.' ;;
     *) printf '%s' "$key" ;;

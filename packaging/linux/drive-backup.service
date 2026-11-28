@@ -7,9 +7,9 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 Environment=GDRIVE_BACKUP_TRIGGER=schedule
-ExecStart=%h/.local/share/gdrive-tiger-backup/bin/backup-google-drive.sh --run
+ExecStart=%h/.local/share/drive-backup/bin/backup-google-drive.sh --run
 Nice=10
 IOSchedulingClass=idle
-# The engine keeps its own log in ~/.local/state/gdrive-tiger-backup.
+# The engine keeps its own log in ~/.local/state/drive-backup.
 StandardOutput=null
 StandardError=journal

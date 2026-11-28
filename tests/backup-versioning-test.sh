@@ -7,7 +7,7 @@ failures=0
 # The engine keeps its log in ~/Library/Logs on macOS and in the XDG state
 # directory on Linux.
 if [[ "$(uname -s)" == "Linux" ]]; then
-  LOG_RELATIVE_PATH=".local/state/gdrive-tiger-backup/backup.log"
+  LOG_RELATIVE_PATH=".local/state/drive-backup/backup.log"
 else
   LOG_RELATIVE_PATH="Library/Logs/gdrive-backup.log"
 fi
