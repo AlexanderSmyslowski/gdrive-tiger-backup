@@ -65,10 +65,13 @@ update costs the user permission prompts and can block a scheduled start.
   stumble and fix it.
 - [ ] Repeat on the oldest supported macOS (13 Ventura) and on Intel if
   possible.
-- [ ] Own Google OAuth client ID instead of rclone's shared one, so many users
-  do not run into its rate limits. Read access to Drive is a sensitive scope:
-  plan time for Google's verification (privacy policy page, app description,
-  possibly a security review).
+- [~] Own Google OAuth client instead of rclone's shared one, which Google is
+  retiring during 2026. Decided 2026-11-28: each user creates their own client
+  with the app's assistant (PR #29, v2.10.0) instead of one project client,
+  because read access to Drive is a restricted scope whose verification needs
+  a yearly paid security assessment, and an embedded secret would be public in
+  this open-source app. Open: click the assistant through once with a private
+  Gmail account (audience External, app published) in the fresh-Mac test.
 
 ## 4. Shop window
 
