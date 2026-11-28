@@ -1481,8 +1481,8 @@ test_duplicate_source_files_are_archived_by_id() {
       {"id":"parent-id","name":"Photos","mimeType":"application/vnd.google-apps.folder"}
     ]' \
     FAKE_RCLONE_COLLISION_QUERY_JSON='[
-      {"id":"file-id-a","name":"image.heic","mimeType":"image/heic","parents":["parent-id"]},
-      {"id":"file-id-b","name":"image.heic","mimeType":"image/heic","parents":["parent-id"]}
+      {"id":"file-id-a","name":"image.heic","mimeType":"image/heic","parents":["parent-id"],"md5Checksum":"d41d8cd98f00b204e9800998ecf8427e","size":"0"},
+      {"id":"file-id-b","name":"image.heic","mimeType":"image/heic","parents":["parent-id"],"md5Checksum":"d41d8cd98f00b204e9800998ecf8427e","size":"0"}
     ]' \
     run_backup
   status=$?

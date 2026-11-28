@@ -4782,7 +4782,7 @@ archive_source_collisions() {
           entry_count="$(/usr/bin/find "$object_directory" -mindepth 1 -maxdepth 1 \
             -exec /usr/bin/printf 'x\n' \; 2>/dev/null | /usr/bin/wc -l |
             /usr/bin/tr -d '[:space:]')"
-          local_md5="$(/sbin/md5 -q -- "$archived_file" 2>/dev/null || true)"
+          local_md5="$(platform_md5 "$archived_file" 2>/dev/null || true)"
           if [[ "$entry_count" == "1" &&
                 "$(lowercase "$local_md5")" == "$(lowercase "$source_md5")" ]]; then
             existing_is_current=1
@@ -4877,7 +4877,7 @@ archive_source_collisions() {
               "$source_size" ]] || copy_status=1
           fi
           if [[ "$copy_status" == "0" && "$source_md5" =~ ^[0-9a-fA-F]{32}$ ]]; then
-            local_md5="$(/sbin/md5 -q -- "$archived_file" 2>/dev/null || true)"
+            local_md5="$(platform_md5 "$archived_file" 2>/dev/null || true)"
             [[ "$(lowercase "$local_md5")" == "$(lowercase "$source_md5")" ]] ||
               copy_status=1
           fi

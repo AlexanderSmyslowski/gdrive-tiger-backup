@@ -23,6 +23,7 @@
 #                               without crossing into other file systems
 #   platform_first_symlink ROOT  first symbolic link below ROOT, same file system
 #   platform_sha256 [-- FILE]   "<hex digest>  <name>" of FILE or of stdin
+#   platform_md5 FILE           hex MD5 digest of FILE (Drive reports MD5)
 #   platform_destination_device_info PATH
 #                               "uuid TAB device TAB bytes TAB solid TAB bus"
 #                               for the disk holding PATH; solid is yes, no or
@@ -100,6 +101,10 @@ platform_first_symlink() {
 
 platform_sha256() {
   /usr/bin/shasum -a 256 "$@"
+}
+
+platform_md5() {
+  /sbin/md5 -q -- "$1"
 }
 
 # Describes the physical disk behind a backup volume for the run history, so

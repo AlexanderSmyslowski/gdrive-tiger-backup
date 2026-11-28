@@ -24,6 +24,7 @@
 #                               without crossing into other file systems
 #   platform_first_symlink ROOT  first symbolic link below ROOT, same file system
 #   platform_sha256 [-- FILE]   "<hex digest>  <name>" of FILE or of stdin
+#   platform_md5 FILE           hex MD5 digest of FILE (Drive reports MD5)
 #   platform_destination_device_info PATH
 #                               "uuid TAB device TAB bytes TAB solid TAB bus"
 #                               for the disk holding PATH; solid is yes, no or
@@ -129,6 +130,12 @@ platform_first_symlink() {
 platform_sha256() {
   # Arch keeps perl's shasum outside PATH (/usr/bin/core_perl); coreutils is everywhere.
   sha256sum "$@"
+}
+
+platform_md5() {
+  local digest
+  digest="$(md5sum -- "$1")" || return 1
+  printf '%s\n' "${digest%% *}"
 }
 
 # Describes the physical disk behind a destination for the run history.
