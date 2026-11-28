@@ -320,6 +320,13 @@ AGENT_SKILL="$SHARE_DIR/agent-skill/drive-backup-google-setup/SKILL.md"
 start_agent_setup() {
   [[ -f "$AGENT_SKILL" ]] || die "agent guide not found at $AGENT_SKILL; run the installer again"
   local task="Set up my Google Drive backup: read $AGENT_SKILL and follow it step by step."
+  # --pick: without a default agent Omarchy opens its agents panel to choose
+  # one and puts the task on the clipboard, instead of failing.
+  if command -v omarchy-agent >/dev/null 2>&1; then
+    omarchy-agent --pick --prompt "$task" && return 0
+    printf '\nPick your agent with "omarchy default agent <name>", or give any agent this task:\n\n  %s\n' "$task"
+    return 1
+  fi
   if command -v omarchy >/dev/null 2>&1; then
     omarchy agent prompt "$task" && return 0
     printf '\nPick your agent with "omarchy default agent <name>", or give any agent this task:\n\n  %s\n' "$task"
